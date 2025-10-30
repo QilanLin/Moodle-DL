@@ -185,10 +185,10 @@ class ConfigWizard:
         Log.info(
             '为了避免下载你注册的所有 Moodle 课程，你可以在这里选择要下载的课程。'
             + '你可以创建白名单或黑名单。'
-            + '\n\n- 使用白名单时，只有你选择的课程会被下载，'
-            + '未来注册的新课程不会自动下载，除非你将它们添加到列表中。'
-            + '\n- 使用黑名单时，所有被选中的课程不会被下载，其他不在列表中的课程都会被下载，'
-            + '如果你将来在线注册了不在黑名单中的新课程，它也会被自动下载。'
+            + '\n\n- 使用白名单时，只有勾选✅的课程会被下载，'
+            + '未来注册的新课程默认不下载（需要手动添加到白名单）。'
+            + '\n- 使用黑名单时，勾选✅的课程会被下载，取消勾选的课程不会被下载，'
+            + '未来注册的新课程会自动下载（除非添加到黑名单）。'
         )
         print('')
         use_whitelist = len(dont_download_course_ids) == 0
@@ -205,18 +205,21 @@ class ConfigWizard:
         for i, course in enumerate(courses):
             choices.append(f'{int(course.id):5}\t{course.fullname}')
 
-            should_download = MoodleService.should_download_course(
-                course.id, download_course_ids, dont_download_course_ids
-            )
-            if should_download and use_whitelist:
-                defaults.append(i)
-            elif not should_download and not use_whitelist:
-                defaults.append(i)
+            # 复选框的含义统一为"是否下载这门课程"
+            # 白名单模式：默认全不选（空白名单），勾选的加入白名单
+            # 黑名单模式：默认全选（下载所有），取消勾选的加入黑名单
+            if use_whitelist:
+                # 白名单：只勾选在 download_course_ids 中的课程
+                if course.id in download_course_ids:
+                    defaults.append(i)
+            else:
+                # 黑名单：勾选所有不在 dont_download_course_ids 中的课程（即要下载的课程）
+                if course.id not in dont_download_course_ids:
+                    defaults.append(i)
 
         if use_whitelist:
             Log.blue('哪些课程应该被下载？')
-            Log.info('[勾选✅的课程会被下载]')
-            # 白名单模式：使用 ✅ 表示"会下载"
+            Log.info('[勾选✅的课程会被下载，新课程默认不下载]')
             selected_courses = Cutie.select_multiple(
                 options=choices,
                 ticked_indices=defaults,
@@ -226,28 +229,36 @@ class ConfigWizard:
                 selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
             )
         else:
-            Log.blue('哪些课程不应该被下载？')
-            Log.info('[勾选✗的课程不会被下载]')
-            # 黑名单模式：使用 ✗ 表示"不会下载"
+            Log.blue('哪些课程应该被下载？')
+            Log.info('[勾选✅的课程会被下载，新课程默认自动下载]')
+            # 黑名单模式：统一使用 ✅ 表示"会下载"，取消勾选的进入黑名单
             selected_courses = Cutie.select_multiple(
                 options=choices,
                 ticked_indices=defaults,
                 deselected_unticked_prefix='\033[1m( )\033[0m ',
-                deselected_ticked_prefix='\033[1m(\033[31m✗\033[0;1m)\033[0m ',
+                deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
                 selected_unticked_prefix='\033[32;1m{ }\033[0m ',
-                selected_ticked_prefix='\033[31;1m{✗}\033[0m ',
+                selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
             )
         print('')
 
+        # 白名单模式：保存勾选的课程（要下载的）
+        # 黑名单模式：保存未勾选的课程（不要下载的）
         course_ids = []
         for i, course in enumerate(courses):
-            if i in selected_courses:
-                course_ids.append(course.id)
+            if use_whitelist:
+                # 白名单：勾选的课程加入白名单
+                if i in selected_courses:
+                    course_ids.append(course.id)
+            else:
+                # 黑名单：未勾选的课程加入黑名单
+                if i not in selected_courses:
+                    course_ids.append(course.id)
 
         if use_whitelist:
             self.config.set_property('download_course_ids', course_ids)
             self.config.remove_property('dont_download_course_ids')
-        elif not use_whitelist:
+        else:
             self.config.set_property('dont_download_course_ids', course_ids)
             self.config.remove_property('download_course_ids')
 
