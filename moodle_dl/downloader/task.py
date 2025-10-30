@@ -746,7 +746,7 @@ class Task:
                 if self.opts.download_linked_files and not self.is_filtered_external_domain():
                     try:
                         await self.external_download_url(
-                            add_token=False, delete_if_successful=False, needs_moodle_cookies=False
+                            add_token=False, delete_if_successful=True, needs_moodle_cookies=False
                         )
                         download_success = True
                         logging.debug('[%d] 外部链接下载成功，跳过快捷方式创建', self.task_id)
