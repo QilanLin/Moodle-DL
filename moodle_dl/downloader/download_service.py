@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import random
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -80,15 +81,29 @@ class DownloadService:
         # run all other tasks
         status_logger_task = asyncio.create_task(self.log_download_status())
 
-        dl_tasks = set()
-        for task in self.all_tasks:
-            if len(dl_tasks) >= self.opts.max_parallel_downloads:
-                # Wait for some download to finish before adding a new one
-                _done, dl_tasks = await asyncio.wait(dl_tasks, return_when=asyncio.FIRST_COMPLETED)
-            dl_tasks.add(asyncio.create_task(task.run()))
+        # ========== 并发下载（已禁用） ==========
+        # dl_tasks = set()
+        # for task in self.all_tasks:
+        #     if len(dl_tasks) >= self.opts.max_parallel_downloads:
+        #         # Wait for some download to finish before adding a new one
+        #         _done, dl_tasks = await asyncio.wait(dl_tasks, return_when=asyncio.FIRST_COMPLETED)
+        #     dl_tasks.add(asyncio.create_task(task.run()))
+        #
+        # # Wait for the remaining downloads to finish
+        # await asyncio.wait(dl_tasks)
 
-        # Wait for the remaining downloads to finish
-        await asyncio.wait(dl_tasks)
+        # ========== 单线程顺序下载（已启用） ==========
+        # 按顺序逐个下载，不使用并发
+        for i, task in enumerate(self.all_tasks):
+            await task.run()
+
+            # 在每个任务之间添加随机延迟（0.7 到 1.3 秒）
+            # 避免对服务器造成过大压力，模拟自然的下载行为
+            if i < len(self.all_tasks) - 1:  # 最后一个任务后不需要等待
+                delay = 0.7 + random.uniform(0, 0.6)
+                logging.debug(f'等待 {delay:.2f} 秒后继续下一个任务...')
+                await asyncio.sleep(delay)
+
         status_logger_task.cancel()
 
     async def log_download_status(self):
