@@ -174,7 +174,19 @@ class MoodleService:
 
         download_also_with_cookie = config.get_download_also_with_cookie()
         if cookie_handler is not None:
-            download_also_with_cookie = cookie_handler.test_cookies()
+            cookies_are_valid = cookie_handler.test_cookies()
+            if not cookies_are_valid and download_also_with_cookie:
+                # Allow using manually provided browser cookies even if autologin cookies fail
+                # This is needed for plugins like kalvidres that don't work with mobile API
+                logging.warning(
+                    'Autologin cookies failed validation, but download_also_with_cookie is enabled. '
+                    'Will attempt to use cookies from Cookies.txt file (e.g., browser-exported cookies). '
+                    'For kalvidres/kaltura videos, export cookies from your browser after logging in.'
+                )
+            elif cookies_are_valid:
+                download_also_with_cookie = True
+            else:
+                download_also_with_cookie = False
 
         all_mods_classes = get_all_mods_classes()
         filtered_changes = []
