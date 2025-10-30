@@ -527,21 +527,33 @@ class Task:
                 delete_if_successful=delete_if_successful,
             )
             return
-        if infos.is_html and not self.is_blocked_for_yt_dlp(url_to_download):
-            yt_dlp_processed = await self.download_using_yt_dlp(
-                dl_url=url_to_download,
-                infos=infos,
-                delete_if_successful=delete_if_successful,
+        # 已禁用：优先尝试 yt-dlp 下载视频
+        # if infos.is_html and not self.is_blocked_for_yt_dlp(url_to_download):
+        #     yt_dlp_processed = await self.download_using_yt_dlp(
+        #         dl_url=url_to_download,
+        #         infos=infos,
+        #         delete_if_successful=delete_if_successful,
+        #     )
+        #     if yt_dlp_processed:
+        #         return
+
+        # 对于 HTML 页面（如 YouTube/Tumblr 等公开平台），不下载网页源码，只创建快捷方式
+        if infos.is_html:
+            logging.debug(
+                '[%d] 检测到 HTML 页面（%s），跳过下载，将创建快捷方式',
+                self.task_id,
+                urlparse.urlparse(url_to_download).hostname,
             )
-            if yt_dlp_processed:
-                return
+            raise ValueError('HTML 页面不需要下载，只需创建快捷方式即可访问')
 
         logging.debug('[%d] Downloading URL directly', self.task_id)
 
         # Generate file name for external file
+        # 走到这里说明不是 HTML 页面，而是实际文件（PDF、MP4、ZIP 等）
         new_name, new_extension = os.path.splitext(infos.guessed_file_name)
-        if new_extension == '' or infos.is_html:
-            new_extension = '.html'
+        if new_extension == '':
+            # 无法识别文件扩展名，使用默认扩展名
+            new_extension = '.bin'
 
         if self.file.content_type == 'description-url' and new_name != '':
             self.filename = new_name + new_extension
@@ -729,12 +741,22 @@ class Task:
                 await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
 
             elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
-                # Create a shortcut and maybe downloading it
-                await self.create_shortcut()
+                # 先尝试下载 HTTP 内容
+                download_success = False
                 if self.opts.download_linked_files and not self.is_filtered_external_domain():
-                    await self.external_download_url(
-                        add_token=False, delete_if_successful=False, needs_moodle_cookies=False
-                    )
+                    try:
+                        await self.external_download_url(
+                            add_token=False, delete_if_successful=False, needs_moodle_cookies=False
+                        )
+                        download_success = True
+                        logging.debug('[%d] 外部链接下载成功，跳过快捷方式创建', self.task_id)
+                    except Exception as e:
+                        logging.debug('[%d] 外部链接下载失败：%r，将创建快捷方式作为备选', self.task_id, e)
+                        download_success = False
+
+                # 只有下载失败或不满足下载条件时才创建快捷方式
+                if not download_success:
+                    await self.create_shortcut()
 
             elif self.file.content_fileurl.startswith('data:'):
                 await self.create_data_url_file()
