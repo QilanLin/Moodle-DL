@@ -54,7 +54,9 @@ def init_config(config: ConfigHelper, opts: MoodleDlOpts):
 
     Log.info('你可以随时使用 --config 选项进行额外配置。')
 
-    do_config = Cutie.prompt_yes_or_no('你想要现在进行额外配置吗？')
+    # 默认直接进入配置向导，不再询问
+    # do_config = Cutie.prompt_yes_or_no('你想要现在进行额外配置吗？')
+    do_config = True
     if do_config:
         print('')
         Log.info('开始额外配置向导（14个配置步骤）...')
