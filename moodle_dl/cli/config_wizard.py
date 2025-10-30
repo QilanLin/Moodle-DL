@@ -243,20 +243,19 @@ class ConfigWizard:
                 )
             print('')
 
-            # 添加导航选项
-            nav_choices = ['继续下一步', '返回上一步（重新选择白名单/黑名单）', '完成配置并退出']
-            Log.blue('请选择：')
-            nav_choice = Cutie.select(options=nav_choices)
+            # 只询问是否确认选择，不添加完整的导航菜单（导航由外层统一处理）
+            confirm = Cutie.prompt_yes_or_no(
+                Log.blue_str('确认选择？'),
+                yes_text='确认',
+                no_text='重新选择白名单/黑名单',
+            )
 
-            if nav_choices[nav_choice] == '返回上一步（重新选择白名单/黑名单）':
-                # 重新循环，回到白名单/黑名单选择
+            if not confirm:
+                # 用户想重新选择白名单/黑名单，继续循环
                 print('')
                 continue
-            elif nav_choices[nav_choice] == '完成配置并退出':
-                # 保存当前选择但不退出整个向导，只是跳过后续配置步骤
-                pass
 
-            # 保存课程选择（继续下一步或完成配置都需要保存）
+            # 保存课程选择
             # 白名单模式：保存勾选的课程（要下载的）
             # 黑名单模式：保存未勾选的课程（不要下载的）
             course_ids = []
@@ -277,7 +276,7 @@ class ConfigWizard:
                 self.config.set_property('dont_download_course_ids', course_ids)
                 self.config.remove_property('download_course_ids')
 
-            # 退出循环
+            # 退出循环，返回外层导航
             break
 
     def _select_sections_to_download(self, sections: List[Dict], excluded: List[int]) -> List[int]:
