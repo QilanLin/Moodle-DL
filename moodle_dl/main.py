@@ -120,7 +120,7 @@ def run_main(config: ConfigHelper, opts: MoodleDlOpts):
             database.notified(changed_courses_to_notify)
 
         else:
-            logging.info('No changes found for the configured Moodle-Account.')
+            logging.info('为已配置的 Moodle 账户未找到变化。')
 
         if len(failed_downloads) > 0:
             for service in notify_services:
@@ -570,7 +570,7 @@ def main(args=None):
 
         choose_task(config, opts)
 
-        logging.info('All done. Exiting..')
+        logging.info('全部完成。正在退出..')
         ProcessLock.unlock(config.get_misc_files_path())
     except BaseException as base_err:  # pylint: disable=broad-except
         if not isinstance(base_err, ProcessLock.LockError):

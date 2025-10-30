@@ -20,7 +20,7 @@ class ConsoleService(NotificationService):
             diff_count += len(course.files)
 
         if diff_count > 0:
-            Log.success(f'{diff_count} changes found for the configured Moodle-Account.')
+            Log.success(f'为已配置的 Moodle 账户找到 {diff_count} 个变化。')
 
         for course in changes:
             if len(course.files) == 0:
@@ -49,13 +49,13 @@ class ConsoleService(NotificationService):
             print('\n')
 
     def notify_about_error(self, error_description: str):
-        Log.error(f'The following error occurred during execution:\n{error_description}')
+        Log.error(f'执行过程中发生以下错误：\n{error_description}')
 
     def notify_about_failed_downloads(self, failed_downloads: List[Task]):
         if len(failed_downloads) > 0:
             print('')
             Log.warning(
-                'Error while trying to download files, look at the log for more details. List of failed downloads:'
+                '尝试下载文件时出错，请查看日志以获取更多详细信息。失败的下载列表：'
             )
             print('')
 

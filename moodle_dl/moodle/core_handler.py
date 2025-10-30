@@ -135,9 +135,9 @@ class CoreHandler:
 
         async_features = []
         for ctr, course in enumerate(courses):
-            # Example: [ 5/16] Loaded course core 123 "Best course"
+            # Example: [ 5/16] 已加载课程核心 123 "Best course"
             loaded_message = (
-                f'[%(ctr){ctr_digits}d/%(total){ctr_digits}d] Loaded course core %(course_id)d "%(course_name)s"'
+                f'[%(ctr){ctr_digits}d/%(total){ctr_digits}d] 已加载课程核心 %(course_id)d "%(course_name)s"'
             )
 
             async_features.append(

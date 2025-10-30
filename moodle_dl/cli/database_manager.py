@@ -31,29 +31,27 @@ class DatabaseManager:
                     break
 
         print(
-            'This management tool will navigate you through a menu to'
-            + ' selectively remove file entries from the database so'
-            + ' that these files can be downloaded again.'
+            '此管理工具将引导你通过菜单选择性地从数据库中删除文件条目，'
+            + '以便可以重新下载这些文件。'
         )
 
         Log.warning(
-            'Only files that are missing locally but stored in the local'
-            + ' database are displayed in this tool. If a file is not missing'
-            + ' from a course, it will not be listed here at all.  Also, only'
-            + ' courses that are selected for download are displayed.'
+            '此工具仅显示本地缺失但存储在本地数据库中的文件。'
+            + '如果课程中的文件没有缺失，则根本不会在此处列出。'
+            + '此外，仅显示已选择下载的课程。'
         )
 
         Log.magenta(
-            'For more complicated operations on the database a DB browser for SQLite'
-            + ' is advantageous (https://sqlitebrowser.org/).'
+            '对于数据库的更复杂操作，建议使用 SQLite 的数据库浏览器'
+            + '（https://sqlitebrowser.org/）。'
         )
 
         if not courses:
-            print('No files are missing locally but stored in the local database. Nothing to do.')
+            print('没有文件在本地缺失但存储在本地数据库中。无需操作。')
             return
 
-        print('Choose one of the courses:')
-        print('[Confirm your selection with the Enter key]')
+        print('选择一个课程：')
+        print('[用回车键确认你的选择]')
         print('')
         selected_course_id = Cutie.select(options=course_options)
 
@@ -63,7 +61,7 @@ class DatabaseManager:
         sections = []
 
         # Add the option to select all sections
-        section_options.append(Log.magenta_str('[All sections]'))
+        section_options.append(Log.magenta_str('[所有章节]'))
         sections.append(None)  # Add None at index 0 to avoid index shifting
 
         for course_file in selected_course.files:
@@ -71,8 +69,8 @@ class DatabaseManager:
                 section_options.append(Log.magenta_str(course_file.section_name))
                 sections.append(course_file.section_name)
 
-        print('From which sections you want to select files?')
-        print('[You can select with the space bar and confirm your selection with the enter key]')
+        print('你想从哪些章节中选择文件？')
+        print('[你可以用空格键选择，用回车键确认选择]')
         print('')
 
         selected_sections_ids = Cutie.select_multiple(options=section_options, minimal_count=1)
@@ -89,7 +87,7 @@ class DatabaseManager:
         files = []
 
         # Add the option to select all files
-        file_options.append(Log.cyan_str('[All files]'))
+        file_options.append(Log.cyan_str('[所有文件]'))
         files.append(None)  # Add None at index 0 to avoid index shifting
 
         for course_file in selected_course.files:
@@ -97,8 +95,8 @@ class DatabaseManager:
                 file_options.append(Log.cyan_str(course_file.content_filename))
                 files.append(course_file)
 
-        print('Which of the files should be removed form the database, so that they will be re-downloaded?')
-        print('[You can select with the space bar and confirm your selection with the enter key]')
+        print('应该从数据库中删除哪些文件，以便重新下载它们？')
+        print('[你可以用空格键选择，用回车键确认选择]')
         print('')
         selected_files = Cutie.select_multiple(options=file_options)
 
@@ -120,21 +118,20 @@ class DatabaseManager:
         stored_files = self.state_recorder.get_old_files()
 
         if len(stored_files) <= 0:
-            print('No old copies of files found. Nothing to do.')
+            print('未找到文件的旧副本。无需操作。')
             return
 
         print(
-            'This management tool will navigate you through a menu to'
-            + ' selectively remove old copies of files from the database '
-            + ' and form the file system'
+            '此管理工具将引导你通过菜单选择性地从数据库'
+            + '和文件系统中删除文件的旧副本。'
         )
 
         course_options = []
         for course in stored_files:
             course_options.append(Log.blue_str(course.fullname))
 
-        print('Choose one of the courses:')
-        print('[Confirm your selection with the Enter key]')
+        print('选择一个课程：')
+        print('[用回车键确认你的选择]')
         print('')
         selected_course_id = Cutie.select(options=course_options)
 
@@ -144,7 +141,7 @@ class DatabaseManager:
         sections = []
 
         # Add the option to select all sections
-        section_options.append(Log.magenta_str('[All sections]'))
+        section_options.append(Log.magenta_str('[所有章节]'))
         sections.append(None)  # Add None at index 0 to avoid index shifting
 
         for course_file in selected_course.files:
@@ -152,8 +149,8 @@ class DatabaseManager:
                 section_options.append(Log.magenta_str(course_file.section_name))
                 sections.append(course_file.section_name)
 
-        print('From which sections you want to delete old files?')
-        print('[You can select with the space bar and confirm your selection with the enter key]')
+        print('你想从哪些章节中删除旧文件？')
+        print('[你可以用空格键选择，用回车键确认选择]')
         print('')
 
         selected_sections_ids = Cutie.select_multiple(options=section_options, minimal_count=1)
@@ -170,7 +167,7 @@ class DatabaseManager:
         files = []
 
         # Add the option to select all files
-        file_options.append(Log.cyan_str('[All files]'))
+        file_options.append(Log.cyan_str('[所有文件]'))
         files.append(None)  # Add None at index 0 to avoid index shifting
 
         for course_file in selected_course.files:
@@ -178,8 +175,8 @@ class DatabaseManager:
                 file_options.append(Log.cyan_str(course_file.content_filename))
                 files.append(course_file)
 
-        print('Which of the files should be deleted?')
-        print('[You can select with the space bar and confirm your selection with the enter key]')
+        print('应该删除哪些文件？')
+        print('[你可以用空格键选择，用回车键确认选择]')
         print('')
         selected_files = Cutie.select_multiple(options=file_options)
 

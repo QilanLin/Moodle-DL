@@ -52,8 +52,8 @@ class MoodleService:
                 decoded = str(base64.b64decode(address))
             else:
                 logging.error(
-                    'This might not be the correct url. The token was not found in the input.'
-                    + ' Have you perhaps only inserted the token instead of the whole URL?'
+                    '这可能不是正确的 URL。在输入中未找到令牌。'
+                    + '你是否只插入了令牌而不是完整的 URL？'
                 )
                 return None
         else:
@@ -61,7 +61,7 @@ class MoodleService:
 
         splitted = decoded.split(':::')
         if len(splitted) < 2:
-            logging.error('The token could not be decoded. Did you perhaps not copy the complete url?')
+            logging.error('无法解码令牌。你是否没有复制完整的 URL？')
             return None
 
         token = re.sub(r'[^A-Za-z0-9]+', '', splitted[1])
@@ -91,9 +91,9 @@ class MoodleService:
     def get_user_id_and_version(self, core_handler: CoreHandler) -> Tuple[int, int]:
         user_id, version = self.config.get_userid_and_version()
         if user_id is None or version is None:
-            logging.info('Downloading account information')
+            logging.info('正在下载账户信息')
             user_id, version = core_handler.fetch_userid_and_version()
-            logging.debug('Detected moodle version: %d', version)
+            logging.debug('检测到 Moodle 版本：%d', version)
         else:
             core_handler.version = version
         return user_id, version
@@ -104,7 +104,7 @@ class MoodleService:
         It does not change the known state, nor does it download the files.
         @return: List with detected changes between the new and old state
         """
-        logging.debug('Fetching current Moodle state...')
+        logging.debug('正在获取当前 Moodle 状态...')
         token = self.config.get_token()
         privatetoken = self.config.get_privatetoken()
         moodle_url = self.config.get_moodle_URL()
@@ -124,12 +124,12 @@ class MoodleService:
         mods = get_all_mods(request_helper, version, user_id, database.get_last_timestamp_per_mod_module(), self.config)
         fetched_mods_files = await fetch_mods_files(mods, courses, core_contents)
 
-        logging.debug('Combine API results...')
+        logging.debug('正在合并 API 结果...')
         ResultBuilder(moodle_url, version, get_mod_plurals()).add_files_to_courses(
             courses, core_contents, fetched_mods_files
         )
 
-        logging.debug('Checking for changes...')
+        logging.debug('正在检查变化...')
         changes = database.changes_of_new_version(courses)
         changes = self.add_options_to_courses(changes)
         changes = self.filter_courses(changes, self.config, cookie_handler, courses)
@@ -194,7 +194,7 @@ class MoodleService:
                         not_online = False
                         break
                 if not_online:
-                    logging.warning('The Moodle course with id %d is no longer available online.', course.id)
+                    logging.warning('ID 为 %d 的 Moodle 课程在线上已不可用。', course.id)
                     continue
 
             course_files = []

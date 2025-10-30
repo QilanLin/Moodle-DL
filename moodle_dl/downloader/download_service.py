@@ -45,9 +45,9 @@ class DownloadService:
                     self.status.bytes_to_download += course_file.content_filesize
                     self.status.files_to_download += 1
         if self.status.files_to_download > 0:
-            logging.info('Download queue contains %d tasks', self.status.files_to_download)
+            logging.info('下载队列包含 %d 个任务', self.status.files_to_download)
         else:
-            logging.debug('Download queue is empty')
+            logging.debug('下载队列为空')
         return all_tasks
 
     def status_callback(self, event: DlEvent, task: Task, **extra_args):
@@ -113,14 +113,14 @@ class DownloadService:
             last_bytes_downloaded = self.status.bytes_downloaded
 
             message_line = (
-                f'Total: {percentage}'
+                f'总计: {percentage}'
                 + f' {format_bytes(self.status.bytes_downloaded):>5} / {format_bytes(self.status.bytes_to_download):<5}'
-                + f' | Done: {(self.status.files_downloaded + self.status.files_failed):>5}'
+                + f' | 完成: {(self.status.files_downloaded + self.status.files_failed):>5}'
                 + f' / {self.status.files_to_download:<5}'
-                + f' | Speed: {format_speed(speed)}'
+                + f' | 速度: {format_speed(speed)}'
             )
             if self.status.files_failed > 0:
-                message_line += f' | Failed: {self.status.files_failed}'
+                message_line += f' | 失败: {self.status.files_failed}'
 
             logging.info(message_line)
 

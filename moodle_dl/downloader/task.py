@@ -188,13 +188,13 @@ class Task:
         def error(self, msg):
             msg = self.clean_msg(msg)
             if msg.find('Unsupported URL') >= 0:
-                logging.debug('[%d] yt-dlp Error: %s', self.task_id, msg)
+                logging.debug('[%d] yt-dlp 错误：%s', self.task_id, msg)
                 return
             if msg.find('no suitable InfoExtractor') >= 0:
-                logging.debug('[%d] yt-dlp Error: %s', self.task_id, msg)
+                logging.debug('[%d] yt-dlp 错误：%s', self.task_id, msg)
                 return
             # This is a critical error, with high probability the link can be downloaded at a later time.
-            logging.error('[%d] yt-dlp Error: %s', self.task_id, msg)
+            logging.error('[%d] yt-dlp 错误：%s', self.task_id, msg)
             self.task.status.yt_dlp_failed_with_error = True
 
     def yt_hook(self, data: Dict):
@@ -345,7 +345,7 @@ class Task:
             except aiohttp.InvalidURL:
                 # don't download urls like 'mailto:name@provider.com'
                 logging.debug(
-                    '[%d] Download of the external file was canceled because the URL has an invalid format',
+                    '[%d] 外部文件下载已取消，因为 URL 格式无效',
                     self.task_id,
                 )
                 return None
@@ -353,12 +353,12 @@ class Task:
                 if head_err.status in [408, 409, 429]:
                     # 408 (timeout) or 409 (conflict) and 429 (too many requests)
                     logging.warning(
-                        '[%d] Head request failed with status: %s %s', self.task_id, head_err.status, head_err.message
+                        '[%d] Head 请求失败，状态：%s %s', self.task_id, head_err.status, head_err.message
                     )
                     raise head_err from None
 
                 logging.warning(
-                    '[%d] Download of the external file was canceled because of HTTP error: %s %s',
+                    '[%d] 外部文件下载已取消，因为 HTTP 错误：%s %s',
                     self.task_id,
                     head_err.status,
                     head_err.message,
@@ -441,8 +441,8 @@ class Task:
             if not delete_if_successful:
                 PT.remove_file(self.file.saved_to)
             raise RuntimeError(
-                'yt-dlp could not download the URL.'
-                + ' You can ignore this error by running `moodle-dl --ignore-ytdl-errors` once.'
+                'yt-dlp 无法下载该 URL。'
+                + '你可以通过运行 `moodle-dl --ignore-ytdl-errors` 一次来忽略此错误。'
             )
 
         # We want to download the URL because yt-dlp has no extractor for it
@@ -752,7 +752,7 @@ class Task:
             self.status.error = dl_err
 
             logging.error('[%d] %r', self.task_id, dl_err)
-            logging.error('[%d] Error while trying to download file: %s', self.task_id, dl_err)
+            logging.error('[%d] 尝试下载文件时出错：%s', self.task_id, dl_err)
 
             if os.path.isfile(self.file.saved_to):
                 file_size = 0

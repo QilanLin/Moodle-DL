@@ -64,7 +64,7 @@ class ConfigWizard:
 
         while current_step < len(steps):
             print('\n' + '=' * 80)
-            Log.info(f'配置步骤 {current_step + 1}/{len(steps)}: {steps[current_step][0]}')
+            Log.info(f'额外配置步骤 {current_step + 1}/{len(steps)}: {steps[current_step][0]}')
             print('=' * 80 + '\n')
 
             # 执行当前步骤
@@ -215,11 +215,29 @@ class ConfigWizard:
 
         if use_whitelist:
             Log.blue('哪些课程应该被下载？')
+            Log.info('[勾选✅的课程会被下载]')
+            # 白名单模式：使用 ✅ 表示"会下载"
+            selected_courses = Cutie.select_multiple(
+                options=choices,
+                ticked_indices=defaults,
+                deselected_unticked_prefix='\033[1m( )\033[0m ',
+                deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
+                selected_unticked_prefix='\033[32;1m{ }\033[0m ',
+                selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+            )
         else:
             Log.blue('哪些课程不应该被下载？')
-        Log.info('[你可以用空格键选择，用回车键确认选择]')
+            Log.info('[勾选✗的课程不会被下载]')
+            # 黑名单模式：使用 ✗ 表示"不会下载"
+            selected_courses = Cutie.select_multiple(
+                options=choices,
+                ticked_indices=defaults,
+                deselected_unticked_prefix='\033[1m( )\033[0m ',
+                deselected_ticked_prefix='\033[1m(\033[31m✗\033[0;1m)\033[0m ',
+                selected_unticked_prefix='\033[32;1m{ }\033[0m ',
+                selected_ticked_prefix='\033[31;1m{✗}\033[0m ',
+            )
         print('')
-        selected_courses = Cutie.select_multiple(options=choices, ticked_indices=defaults)
 
         course_ids = []
         for i, course in enumerate(courses):

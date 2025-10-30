@@ -57,7 +57,7 @@ class MoodleMod(metaclass=ABCMeta):
             return {}
 
         result = await self.real_fetch_mod_entries(courses, core_contents)
-        logging.info('Loaded all %s', self.MOD_PLURAL_NAME)
+        logging.info('已加载所有%s', self.MOD_PLURAL_NAME)
         return result
 
     def get_indexed_ids_of_mod_instances(self, mod_instances: Dict[int, Dict[int, Dict]]):
