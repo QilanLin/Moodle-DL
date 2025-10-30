@@ -48,7 +48,7 @@ setup(
         'requests>=2.24.0',
         'sentry_sdk>=0.13.5',
         'xmpppy>=0.7.1',
-        'yt_dlp>=2024.3.10',
+        # 'yt_dlp>=2024.3.10',  # 已禁用：不再使用 yt-dlp 下载视频
     ],
     classifiers=[
         'Development Status :: 5 - Production/Stable',

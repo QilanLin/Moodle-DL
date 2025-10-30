@@ -21,9 +21,9 @@ from urllib.error import ContentTooShortError
 import aiofiles
 import aiohttp
 import html2text
-import yt_dlp
+# import yt_dlp  # 已禁用：不再使用 yt-dlp 下载视频
 
-from moodle_dl.downloader.extractors import add_additional_extractors
+# from moodle_dl.downloader.extractors import add_additional_extractors  # 已禁用：yt-dlp extractors 不再需要
 from moodle_dl.types import (
     Course,
     DlEvent,
