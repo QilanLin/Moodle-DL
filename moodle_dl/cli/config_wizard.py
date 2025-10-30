@@ -193,74 +193,92 @@ class ConfigWizard:
         print('')
         use_whitelist = len(dont_download_course_ids) == 0
 
-        use_whitelist = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想为课程创建白名单还是黑名单？'),
-            default_is_yes=use_whitelist,
-            yes_text='白名单',
-            no_text='黑名单',
-        )
-
-        choices = []
-        defaults = []
-        for i, course in enumerate(courses):
-            choices.append(f'{int(course.id):5}\t{course.fullname}')
-
-            # 复选框的含义统一为"是否下载这门课程"
-            # 白名单模式：默认全不选（空白名单），勾选的加入白名单
-            # 黑名单模式：默认全选（下载所有），取消勾选的加入黑名单
-            if use_whitelist:
-                # 白名单：只勾选在 download_course_ids 中的课程
-                if course.id in download_course_ids:
-                    defaults.append(i)
-            else:
-                # 黑名单：勾选所有不在 dont_download_course_ids 中的课程（即要下载的课程）
-                if course.id not in dont_download_course_ids:
-                    defaults.append(i)
-
-        if use_whitelist:
-            Log.blue('哪些课程应该被下载？')
-            Log.info('[勾选✅的课程会被下载，新课程默认不下载]')
-            selected_courses = Cutie.select_multiple(
-                options=choices,
-                ticked_indices=defaults,
-                deselected_unticked_prefix='\033[1m( )\033[0m ',
-                deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
-                selected_unticked_prefix='\033[32;1m{ }\033[0m ',
-                selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+        while True:
+            use_whitelist = Cutie.prompt_yes_or_no(
+                Log.blue_str('你想为课程创建白名单还是黑名单？'),
+                default_is_yes=use_whitelist,
+                yes_text='白名单',
+                no_text='黑名单',
             )
-        else:
-            Log.blue('哪些课程应该被下载？')
-            Log.info('[勾选✅的课程会被下载，新课程默认自动下载]')
-            # 黑名单模式：统一使用 ✅ 表示"会下载"，取消勾选的进入黑名单
-            selected_courses = Cutie.select_multiple(
-                options=choices,
-                ticked_indices=defaults,
-                deselected_unticked_prefix='\033[1m( )\033[0m ',
-                deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
-                selected_unticked_prefix='\033[32;1m{ }\033[0m ',
-                selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
-            )
-        print('')
 
-        # 白名单模式：保存勾选的课程（要下载的）
-        # 黑名单模式：保存未勾选的课程（不要下载的）
-        course_ids = []
-        for i, course in enumerate(courses):
+            choices = []
+            defaults = []
+            for i, course in enumerate(courses):
+                choices.append(f'{int(course.id):5}\t{course.fullname}')
+
+                # 复选框的含义统一为"是否下载这门课程"
+                # 白名单模式：默认全不选（空白名单），勾选的加入白名单
+                # 黑名单模式：默认全选（下载所有），取消勾选的加入黑名单
+                if use_whitelist:
+                    # 白名单：只勾选在 download_course_ids 中的课程
+                    if course.id in download_course_ids:
+                        defaults.append(i)
+                else:
+                    # 黑名单：勾选所有不在 dont_download_course_ids 中的课程（即要下载的课程）
+                    if course.id not in dont_download_course_ids:
+                        defaults.append(i)
+
             if use_whitelist:
-                # 白名单：勾选的课程加入白名单
-                if i in selected_courses:
-                    course_ids.append(course.id)
+                Log.blue('哪些课程应该被下载？')
+                Log.info('[勾选✅的课程会被下载，新课程默认不下载]')
+                selected_courses = Cutie.select_multiple(
+                    options=choices,
+                    ticked_indices=defaults,
+                    deselected_unticked_prefix='\033[1m( )\033[0m ',
+                    deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
+                    selected_unticked_prefix='\033[32;1m{ }\033[0m ',
+                    selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+                )
             else:
-                # 黑名单：未勾选的课程加入黑名单
-                if i not in selected_courses:
-                    course_ids.append(course.id)
+                Log.blue('哪些课程应该被下载？')
+                Log.info('[勾选✅的课程会被下载，新课程默认自动下载]')
+                # 黑名单模式：统一使用 ✅ 表示"会下载"，取消勾选的进入黑名单
+                selected_courses = Cutie.select_multiple(
+                    options=choices,
+                    ticked_indices=defaults,
+                    deselected_unticked_prefix='\033[1m( )\033[0m ',
+                    deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
+                    selected_unticked_prefix='\033[32;1m{ }\033[0m ',
+                    selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+                )
+            print('')
 
-        if use_whitelist:
-            self.config.set_property('download_course_ids', course_ids)
-            self.config.remove_property('dont_download_course_ids')
-        else:
-            self.config.set_property('dont_download_course_ids', course_ids)
-            self.config.remove_property('download_course_ids')
+            # 添加导航选项
+            nav_choices = ['继续下一步', '返回上一步（重新选择白名单/黑名单）', '完成配置并退出']
+            Log.blue('请选择：')
+            nav_choice = Cutie.select(options=nav_choices)
+
+            if nav_choices[nav_choice] == '返回上一步（重新选择白名单/黑名单）':
+                # 重新循环，回到白名单/黑名单选择
+                print('')
+                continue
+            elif nav_choices[nav_choice] == '完成配置并退出':
+                # 保存当前选择但不退出整个向导，只是跳过后续配置步骤
+                pass
+
+            # 保存课程选择（继续下一步或完成配置都需要保存）
+            # 白名单模式：保存勾选的课程（要下载的）
+            # 黑名单模式：保存未勾选的课程（不要下载的）
+            course_ids = []
+            for i, course in enumerate(courses):
+                if use_whitelist:
+                    # 白名单：勾选的课程加入白名单
+                    if i in selected_courses:
+                        course_ids.append(course.id)
+                else:
+                    # 黑名单：未勾选的课程加入黑名单
+                    if i not in selected_courses:
+                        course_ids.append(course.id)
+
+            if use_whitelist:
+                self.config.set_property('download_course_ids', course_ids)
+                self.config.remove_property('dont_download_course_ids')
+            else:
+                self.config.set_property('dont_download_course_ids', course_ids)
+                self.config.remove_property('download_course_ids')
+
+            # 退出循环
+            break
 
     def _select_sections_to_download(self, sections: List[Dict], excluded: List[int]) -> List[int]:
         """
