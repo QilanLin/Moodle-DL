@@ -122,7 +122,7 @@ class NotificationsWizard:
 
                 raw_send_error_msg = ''
                 while raw_send_error_msg not in ['y', 'n']:
-                    raw_send_error_msg = input('Do you want to also get error reports sent in telegram? [y/n]   ')
+                    raw_send_error_msg = input('你想要同时通过 Telegram 接收错误报告吗？[y/n]   ')
 
                 do_send_error_msg = raw_send_error_msg == 'y'
 
@@ -137,33 +137,33 @@ class NotificationsWizard:
     def interactively_configure_discord(self) -> None:
         "Guides the user through the configuration of the discord notification."
 
-        do_discord = Cutie.prompt_yes_or_no('Do you want to activate Notifications via Discord?')
+        do_discord = Cutie.prompt_yes_or_no('你想要激活 Discord 通知吗？')
 
         if not do_discord:
             self.config.remove_property('discord')
         else:
-            print('[The following Inputs are not validated!]')
+            print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
-                webhook_urls = input('Discord webhook URLs separated by commas: ')
+                webhook_urls = input('Discord webhook URLs（多个用逗号分隔）: ')
                 webhook_urls = webhook_urls.split(',')
                 webhook_urls = [webhook_url.strip() for webhook_url in webhook_urls]
 
-                print('Testing Dicord-Config...')
+                print('正在测试 Discord 配置...')
 
                 try:
                     discord_shooter = DiscordShooter(webhook_urls)
-                    discord_shooter.send_msg('This is a test message from moodle-dl!')
+                    discord_shooter.send_msg('这是来自 moodle-dl 的测试消息！')
 
                 except (ConnectionError, RuntimeError, RequestRejectedError) as e:
-                    print(f'Error while sending the test message: {str(e)}')
+                    print(f'发送测试消息时出错: {str(e)}')
                     continue
 
                 else:
                     input(
-                        'Please check if you received the Testmessage.'
-                        + ' If yes, confirm with Return.\nIf not, exit'
-                        + ' this program ([CTRL]+[C]) and try again later.'
+                        '请检查你是否收到了测试消息。'
+                        + '如果收到，按回车确认。\n如果没有，退出'
+                        + '此程序（[CTRL]+[C]）并稍后重试。'
                     )
                     config_valid = True
 
@@ -174,35 +174,35 @@ class NotificationsWizard:
     def interactively_configure_ntfy(self) -> None:
         "Guides the user through the configuration of the ntfy notification."
 
-        do_ntfy = Cutie.prompt_yes_or_no('Do you want to activate Notifications via ntfy?')
+        do_ntfy = Cutie.prompt_yes_or_no('你想要激活 ntfy 通知吗？')
 
         if not do_ntfy:
             self.config.remove_property('ntfy')
         else:
-            print('[The following Inputs are not validated!]')
+            print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
-                topic = input('ntfy topic: ')
-                do_ntfy_server = Cutie.prompt_yes_or_no('Do you want to set a custom ntfy server?')
+                topic = input('ntfy 主题: ')
+                do_ntfy_server = Cutie.prompt_yes_or_no('你想要设置自定义 ntfy 服务器吗？')
                 server = None
                 if do_ntfy_server:
-                    server = input('ntfy server: ')
+                    server = input('ntfy 服务器: ')
 
-                print('Testing server-Config...')
+                print('正在测试服务器配置...')
 
                 try:
                     ntfy_shooter = NtfyShooter(topic=topic, server=server)
-                    ntfy_shooter.send(title='', message='This is a test message from moodle-dl!')
+                    ntfy_shooter.send(title='', message='这是来自 moodle-dl 的测试消息！')
 
                 except (ConnectionError, RuntimeError) as e:
-                    print(f'Error while sending the test message: {str(e)}')
+                    print(f'发送测试消息时出错: {str(e)}')
                     continue
 
                 else:
                     input(
-                        'Please check if you received the Testmessage.'
-                        + ' If yes, confirm with Return.\nIf not, exit'
-                        + ' this program ([CTRL]+[C]) and try again later.'
+                        '请检查你是否收到了测试消息。'
+                        + '如果收到，按回车确认。\n如果没有，退出'
+                        + '此程序（[CTRL]+[C]）并稍后重试。'
                     )
                     config_valid = True
 
@@ -215,41 +215,41 @@ class NotificationsWizard:
     def interactively_configure_xmpp(self) -> None:
         "Guides the user through the configuration of the xmpp notification."
 
-        do_xmpp = Cutie.prompt_yes_or_no('Do you want to activate Notifications via XMPP?')
+        do_xmpp = Cutie.prompt_yes_or_no('你想要激活 XMPP 通知吗？')
 
         if not do_xmpp:
             self.config.remove_property('xmpp')
         else:
-            print('[The following Inputs are not validated!]')
+            print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
-                sender = input('JID of the Sender:   ')
-                password = getpass('Password for the Sender [no output]:   ')
-                target = input('JID of the Target:   ')
-                print('Testing XMPP-Config...')
+                sender = input('发送者的 JID:   ')
+                password = getpass('发送者的密码 [无输出显示]:   ')
+                target = input('接收者的 JID:   ')
+                print('正在测试 XMPP 配置...')
 
                 try:
                     xmpp_shooter = XmppShooter(sender, password, target)
-                    xmpp_shooter.send('This is a test message from moodle-dl!')
+                    xmpp_shooter.send('这是来自 moodle-dl 的测试消息！')
                 except (
                     ConnectionError,
                     OSError,
                     RuntimeError,
                 ) as e:
-                    print(f'Error while sending the test message: {str(e)}')
+                    print(f'发送测试消息时出错: {str(e)}')
                     continue
 
                 else:
                     input(
-                        'Please check if you received the Testmessage.'
-                        + ' If yes, confirm with Return.\nIf not, exit'
-                        + ' this program ([CTRL]+[C]) and try again later.'
+                        '请检查你是否收到了测试消息。'
+                        + '如果收到，按回车确认。\n如果没有，退出'
+                        + '此程序（[CTRL]+[C]）并稍后重试。'
                     )
                     config_valid = True
 
                 raw_send_error_msg = ''
                 while raw_send_error_msg not in ['y', 'n']:
-                    raw_send_error_msg = input('Do you want to also get error reports sent in xmpp? [y/n]   ')
+                    raw_send_error_msg = input('你想要同时通过 XMPP 接收错误报告吗？[y/n]   ')
 
                 do_send_error_msg = raw_send_error_msg == 'y'
 
