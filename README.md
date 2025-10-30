@@ -21,21 +21,28 @@
 Discussions about the development take place mainly on [Github](https://github.com/C0D3D3V/Moodle-DL/issues), but also on [Discord](https://discord.gg/HNg7CsqEnZ).
 
 ## 🚀 Setup
-[![Deploy with Docker](https://img.shields.io/badge/deploy%20with-docker-0db7ed)](https://github.com/C0D3D3V/Moodle-DL/wiki/Run-with-Docker)
-[![latest packaged version(s)](https://repology.org/badge/latest-versions/moodle-dl.svg)](https://repology.org/project/moodle-dl/versions)
-[![Packaging status](https://repology.org/badge/tiny-repos/moodle-dl.svg)](https://repology.org/project/moodle-dl/versions)
-[![Discord Shield](https://discordapp.com/api/guilds/969140782655242281/widget.png?style=shield)](https://discord.gg/HNg7CsqEnZ)
+
+> **Note**: This is a modified version with Chinese localization and optimized download logic. Install from source instead of PyPI.
+
+### Install from Source
 
 1. Install [Python](https://www.python.org/) >=3.7
-2. Install [ffmpeg](https://github.com/C0D3D3V/Moodle-DL/wiki/Installing-ffmpeg)
-3. Run `pip install moodle-dl` as administrator. </br>
-    <sup>(To upgrade from an older Version use `pip install -U moodle-dl` instead)</sup>
-4. **[Windows only]** 
+2. Clone this repository:
+   ```bash
+   git clone <repository-url>
+   cd Moodle-DL
+   ```
+3. Install dependencies:
+   ```bash
+   pip install -e .
+   ```
+   <sup>(This installs the package in editable mode, allowing you to use your local modifications)</sup>
+4. **[Windows only]**
 <details>
 <summary markdown="span">If step 3 failed, you may need to do additional steps. Click here to see the additional Instructions</summary>
 
 
-You may need to install [Visual C++ compiler for Python](https://wiki.python.org/moin/WindowsCompilers#Microsoft_Visual_C.2B-.2B-_14.2_standalone:_Build_Tools_for_Visual_Studio_2019_.28x86.2C_x64.2C_ARM.2C_ARM64.29) to build all the dependencies successfully: 
+You may need to install [Visual C++ compiler for Python](https://wiki.python.org/moin/WindowsCompilers#Microsoft_Visual_C.2B-.2B-_14.2_standalone:_Build_Tools_for_Visual_Studio_2019_.28x86.2C_x64.2C_ARM.2C_ARM64.29) to build all the dependencies successfully:
 
   - Download and Install Microsoft [Build Tools for Visual Studio 2019 from here](https://aka.ms/vs/16/release/vs_buildtools.exe)
   - In Build tools, install C++ build tools and ensure the latest versions of MSVCv142 - VS 2019 C++ x64/x86 build tools and Windows 10 SDK are checked.
@@ -45,6 +52,17 @@ You may need to install [Visual C++ compiler for Python](https://wiki.python.org
 If you run the program on **Windows**, please use [Powershell or CMD](https://www.isunshare.com/windows-10/5-ways-to-open-windows-powershell-in-windows-10.html). Please do not use a mintty like MINGW or similar.
 
 5. Run `moodle-dl --help` to see all available options.
+
+### Key Modifications in This Fork
+
+- **Complete Chinese localization**: All user interfaces, configuration wizards, and download messages are in Chinese
+- **Improved navigation**: Added back/forward navigation in the configuration wizard
+- **Better UX**: Different checkbox symbols (✅/✗) for whitelist vs blacklist modes
+- **Optimized download logic**:
+  - Disabled yt-dlp for video downloads (saves bandwidth and storage)
+  - Only creates shortcuts for HTML pages (YouTube, Tumblr, etc.) instead of downloading page source
+  - Downloads actual files (PDFs, videos, ZIP files) when linked externally
+  - Removed yt-dlp dependency to reduce installation size
 
  
 
