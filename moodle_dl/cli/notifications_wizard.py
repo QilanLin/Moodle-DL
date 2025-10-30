@@ -33,44 +33,44 @@ class NotificationsWizard:
     def interactively_configure_mail(self) -> None:
         "Guides the user through the configuration of the mail notification."
 
-        do_mail = Cutie.prompt_yes_or_no('Do you want to activate Notifications via mail?')
+        do_mail = Cutie.prompt_yes_or_no('你想要激活邮件通知吗？')
 
         if not do_mail:
             self.config.remove_property('mail')
         else:
-            print('[The following Inputs are not validated!]')
+            print('[以下输入不会被验证！]')
 
             config_valid = False
             while not config_valid:
-                sender = input('E-Mail-Address of the Sender:   ')
-                server_host = input('Host of the SMTP-Server:   ')
-                server_port = input('Port of the SMTP-Server [STARTTLS, default 587]:   ')
+                sender = input('发件人的电子邮件地址:   ')
+                server_host = input('SMTP 服务器主机:   ')
+                server_port = input('SMTP 服务器端口 [STARTTLS，默认 587]:   ')
                 if server_port == '':
-                    print('Using default port 587!')
+                    print('使用默认端口 587！')
                     server_port = '587'
-                username = input('Username for the SMTP-Server:   ')
-                password = getpass('Password for the SMTP-Server [no output]:   ')
-                target = input('E-Mail-Address of the Target:   ')
+                username = input('SMTP 服务器用户名:   ')
+                password = getpass('SMTP 服务器密码 [无输出显示]:   ')
+                target = input('收件人的电子邮件地址:   ')
 
-                print('Testing Mail-Config...')
+                print('正在测试邮件配置...')
                 welcome_content = create_full_welcome_mail()
                 mail_shooter = MailShooter(sender, server_host, int(server_port), username, password)
                 try:
                     mail_shooter.send(target, 'Hey!', welcome_content[0], welcome_content[1])
                 except OSError as e:
-                    print(f'Error while sending the test mail: {str(e)}')
+                    print(f'发送测试邮件时出错: {str(e)}')
                     continue
                 else:
                     input(
-                        'Please check if you received the Welcome-Mail.'
-                        + ' If yes, confirm with Return.\nIf not, exit'
-                        + ' this program ([CTRL]+[C]) and try again later.'
+                        '请检查你是否收到了欢迎邮件。'
+                        + '如果收到，按回车确认。\n如果没有，退出'
+                        + '此程序（[CTRL]+[C]）并稍后重试。'
                     )
                     config_valid = True
 
                 raw_send_error_msg = ''
                 while raw_send_error_msg not in ['y', 'n']:
-                    raw_send_error_msg = input('Do you want to also get error reports sent by mail? [y/n]   ')
+                    raw_send_error_msg = input('你想要同时通过邮件接收错误报告吗？[y/n]   ')
                 do_send_error_msg = raw_send_error_msg == 'y'
 
                 mail_cfg = {
@@ -88,35 +88,35 @@ class NotificationsWizard:
     def interactively_configure_telegram(self) -> None:
         "Guides the user through the configuration of the telegram notification."
 
-        do_telegram = Cutie.prompt_yes_or_no('Do you want to activate Notifications via Telegram?')
+        do_telegram = Cutie.prompt_yes_or_no('你想要激活 Telegram 通知吗？')
 
         if not do_telegram:
             self.config.remove_property('telegram')
         else:
-            print('[The following Inputs are not validated!]')
+            print('[以下输入不会被验证！]')
             print(
-                'Open the following link for help in setting up telegram notifications:'
+                '打开以下链接获取设置 Telegram 通知的帮助：'
                 + ' https://github.com/C0D3D3V/Moodle-DL/wiki/Telegram-Notification'
             )
             config_valid = False
             while not config_valid:
-                telegram_token = input('Telegram Token:    ')
-                telegram_chatID = input('Telegram Chat ID:   ')
+                telegram_token = input('Telegram 令牌:    ')
+                telegram_chatID = input('Telegram 聊天 ID:   ')
 
-                print('Testing Telegram-Config...')
+                print('正在测试 Telegram 配置...')
 
                 try:
                     telegram_shooter = TelegramShooter(telegram_token, telegram_chatID)
-                    telegram_shooter.send('This is a test message from moodle-dl!')
+                    telegram_shooter.send('这是来自 moodle-dl 的测试消息！')
                 except (ConnectionError, RuntimeError, RequestRejectedError) as e:
-                    print(f'Error while sending the test message: {str(e)}')
+                    print(f'发送测试消息时出错: {str(e)}')
                     continue
 
                 else:
                     input(
-                        'Please check if you received the Testmessage.'
-                        + ' If yes, confirm with Return.\nIf not, exit'
-                        + ' this program ([CTRL]+[C]) and try again later.'
+                        '请检查你是否收到了测试消息。'
+                        + '如果收到，按回车确认。\n如果没有，退出'
+                        + '此程序（[CTRL]+[C]）并稍后重试。'
                     )
                     config_valid = True
 

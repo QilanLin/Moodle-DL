@@ -39,25 +39,57 @@ class ConfigWizard:
             courses = self.core_handler.fetch_courses(user_id)
 
         except (RequestRejectedError, ValueError, RuntimeError, ConnectionError) as error:
-            Log.error(f'Error while communicating with the Moodle System! ({error})')
+            Log.error(f'与 Moodle 系统通信时出错！({error})')
             sys.exit(1)
 
-        self._select_courses_to_download(courses)
-        self._set_options_of_courses(courses)
-        self._select_should_download_submissions()
-        self._select_should_download_descriptions()
-        self._select_should_download_links_in_descriptions()
-        self._select_should_download_databases()
-        self._select_should_download_forums()
-        self._select_should_download_quizzes()
-        self._select_should_download_lessons()
-        self._select_should_download_workshops()
-        self._select_should_download_books()
-        self._select_should_download_calendars()
-        self._select_should_download_linked_files()
-        self._select_should_download_also_with_cookie()
+        # 配置步骤菜单
+        steps = [
+            ('选择要下载的课程', lambda: self._select_courses_to_download(courses)),
+            ('设置课程选项', lambda: self._set_options_of_courses(courses)),
+            ('配置作业提交下载', self._select_should_download_submissions),
+            ('配置课程描述下载', self._select_should_download_descriptions),
+            ('配置描述中的链接下载', self._select_should_download_links_in_descriptions),
+            ('配置数据库下载', self._select_should_download_databases),
+            ('配置论坛下载', self._select_should_download_forums),
+            ('配置测验下载', self._select_should_download_quizzes),
+            ('配置课程教材下载', self._select_should_download_lessons),
+            ('配置研讨会下载', self._select_should_download_workshops),
+            ('配置书籍下载', self._select_should_download_books),
+            ('配置日历下载', self._select_should_download_calendars),
+            ('配置外部链接文件下载', self._select_should_download_linked_files),
+            ('配置需要 Cookie 的文件下载', self._select_should_download_also_with_cookie),
+        ]
 
-        Log.success('Configuration successfully updated!')
+        current_step = 0
+
+        while current_step < len(steps):
+            print('\n' + '=' * 80)
+            Log.info(f'配置步骤 {current_step + 1}/{len(steps)}: {steps[current_step][0]}')
+            print('=' * 80 + '\n')
+
+            # 执行当前步骤
+            steps[current_step][1]()
+
+            # 询问下一步操作
+            print('\n')
+            choices = []
+            if current_step < len(steps) - 1:
+                choices.append('继续下一步')
+            if current_step > 0:
+                choices.append('返回上一步')
+            choices.append('完成配置并退出')
+
+            Log.blue('请选择：')
+            choice = Cutie.select(choices)
+
+            if choices[choice] == '继续下一步':
+                current_step += 1
+            elif choices[choice] == '返回上一步':
+                current_step -= 1
+            elif choices[choice] == '完成配置并退出':
+                break
+
+        Log.success('配置已成功更新！')
 
     def interactively_add_all_visible_courses(self):
         """
@@ -139,7 +171,7 @@ class ConfigWizard:
         self.config.set_property('options_of_courses', options_of_courses)
         self.config.set_property('download_public_course_ids', download_public_course_ids)
 
-        Log.success('Configuration successfully updated!')
+        Log.success('配置已成功更新！')
 
     def _select_courses_to_download(self, courses: List[Course]):
         """
@@ -151,23 +183,21 @@ class ConfigWizard:
 
         print('')
         Log.info(
-            'To avoid downloading all Moodle courses you are enrolled in, you can select which courses you want'
-            + ' to download here. You can either create a whitelist or a blacklist for this purpose.'
-            + '\n\n- With a whitelist only the courses you have selected will be downloaded,'
-            + ' any courses you enroll in in the future will not be downloaded automatically unless'
-            + ' you add them to the list.'
-            + '\n- With a blacklist all selected courses will not be downloaded, all other courses that are not'
-            + ' on the list will be downloaded, but if you enroll in a new course online in the future that is not'
-            + ' on your blacklist it will automatically be downloaded as well. '
+            '为了避免下载你注册的所有 Moodle 课程，你可以在这里选择要下载的课程。'
+            + '你可以创建白名单或黑名单。'
+            + '\n\n- 使用白名单时，只有你选择的课程会被下载，'
+            + '未来注册的新课程不会自动下载，除非你将它们添加到列表中。'
+            + '\n- 使用黑名单时，所有被选中的课程不会被下载，其他不在列表中的课程都会被下载，'
+            + '如果你将来在线注册了不在黑名单中的新课程，它也会被自动下载。'
         )
         print('')
         use_whitelist = len(dont_download_course_ids) == 0
 
         use_whitelist = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to create a whitelist or blacklist for your courses?'),
+            Log.blue_str('你想为课程创建白名单还是黑名单？'),
             default_is_yes=use_whitelist,
-            yes_text='Whitelist',
-            no_text='Blacklist',
+            yes_text='白名单',
+            no_text='黑名单',
         )
 
         choices = []
@@ -184,10 +214,10 @@ class ConfigWizard:
                 defaults.append(i)
 
         if use_whitelist:
-            Log.blue('Which of the courses should be downloaded?')
+            Log.blue('哪些课程应该被下载？')
         else:
-            Log.blue('Which of the courses should NOT be downloaded?')
-        Log.info('[You can select with the space bar and confirm your selection with the enter key]')
+            Log.blue('哪些课程不应该被下载？')
+        Log.info('[你可以用空格键选择，用回车键确认选择]')
         print('')
         selected_courses = Cutie.select_multiple(options=choices, ticked_indices=defaults)
 
@@ -219,8 +249,8 @@ class ConfigWizard:
             if MoodleService.should_download_section(section_id, excluded):
                 defaults.append(i)
 
-        Log.blue('Which of the sections should be downloaded?')
-        Log.info('[You can select with the space bar and confirm your selection with the enter key]')
+        Log.blue('应该下载哪些章节？')
+        Log.info('[你可以用空格键选择，用回车键确认选择]')
         print('')
         selected_sections = Cutie.select_multiple(options=choices, ticked_indices=defaults)
 
@@ -240,12 +270,11 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'You can set special settings for every single course.\n'
-            + 'You can set these options:\n'
-            + ' - A different name for the course\n'
-            + ' - If a directory structure should be created for the course'
-            + ' [create_directory_structure (cfs)]\n'
-            + ' - Which of the sections should be downloaded (default all).'
+            '你可以为每个课程设置特殊选项。\n'
+            + '可以设置这些选项：\n'
+            + ' - 课程的自定义名称\n'
+            + ' - 是否为课程创建目录结构 [create_directory_structure (cfs)]\n'
+            + ' - 应该下载哪些章节（默认全部）。'
         )
         print('')
 
@@ -289,8 +318,9 @@ class ConfigWizard:
                     choices_courses.append(course)
 
             print('')
-            Log.blue('For which of the following course do you want to change the settings?')
-            print('[Confirm your selection with the Enter key]')
+            Log.blue('你想更改以下哪个课程的设置？')
+            print('[用方向键选择，用回车键确认]')
+            print('[选择 "None" 完成此步骤]')
             print('')
 
             selected_course = Cutie.select(options=choices)
@@ -320,7 +350,7 @@ class ConfigWizard:
         changed = False
 
         # Ask for new name
-        overwrite_name_with = input(f'Enter a new name for this Course [leave blank for "{course.fullname}"]:   ')
+        overwrite_name_with = input(f'为此课程输入新名称 [留空则使用 "{course.fullname}"]:   ')
 
         if overwrite_name_with == '':
             overwrite_name_with = None
@@ -336,7 +366,7 @@ class ConfigWizard:
         create_directory_structure = current_course_settings.get('create_directory_structure', True)
 
         create_directory_structure = Cutie.prompt_yes_or_no(
-            Log.blue_str('Should a directory structure be created for this course?'),
+            Log.blue_str('是否为此课程创建目录结构？'),
             default_is_yes=create_directory_structure,
         )
 
@@ -346,11 +376,11 @@ class ConfigWizard:
 
         excluded_sections = current_course_settings.get('excluded_sections', [])
 
-        change_excluded_sections_prompt = 'Do you want to exclude individual sections of this course from download?'
+        change_excluded_sections_prompt = '你想要从下载中排除此课程的某些章节吗？'
         if len(excluded_sections) > 0:
             change_excluded_sections_prompt = (
-                'Do you want to change the selection of sections that should not be'
-                + f' downloaded? Currently {len(excluded_sections)} sections of this course are excluded from download.'
+                '你想要更改不下载的章节选择吗？'
+                + f'当前此课程有 {len(excluded_sections)} 个章节被排除下载。'
             )
 
         change_excluded_sections = Cutie.prompt_yes_or_no(
@@ -359,7 +389,7 @@ class ConfigWizard:
         )
 
         if change_excluded_sections:
-            Log.info('Please wait for a moment, the information about the course sections gets downloaded.')
+            Log.info('请稍等，正在下载课程章节信息。')
             sections = self.core_handler.fetch_sections(course.id)
 
             dont_download_section_ids = self._select_sections_to_download(sections, excluded_sections)
@@ -380,16 +410,14 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'Submissions are files that you or a teacher have uploaded'
-            + ' to your assignments. Moodle does not provide an'
-            + ' interface for downloading information from all'
-            + ' submissions to a course at once.'
+            'Submissions（提交）是你或老师上传到作业的文件。'
+            + 'Moodle 没有提供一次性下载课程所有提交信息的接口。'
         )
-        Log.warning('Therefore, it may be slow to monitor changes to submissions.')
+        Log.warning('因此，监控提交的变化可能会比较慢。')
         print('')
 
         download_submissions = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download submissions of your assignments?'),
+            Log.blue_str('你想要下载作业提交吗？'),
             default_is_yes=download_submissions,
         )
 
@@ -403,18 +431,15 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'In the database module of Moodle data can be stored'
-            + ' structured with information. Often it is also'
-            + ' possible for students to upload data there.  Because'
-            + ' the implementation of the downloader has not yet been'
-            + ' optimized at this point, it is optional to download the'
-            + ' databases. Currently only files are downloaded, thumbails'
-            + ' are ignored.'
+            '在 Moodle 的数据库模块中，数据可以结构化存储。'
+            + '学生通常也可以在那里上传数据。由于下载器的实现'
+            + '还未完全优化，下载数据库是可选的。'
+            + '目前只下载文件，缩略图会被忽略。'
         )
         print('')
 
         download_databases = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download databases of your courses?'), default_is_yes=download_databases
+            Log.blue_str('你想要下载课程的数据库吗？'), default_is_yes=download_databases
         )
 
         self.config.set_property('download_databases', download_databases)
@@ -426,11 +451,11 @@ class ConfigWizard:
         download_forums = self.config.get_download_forums()
 
         self.section_seperator()
-        Log.info('In forums, students and teachers can discuss and exchange information together.')
+        Log.info('在论坛中，学生和老师可以一起讨论和交流信息。')
         print('')
 
         download_forums = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download forums of your courses?'), default_is_yes=download_forums
+            Log.blue_str('你想要下载课程的论坛吗？'), default_is_yes=download_forums
         )
 
         self.config.set_property('download_forums', download_forums)
@@ -443,13 +468,13 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'Quizzes are tests that a student must complete in a course and are graded on.'
-            + ' Only quizzes that are in progress or have been completed will be downloaded.'
+            '测验是学生必须在课程中完成的考试，会被评分。'
+            + '只有正在进行或已完成的测验会被下载。'
         )
         print('')
 
         download_quizzes = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download quizzes of your courses?'), default_is_yes=download_quizzes
+            Log.blue_str('你想要下载课程的测验吗？'), default_is_yes=download_quizzes
         )
 
         self.config.set_property('download_quizzes', download_quizzes)
@@ -462,15 +487,14 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'Lessons are a kind of self-teaching with pages of information and other pages with questions to answer.'
-            + ' A student can be graded on their answers after completing a lesson. Currently, only lessons without'
-            + ' the answers are downloaded. The answers are potentially also available for download,'
-            + ' but this has not been implemented.'
+            'Lessons（课程）是一种自学方式，包含信息页面和需要回答的问题页面。'
+            + '学生完成课程后会根据答案被评分。目前只下载不带答案的课程。'
+            + '答案可能也可以下载，但尚未实现。'
         )
         print('')
 
         download_lessons = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download lessons of your courses?'), default_is_yes=download_lessons
+            Log.blue_str('你想要下载课程的 Lessons 吗？'), default_is_yes=download_lessons
         )
 
         self.config.set_property('download_lessons', download_lessons)
@@ -483,13 +507,13 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'Workshops function according to the peer review process.'
-            + ' Students can make submissions and have to assess submissions of other students. '
+            'Workshops（研讨会）按照同行评审流程运作。'
+            + '学生可以提交作业并需要评估其他学生的提交。'
         )
         print('')
 
         download_workshops = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download workshops of your courses?'), default_is_yes=download_workshops
+            Log.blue_str('你想要下载课程的研讨会吗？'), default_is_yes=download_workshops
         )
 
         self.config.set_property('download_workshops', download_workshops)
@@ -501,11 +525,11 @@ class ConfigWizard:
         download_books = self.config.get_download_books()
 
         self.section_seperator()
-        Log.info('Books are collections of pages. A table of contents is created for each book.')
+        Log.info('Books（书籍）是页面的集合。每本书都会创建一个目录。')
         print('')
 
         download_books = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download books of your courses?'), default_is_yes=download_books
+            Log.blue_str('你想要下载课程的书籍吗？'), default_is_yes=download_books
         )
 
         self.config.set_property('download_books', download_books)
@@ -517,11 +541,11 @@ class ConfigWizard:
         download_calendars = self.config.get_download_calendars()
 
         self.section_seperator()
-        Log.info('Calendars can be downloaded as individually generated HTML files for each event.')
+        Log.info('日历可以作为每个事件单独生成的 HTML 文件下载。')
         print('')
 
         download_calendars = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to download calendars of your courses?'), default_is_yes=download_calendars
+            Log.blue_str('你想要下载课程的日历吗？'), default_is_yes=download_calendars
         )
 
         self.config.set_property('download_calendars', download_calendars)
@@ -534,24 +558,21 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'In Moodle courses, descriptions can be added to all kinds'
-            + ' of resources, such as files, tasks, assignments or simply'
-            + ' free text. These descriptions are usually unnecessary to'
-            + ' download because you have already read the information or'
-            + ' know it from context. However, there are situations where'
-            + ' it might be interesting to download these descriptions. The'
-            + ' descriptions are created as Markdown files and can be'
-            + ' deleted as desired.'
+            '在 Moodle 课程中，可以为各种资源添加描述，'
+            + '例如文件、任务、作业或纯文本。'
+            + '这些描述通常不需要下载，因为你已经读过信息或'
+            + '从上下文中知道了。但在某些情况下，'
+            + '下载这些描述可能会有用。'
+            + '描述会创建为 Markdown 文件，可以随意删除。'
         )
         Log.debug(
-            'Creating the description files does not take extra time, but they can be annoying'
-            + ' if they only contain unnecessary information.'
+            '创建描述文件不会花费额外时间，但如果它们只包含不必要的信息，可能会很烦人。'
         )
 
         print('')
 
         download_descriptions = Cutie.prompt_yes_or_no(
-            Log.blue_str('Would you like to download descriptions of the courses you have selected?'),
+            Log.blue_str('你想要下载所选课程的描述吗？'),
             default_is_yes=download_descriptions,
         )
 
@@ -565,13 +586,13 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'In the descriptions of files, sections, assignments or courses the teacher can add links to webpages,'
-            + ' files or videos. That links can point to a internal page on moodle or to an external webpage.'
+            '在文件、章节、作业或课程的描述中，老师可以添加网页、'
+            + '文件或视频的链接。这些链接可以指向 Moodle 内部页面或外部网页。'
         )
         print('')
 
         download_links_in_descriptions = Cutie.prompt_yes_or_no(
-            Log.blue_str('Would you like to download links in descriptions?'),
+            Log.blue_str('你想要下载描述中的链接吗？'),
             default_is_yes=download_links_in_descriptions,
         )
 
@@ -585,28 +606,26 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'In Moodle courses the teacher can also link to external'
-            + ' files. This can be audio, video, text or anything else.'
-            + ' In particular, the teacher can link to Youtube videos.'
+            '在 Moodle 课程中，老师也可以链接到外部文件。'
+            + '这可以是音频、视频、文本或其他任何内容。'
+            + '特别是，老师可以链接到 YouTube 视频。'
         )
-        Log.debug('To download videos correctly you have to install ffmpeg. ')
+        Log.debug('要正确下载视频，你必须安装 ffmpeg。')
 
-        Log.error('These files can increase the download volume considerably.')
+        Log.error('这些文件可能会显著增加下载量。')
 
         Log.info(
-            'If you want to filter the external links by their domain,'
-            + ' you can manually set a whitelist and a blacklist'
-            + ' (https://github.com/C0D3D3V/Moodle-DL/wiki/Download-(external)-linked-files'
-            + ' for more details).'
+            '如果你想按域名过滤外部链接，'
+            + '可以手动设置白名单和黑名单'
+            + '（详见 https://github.com/C0D3D3V/Moodle-DL/wiki/Download-(external)-linked-files）。'
         )
         Log.warning(
-            'Please note that the size of the external files is determined during the download, so the total size'
-            + ' changes during the download.'
+            '请注意，外部文件的大小在下载过程中确定，所以总大小会在下载过程中变化。'
         )
         print('')
 
         download_linked_files = Cutie.prompt_yes_or_no(
-            Log.blue_str('Would you like to download linked files of the courses you have selected?'),
+            Log.blue_str('你想要下载所选课程的外部链接文件吗？'),
             default_is_yes=download_linked_files,
         )
 
@@ -620,26 +639,26 @@ class ConfigWizard:
 
         self.section_seperator()
         Log.info(
-            'Descriptions may contain links to files that require a browser cookie so they can be downloaded.'
-            + ' There are also several Moodle plugins that cannot be displayed in the Moodle app,'
-            + ' so you need a browser cookie to download these plugin files.'
+            '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
+            + '还有一些 Moodle 插件无法在 Moodle 应用中显示，'
+            + '所以你需要浏览器 cookie 来下载这些插件文件。'
         )
 
         Log.debug(
-            'The Moodle browser cookie is created using your private token and stored in the `Configs.txt` file.'
-            + ' As long as this option is activated, the file always contains a valid cookie.'
+            'Moodle 浏览器 cookie 使用你的私有令牌创建，并存储在 `Configs.txt` 文件中。'
+            + '只要此选项启用，文件就始终包含有效的 cookie。'
         )
 
         if self.config.get_privatetoken() is None:
             Log.error(
-                'Currently no private token is stored in the configuration.'
-                + ' Create a private token with moodle-dl --new-token (if necessary with --sso)'
+                '当前配置中没有存储私有令牌。'
+                + '使用 moodle-dl --new-token 创建私有令牌（必要时加上 --sso）'
             )
 
         print('')
 
         download_also_with_cookie = Cutie.prompt_yes_or_no(
-            Log.blue_str('Would you like to download files for which a cookie is required?'),
+            Log.blue_str('你想要下载需要 cookie 的文件吗？'),
             default_is_yes=download_also_with_cookie,
         )
 

@@ -26,19 +26,18 @@ class MoodleWizard:
         url_ok = False
         while not url_ok:
             url_ok = True
-            moodle_url = input('URL of Moodle:   ')
+            moodle_url = input('Moodle 的 URL:   ')
 
             use_http = False
             if moodle_url.startswith('http://'):
                 Log.warning(
-                    'Warning: You have entered an insecure URL! Are you sure that the Moodle is'
-                    + ' not accessible via `https://`? All your data will be transferred'
-                    + ' insecurely! If your Moodle is accessible via `https://`, then run'
-                    + ' the process again using `https://` to protect your data.'
+                    '警告：你输入了不安全的 URL！你确定该 Moodle 无法通过 `https://` 访问吗？'
+                    + '你的所有数据将以不安全的方式传输！如果你的 Moodle 可以通过 `https://` 访问，'
+                    + '请使用 `https://` 重新运行该过程以保护你的数据。'
                 )
                 use_http = True
             elif not moodle_url.startswith('https://'):
-                Log.error('The url of your moodle must start with `https://`')
+                Log.error('你的 Moodle URL 必须以 `https://` 开头')
                 url_ok = False
 
         moodle_domain, moodle_path = MoodleService.split_moodle_url(moodle_url)
@@ -57,7 +56,7 @@ class MoodleWizard:
             automated = True
 
         if not automated:
-            print('[The following Credentials are not saved, it is only used temporarily to generate a login token.]')
+            print('[以下凭据不会被保存，仅临时用于生成登录令牌。]')
 
         moodle_token = None
         while moodle_token is None and not automatic_run_once:
@@ -69,12 +68,12 @@ class MoodleWizard:
             if self.opts.username is not None:
                 moodle_username = self.opts.username
             else:
-                moodle_username = input('Username for Moodle:   ')
+                moodle_username = input('Moodle 用户名:   ')
 
             if self.opts.password is not None:
                 moodle_password = self.opts.password
             else:
-                moodle_password = getpass('Password for Moodle [no output]:   ')
+                moodle_password = getpass('Moodle 密码 [无输出显示]:   ')
 
             try:
                 moodle_token, moodle_privatetoken = MoodleService(self.config, self.opts).obtain_login_token(
@@ -82,9 +81,9 @@ class MoodleWizard:
                 )
 
             except RequestRejectedError as error:
-                Log.error(f'Login Failed! ({error}) Please try again.')
+                Log.error(f'登录失败！({error}) 请重试。')
             except (ValueError, RuntimeError) as error:
-                Log.error(f'Error while communicating with the Moodle System! ({error}) Please try again.')
+                Log.error(f'与 Moodle 系统通信时出错！({error}) 请重试。')
             except ConnectionError as error:
                 Log.error(str(error))
 
@@ -94,7 +93,7 @@ class MoodleWizard:
         self.config.set_tokens(moodle_token, moodle_privatetoken)
         self.config.set_moodle_URL(moodle_url)
 
-        Log.success('Token successfully saved!')
+        Log.success('令牌已成功保存！')
 
         return moodle_token
 
@@ -109,10 +108,10 @@ class MoodleWizard:
         if self.opts.token is not None:
             moodle_token = self.opts.token
         else:
-            Log.warning('Please use the Chrome browser for the following procedure')
-            print('1. Log into your Moodle Account')
-            print('2. Open the developer console (press F12) and go to the Network tab')
-            print('3. Then visit the following URL in the same browser tab you have logged in:')
+            Log.warning('请使用 Chrome 浏览器进行以下操作')
+            print('1. 登录你的 Moodle 账户')
+            print('2. 打开开发者控制台（按 F12）并转到 Network（网络）标签')
+            print('3. 然后在你已登录的同一浏览器标签页中访问以下 URL：')
 
             print(
                 moodle_url.url_base
@@ -120,31 +119,31 @@ class MoodleWizard:
             )
             print()
             print(
-                'If you open the link, no web page should load, instead an error will occur.'
-                + ' In the Network tab of the developer console you opened before there should be an error entry.'
+                '如果你打开链接，不应该加载网页，而是会出现错误。'
+                + '在你之前打开的开发者控制台的 Network 标签中应该有一个错误条目。'
             )
 
-            print('The script expects a URL that looks something like this:')
+            print('脚本期望一个类似这样的 URL：')
             Log.info('moodledl://token=$apptoken')
             print(
-                ' Where $apptoken looks random and "moodledl" can also be a different url scheme '
-                + ' like "moodlemobile". In reality $apptoken is a Base64 string containing the token to access moodle.'
+                ' 其中 $apptoken 看起来是随机的，"moodledl" 也可以是不同的 URL scheme，'
+                + '比如 "moodlemobile"。实际上 $apptoken 是一个包含访问 Moodle 令牌的 Base64 字符串。'
             )
 
             print(
-                '4. Copy the link address of the website that could not be loaded'
-                + ' (right click the list entry, then click on Copy, then click on copy link address)'
+                '4. 复制无法加载的网站的链接地址'
+                + '（右键单击列表条目，然后单击"复制"，然后单击"复制链接地址"）'
             )
 
-            token_address = input('Then insert the link address here:   ')
+            token_address = input('然后在此处插入链接地址:   ')
 
             moodle_token, moodle_privatetoken = MoodleService.extract_token(token_address)
             if moodle_token is None:
-                raise ValueError('Invalid URL!')
+                raise ValueError('无效的 URL！')
 
         self.config.set_tokens(moodle_token, moodle_privatetoken)
         self.config.set_moodle_URL(moodle_url)
 
-        Log.success('Token successfully saved!')
+        Log.success('令牌已成功保存！')
 
         return moodle_token
