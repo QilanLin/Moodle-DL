@@ -527,17 +527,18 @@ class Task:
                 delete_if_successful=delete_if_successful,
             )
             return
-        # 已禁用：优先尝试 yt-dlp 下载视频
-        # if infos.is_html and not self.is_blocked_for_yt_dlp(url_to_download):
-        #     yt_dlp_processed = await self.download_using_yt_dlp(
-        #         dl_url=url_to_download,
-        #         infos=infos,
-        #         delete_if_successful=delete_if_successful,
-        #     )
-        #     if yt_dlp_processed:
-        #         return
+        # For cookie_mod files (kalvidres, helixmedia, lti), always try yt-dlp
+        # These are Moodle-integrated video platforms that need special handling
+        if needs_moodle_cookies and infos.is_html and not self.is_blocked_for_yt_dlp(url_to_download):
+            yt_dlp_processed = await self.download_using_yt_dlp(
+                dl_url=url_to_download,
+                infos=infos,
+                delete_if_successful=delete_if_successful,
+            )
+            if yt_dlp_processed:
+                return
 
-        # 对于 HTML 页面（如 YouTube/Tumblr 等公开平台），不下载网页源码，只创建快捷方式
+        # 对于其他 HTML 页面（如 YouTube/Tumblr 等公开平台），不下载网页源码，只创建快捷方式
         if infos.is_html:
             logging.debug(
                 '[%d] 检测到 HTML 页面（%s），跳过下载，将创建快捷方式',
