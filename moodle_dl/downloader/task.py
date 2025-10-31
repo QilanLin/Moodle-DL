@@ -21,9 +21,9 @@ from urllib.error import ContentTooShortError
 import aiofiles
 import aiohttp
 import html2text
-# import yt_dlp  # 已禁用：不再使用 yt-dlp 下载视频
+import yt_dlp  # Re-enabled for cookie_mod files (kalvidres, helixmedia, lti)
 
-# from moodle_dl.downloader.extractors import add_additional_extractors  # 已禁用：yt-dlp extractors 不再需要
+from moodle_dl.downloader.extractors import add_additional_extractors
 from moodle_dl.types import (
     Course,
     DlEvent,
@@ -697,6 +697,163 @@ class Task:
         async with aiofiles.open(self.file.saved_to, "wb") as target_file:
             await target_file.write(data)
 
+    async def extract_kalvidres_text(self, url: str, save_path: str) -> bool:
+        """
+        Extract text content from a kalvidres page and save as Markdown.
+        Uses generic DOM-based extraction (not hardcoded keywords).
+
+        @param url: The kalvidres page URL
+        @param save_path: Path to save the extracted text
+        @return: True if successful, False otherwise
+        """
+        try:
+            import re
+            import html as html_module
+
+            logging.debug('[%d] Extracting text from kalvidres URL: %s', self.task_id, url)
+
+            # Create aiohttp session with cookies
+            cookie_jar = None
+            if self.opts.cookies_text is not None:
+                cookie_jar = convert_to_aiohttp_cookie_jar(MoodleDLCookieJar(StringIO(self.opts.cookies_text)))
+
+            ssl_context = SslHelper.get_ssl_context(self.opts.global_opts.skip_cert_verify)
+            timeout = aiohttp.ClientTimeout(total=30)
+
+            async with aiohttp.ClientSession(
+                cookie_jar=cookie_jar,
+                timeout=timeout,
+                connector=aiohttp.TCPConnector(ssl=ssl_context)
+            ) as session:
+                async with session.get(url, headers=self.RQ_HEADER) as response:
+                    if response.status != 200:
+                        logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status)
+                        return False
+
+                    # Check if redirected to login
+                    final_url = str(response.url)
+                    if 'login' in final_url.lower() or 'enrol' in final_url.lower():
+                        logging.warning('[%d] Redirected to login page, cookies may be invalid', self.task_id)
+                        return False
+
+                    html_content = await response.text()
+
+            # Extract text content using generic DOM-based method
+            text_data = {}
+
+            # 1. Extract page title
+            title_match = re.search(r'<title>([^<]+)</title>', html_content)
+            if title_match:
+                text_data['page_title'] = html_module.unescape(title_match.group(1).strip())
+
+            # 2. Extract module name (H1)
+            h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_content, re.DOTALL)
+            if h1_match:
+                h1_text = self._clean_html_simple(h1_match.group(1))
+                if h1_text:
+                    text_data['module_name'] = h1_text
+
+            # 3. Extract activity-description (core content - generic!)
+            activity_pattern = r'<div\s+class="activity-description"[^>]*>(.*?)</div>\s*</div>'
+            activity_match = re.search(activity_pattern, html_content, re.DOTALL)
+            if activity_match:
+                content_html = activity_match.group(1)
+                text_data['activity_description'] = self._clean_html_preserve_structure(content_html)
+
+            # Save as Markdown if we have content
+            if text_data:
+                await self._save_kalvidres_text(text_data, save_path)
+                logging.info('[%d] Saved kalvidres text to: %s', self.task_id, save_path)
+                return True
+            else:
+                logging.debug('[%d] No text content found in kalvidres page', self.task_id)
+                return False
+
+        except Exception as e:
+            logging.warning('[%d] Failed to extract kalvidres text: %s', self.task_id, e)
+            return False
+
+    def _clean_html_simple(self, html_text: str) -> str:
+        """Clean HTML tags, return plain text"""
+        import re
+        import html as html_module
+
+        if not html_text:
+            return ""
+
+        text = re.sub(r'<br\s*/?>', '\n', html_text)
+        text = re.sub(r'<[^>]+>', '', text)
+        text = html_module.unescape(text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    def _clean_html_preserve_structure(self, html_text: str) -> str:
+        """Clean HTML but preserve structure (lists, formatting) as Markdown"""
+        import re
+        import html as html_module
+
+        if not html_text:
+            return ""
+
+        # Convert <br> to newlines
+        text = re.sub(r'<br\s*/?>', '\n', html_text)
+
+        # Convert paragraphs
+        text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)
+        text = re.sub(r'</?p[^>]*>', '\n', text)
+
+        # Convert lists
+        text = re.sub(r'<li[^>]*>', '\n• ', text)
+        text = re.sub(r'</li>', '', text)
+        text = re.sub(r'</?ul[^>]*>', '\n', text)
+        text = re.sub(r'</?ol[^>]*>', '\n', text)
+
+        # Preserve bold (convert to Markdown)
+        text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text, flags=re.DOTALL)
+        text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.DOTALL)
+
+        # Preserve italic
+        text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.DOTALL)
+        text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.DOTALL)
+
+        # Preserve links
+        text = re.sub(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.DOTALL)
+
+        # Remove all other tags
+        text = re.sub(r'<[^>]+>', '', text)
+
+        # Decode HTML entities
+        text = html_module.unescape(text)
+
+        # Clean whitespace
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+        text = re.sub(r' +', ' ', text)
+        return text.strip()
+
+    async def _save_kalvidres_text(self, text_data: dict, save_path: str):
+        """Save extracted text as Markdown file"""
+        lines = []
+
+        if text_data.get('page_title'):
+            lines.append(f"# {text_data['page_title']}")
+            lines.append("")
+
+        if text_data.get('module_name'):
+            lines.append(f"## {text_data['module_name']}")
+            lines.append("")
+
+        if text_data.get('activity_description'):
+            lines.append(text_data['activity_description'])
+            lines.append("")
+
+        content = '\n'.join(lines)
+
+        # Create directory if needed
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        async with aiofiles.open(save_path, 'w', encoding='utf-8') as f:
+            await f.write(content)
+
     async def run(self):
         if self.status.state != TaskState.INIT:
             logging.debug('[%d] Task was already started', self.task_id)
@@ -739,6 +896,17 @@ class Task:
                 await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
 
             elif self.file.module_modname.startswith('cookie_mod'):
+                # Special handling for kalvidres: extract page text before downloading video
+                if self.file.module_modname == 'cookie_mod-kalvidres':
+                    # Construct text file path (replace video extension with _notes.md)
+                    video_path = str(self.file.saved_to)
+                    text_path = os.path.splitext(video_path)[0] + '_notes.md'
+
+                    # Extract text content from kalvidres page
+                    logging.info('[%d] Extracting kalvidres text content...', self.task_id)
+                    await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
+
+                # Download video (for all cookie_mod types including kalvidres)
                 await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
 
             elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
