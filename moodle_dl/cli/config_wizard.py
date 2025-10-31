@@ -1,3 +1,4 @@
+import os
 import shutil
 import sys
 from typing import Dict, List, Tuple
@@ -686,19 +687,19 @@ class ConfigWizard:
         self.section_seperator()
         Log.info(
             '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
-            + '还有一些 Moodle 插件无法在 Moodle 应用中显示，'
+            + '还有一些 Moodle 插件（如 kalvidres）无法在 Moodle 应用中显示，'
             + '所以你需要浏览器 cookie 来下载这些插件文件。'
         )
 
         Log.debug(
-            'Moodle 浏览器 cookie 使用你的私有令牌创建，并存储在 `Configs.txt` 文件中。'
-            + '只要此选项启用，文件就始终包含有效的 cookie。'
+            'Moodle 浏览器 cookie（MoodleSession）会使用你的私有令牌自动生成，并存储在 `Cookies.txt` 文件中。'
+            + '对于 SSO 登录（如 Microsoft），你还需要手动从浏览器导出额外的 cookies（buid, fpc）。'
         )
 
         if self.config.get_privatetoken() is None:
             Log.error(
                 '当前配置中没有存储私有令牌。'
-                + '使用 moodle-dl --new-token 创建私有令牌（必要时加上 --sso）'
+                + '使用 moodle-dl --new-token 获取 Moodle Token（SSO 登录需加上 --sso）'
             )
 
         print('')
@@ -709,6 +710,209 @@ class ConfigWizard:
         )
 
         self.config.set_property('download_also_with_cookie', download_also_with_cookie)
+
+        # 如果用户选择 Yes，引导导出浏览器 cookies
+        if download_also_with_cookie:
+            self._export_browser_cookies_if_needed()
+
+    def _export_browser_cookies_if_needed(self):
+        """
+        引导用户导出浏览器 cookies（包含 Microsoft SSO 的 buid 和 fpc）
+        """
+        print('')
+        Log.warning('⚠️  对于 SSO 登录（如 Microsoft），需要从浏览器导出额外的 cookies。')
+        print('')
+
+        # 获取 Moodle URL 和输出路径
+        moodle_url = self.config.get_moodle_URL()
+        if moodle_url is None:
+            Log.error('错误：未找到 Moodle URL 配置，无法导出 cookies')
+            return
+
+        moodle_domain = moodle_url.domain
+        cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
+
+        # 检查是否已有 Cookies.txt 以及是否包含 SSO cookies
+        cookies_exist = os.path.exists(cookies_path)
+        has_sso_cookies = False
+
+        if cookies_exist:
+            # 检查是否包含 Microsoft SSO 所需的 cookies (buid, fpc)
+            has_sso_cookies = self._check_sso_cookies_exist(cookies_path)
+
+            if has_sso_cookies:
+                Log.info(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）: {cookies_path}')
+            else:
+                Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies (buid, fpc): {cookies_path}')
+                Log.info('   建议重新导出以获取完整的浏览器 cookies。')
+            print('')
+
+        # 询问是否要导出浏览器 cookies
+        # 默认 Yes 的情况：1) 没有 cookies 文件  2) 有文件但缺少 SSO cookies
+        should_export = Cutie.prompt_yes_or_no(
+            Log.blue_str('是否现在从浏览器导出完整的 cookies（包含 SSO 登录所需的 buid 和 fpc）？'),
+            default_is_yes=(not cookies_exist or not has_sso_cookies),
+        )
+
+        if not should_export:
+            if not cookies_exist:
+                Log.warning(
+                    '跳过浏览器 cookies 导出。'
+                    + f'你可以稍后手动运行：python3 export_browser_cookies.py'
+                    + f'\n或将 Cookies.txt 文件放置到: {cookies_path}'
+                )
+            return
+
+        # 询问用户选择浏览器
+        print('')
+        Log.blue('请选择你使用的浏览器或内核：')
+        browser_choices = [
+            'Chrome',
+            'Edge',
+            'Firefox',
+            'Safari',
+            'Chromium 内核浏览器（Brave, Vivaldi, Arc, Opera 等）',
+            'Firefox 内核浏览器（Zen, Waterfox, LibreWolf 等）',
+            '自动检测所有浏览器',
+        ]
+        browser_choice = Cutie.select(browser_choices)
+
+        # 处理内核选择的二级菜单
+        selected_browser = None
+        if browser_choice == 4:
+            # Chromium 内核 - 二级选择
+            print('')
+            Log.blue('请选择具体的 Chromium 内核浏览器：')
+            chromium_choices = [
+                'Chrome',
+                'Brave',
+                'Vivaldi',
+                'Opera',
+                'Chromium',
+                'Arc（通过自定义路径支持）'
+            ]
+            chromium_choice = Cutie.select(chromium_choices)
+
+            chromium_map = {
+                0: 'chrome',
+                1: 'brave',      # ✅ 有专门的 brave() 方法
+                2: 'vivaldi',    # ✅ 有专门的 vivaldi() 方法
+                3: 'opera',      # ✅ 有专门的 opera() 方法
+                4: 'chromium',   # ✅ 有专门的 chromium() 方法
+                5: 'arc',        # ✅ 通过自定义路径支持
+            }
+            selected_browser = chromium_map[chromium_choice]
+
+        elif browser_choice == 5:
+            # Firefox 内核 - 二级选择
+            print('')
+            Log.blue('请选择具体的 Firefox 内核浏览器：')
+            firefox_choices = [
+                'Firefox',
+                'LibreWolf',
+                'Zen Browser（通过自定义路径支持）',
+                'Waterfox（通过自定义路径支持）'
+            ]
+            firefox_choice = Cutie.select(firefox_choices)
+
+            firefox_map = {
+                0: 'firefox',
+                1: 'librewolf',  # ✅ 有专门的 librewolf() 方法
+                2: 'zen',        # ✅ 通过自定义路径支持
+                3: 'waterfox',   # ✅ 通过自定义路径支持
+            }
+            selected_browser = firefox_map[firefox_choice]
+
+        elif browser_choice == 6:
+            # 自动检测
+            selected_browser = None
+        else:
+            # 直接选择的浏览器
+            browser_map = {
+                0: 'chrome',
+                1: 'edge',
+                2: 'firefox',
+                3: 'safari',
+            }
+            selected_browser = browser_map[browser_choice]
+
+        # 尝试导入并运行 export_browser_cookies
+        print('')
+        Log.info('正在从浏览器导出 cookies...')
+        print('')
+
+        try:
+            # 动态导入 export_browser_cookies
+            import importlib.util
+            script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'export_browser_cookies.py')
+
+            if not os.path.exists(script_path):
+                # 尝试在当前工作目录查找
+                script_path = os.path.join(os.getcwd(), 'export_browser_cookies.py')
+
+            if not os.path.exists(script_path):
+                Log.error('错误：未找到 export_browser_cookies.py 文件')
+                Log.info('请确保该文件在项目根目录，或手动运行：')
+                Log.info('  python3 export_browser_cookies.py')
+                return
+
+            # 加载模块
+            spec = importlib.util.spec_from_file_location("export_browser_cookies", script_path)
+            export_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(export_module)
+
+            # 根据用户选择导出 cookies
+            if selected_browser:
+                # 用户选择了特定浏览器
+                success = export_module.export_cookies_from_browser(
+                    domain=moodle_domain,
+                    output_file=cookies_path,
+                    browser_name=selected_browser
+                )
+                if success:
+                    # 验证 cookies
+                    success = export_module.test_cookies(moodle_domain, cookies_path)
+            else:
+                # 用户选择自动检测
+                success = export_module.export_cookies_interactive(
+                    domain=moodle_domain,
+                    output_file=cookies_path,
+                    ask_browser=False  # 已经在这里选择了
+                )
+
+            if success:
+                Log.success('✅ 浏览器 cookies 导出成功！')
+            else:
+                Log.error('❌ 浏览器 cookies 导出失败')
+                Log.warning('你可以稍后手动导出 cookies：')
+                Log.info('  1. 在浏览器中登录你的 Moodle')
+                Log.info('  2. 运行：python3 export_browser_cookies.py')
+                Log.info(f'  3. 或手动将 Cookies.txt 放置到: {cookies_path}')
+
+        except ImportError as e:
+            Log.error(f'错误：无法导入 browser-cookie3 库: {e}')
+            Log.info('请先安装依赖：pip install browser-cookie3')
+            Log.info('然后手动运行：python3 export_browser_cookies.py')
+        except Exception as e:
+            Log.error(f'导出过程出错: {e}')
+            Log.warning('你可以稍后手动运行：python3 export_browser_cookies.py')
+
+    def _check_sso_cookies_exist(self, cookies_path: str) -> bool:
+        """
+        检查 Cookies.txt 是否包含 Microsoft SSO 所需的 cookies
+
+        Returns:
+            bool: True 如果包含 buid 或 fpc，False 否则
+        """
+        try:
+            with open(cookies_path, 'r') as f:
+                content = f.read()
+                # 检查是否包含 Microsoft SSO 相关的 cookies
+                has_buid = 'buid' in content or 'microsoftonline.com' in content
+                has_fpc = 'fpc' in content
+                return has_buid or has_fpc
+        except Exception:
+            return False
 
     def section_seperator(self):
         """Print a seperator line."""
