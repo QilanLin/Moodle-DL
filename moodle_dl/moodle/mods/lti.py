@@ -294,9 +294,9 @@ class LtiMod(MoodleMod):
             param_name = param.get('name', '')
             param_value = param.get('value', '')
 
-            # HTML escape the values using standard library for security
-            param_name_escaped = html.escape(param_name, quote=True)
-            param_value_escaped = html.escape(param_value, quote=True)
+            # Convert to string and HTML escape the values using standard library for security
+            param_name_escaped = html.escape(str(param_name), quote=True)
+            param_value_escaped = html.escape(str(param_value), quote=True)
 
             if param_name == 'ext_submit':
                 # Make this a visible submit button
