@@ -26,6 +26,7 @@ class SurveyMod(MoodleMod):
 
     MOD_NAME = 'survey'
     MOD_PLURAL_NAME = 'surveys'
+    MOD_MIN_VERSION = 2015111600  # 3.0 - mod_survey_get_surveys_by_courses introduced
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:

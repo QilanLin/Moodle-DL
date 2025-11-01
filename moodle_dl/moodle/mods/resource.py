@@ -29,6 +29,7 @@ class ResourceMod(MoodleMod):
 
     MOD_NAME = 'resource'
     MOD_PLURAL_NAME = 'resources'
+    MOD_MIN_VERSION = 2015111600  # 3.0 - mod_resource_get_resources_by_courses introduced
 
     # Display mode constants (RESOURCELIB_DISPLAY_*)
     DISPLAY_INVALID = -1  # Invalid (added by app)

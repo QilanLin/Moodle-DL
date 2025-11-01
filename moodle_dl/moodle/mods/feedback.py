@@ -27,6 +27,7 @@ class FeedbackMod(MoodleMod):
 
     MOD_NAME = 'feedback'
     MOD_PLURAL_NAME = 'feedbacks'
+    MOD_MIN_VERSION = 2016052300  # 3.1 - mod_feedback_get_feedbacks_by_courses introduced
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:

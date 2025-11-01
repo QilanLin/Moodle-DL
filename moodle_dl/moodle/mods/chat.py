@@ -28,6 +28,7 @@ class ChatMod(MoodleMod):
 
     MOD_NAME = 'chat'
     MOD_PLURAL_NAME = 'chats'
+    MOD_MIN_VERSION = 2016052300  # 3.1 - mod_chat_get_chats_by_courses introduced
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
