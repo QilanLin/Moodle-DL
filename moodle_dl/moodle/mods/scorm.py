@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Dict, List
 
@@ -360,7 +359,7 @@ class ScormMod(MoodleMod):
 
             for key in important_keys:
                 if key in all_data:
-                    source, value = all_data[key]
+                    _, value = all_data[key]
                     display_key = key.replace('cmi.core.', '').replace('cmi.', '').replace('_', ' ').title()
                     summary += f"**{display_key}:** {value}\n"
 
@@ -370,7 +369,7 @@ class ScormMod(MoodleMod):
             other_data = {k: v for k, v in all_data.items() if k not in important_keys}
             if other_data:
                 summary += "### Additional Data\n\n"
-                for key, (source, value) in sorted(other_data.items()):
+                for key, (_, value) in sorted(other_data.items()):
                     if value:  # Only show non-empty values
                         summary += f"- {key}: {value}\n"
                 summary += "\n"
