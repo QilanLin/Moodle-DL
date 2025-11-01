@@ -125,6 +125,18 @@ class ConfigHelper:
         # return a stored boolean if h5p attempts/results should be downloaded
         return self.get_property_or('download_h5p_attempts', False)
 
+    def get_download_scorms(self) -> bool:
+        # return a stored boolean if scorm packages should be downloaded
+        return self.get_property_or('download_scorms', False)
+
+    def get_download_scorm_scos(self) -> bool:
+        # return a stored boolean if scorm scos should be downloaded
+        return self.get_property_or('download_scorm_scos', False)
+
+    def get_download_scorm_attempts(self) -> bool:
+        # return a stored boolean if scorm attempts should be downloaded
+        return self.get_property_or('download_scorm_attempts', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)
