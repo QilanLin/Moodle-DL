@@ -141,6 +141,10 @@ class ConfigHelper:
         # return a stored boolean if url modules should be downloaded
         return self.get_property_or('download_urls', False)
 
+    def get_download_labels(self) -> bool:
+        # return a stored boolean if label modules should be downloaded
+        return self.get_property_or('download_labels', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)
