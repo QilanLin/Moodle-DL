@@ -120,7 +120,7 @@ class ResourceMod(MoodleMod):
             module_contents = self.get_module_in_core_contents(course_id, module_id, core_contents)
             if module_contents:
                 # Add any additional contents not in contentfiles
-                for content in module_contents:
+                for content in module_contents.get('contents', []):
                     # Check if already added
                     filename = content.get('filename', '')
                     if not any(f.get('filename') == filename for f in resource_files if f.get('type') == 'resource_file'):
