@@ -125,6 +125,10 @@ class ConfigHelper:
         # return a stored boolean if h5p attempts/results should be downloaded
         return self.get_property_or('download_h5p_attempts', False)
 
+    def get_download_imscps(self) -> bool:
+        # return a stored boolean if imscp (IMS Content Package) should be downloaded
+        return self.get_property_or('download_imscps', False)
+
     def get_download_scorms(self) -> bool:
         # return a stored boolean if scorm packages should be downloaded
         return self.get_property_or('download_scorms', False)
