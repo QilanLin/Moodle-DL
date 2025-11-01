@@ -11,6 +11,20 @@ from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import get_nested, run_with_final_message
 
+# Moodle 版本代码到版本号的映射
+MOODLE_VERSION_MAP = {
+    2012120300: '2.4',
+    2013051400: '2.5',
+    2015051100: '2.9',
+    2015111600: '3.0',
+    2016052300: '3.1',
+    2017051500: '3.3',
+    2017111300: '3.4',
+    2019111800: '3.8',
+    2020061500: '3.9',
+    2023100900: '4.3',
+}
+
 
 class MoodleMod(metaclass=ABCMeta):
     """
@@ -55,6 +69,13 @@ class MoodleMod(metaclass=ABCMeta):
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
         if self.version < self.MOD_MIN_VERSION:
+            # 将版本代码转换为可读的 Moodle 版本号
+            required_version = MOODLE_VERSION_MAP.get(self.MOD_MIN_VERSION, str(self.MOD_MIN_VERSION))
+            logging.warning(
+                '⚠️  跳过 %s：当前 Moodle 版本不支持此模块（需要 Moodle %s 或更高版本）',
+                self.MOD_PLURAL_NAME,
+                required_version,
+            )
             return {}
 
         result = await self.real_fetch_mod_entries(courses, core_contents)
