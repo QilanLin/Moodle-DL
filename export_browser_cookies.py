@@ -148,9 +148,22 @@ def export_cookies_from_browser(domain: str, output_file: str, browser_name='chr
 
         # 转换为列表以便计数和过滤
         cookies_list = []
+        # 提取 Moodle 的主域名（去掉子域名）
+        moodle_main_domain = domain.split('.')[-2] + '.' + domain.split('.')[-1] if '.' in domain else domain
+
         for cookie in cj:
-            # 只保存指定域名和 Microsoft SSO 相关的 cookies
-            if any(d in cookie.domain for d in [domain, 'microsoftonline.com']):
+            # 保存 Moodle 相关的 cookies 和可能的 SSO cookies
+            # 策略：保存包含 Moodle 域名的 cookies，以及其他常见认证域名的 cookies
+            cookie_domain = cookie.domain.lstrip('.')
+
+            # 保存 Moodle 域名的 cookies
+            if moodle_main_domain in cookie_domain:
+                cookies_list.append(cookie)
+            # 保存可能的 SSO cookies（常见的认证提供商域名）
+            elif any(sso in cookie_domain.lower() for sso in [
+                'microsoft', 'google', 'okta', 'shibboleth',
+                'saml', 'oauth', 'login', 'auth', 'sso'
+            ]):
                 cookies_list.append(cookie)
 
         if not cookies_list:
@@ -196,12 +209,20 @@ def export_cookies_from_browser(domain: str, output_file: str, browser_name='chr
 
         print(f"✅ 成功导出 {len(cookies_list)} 个 cookies 到: {output_file}")
 
-        # 显示关键 cookies
+        # 显示关键 cookies（Moodle session 和 SSO cookies）
         print("\n关键 Cookies:")
-        key_cookies = ['MoodleSession', 'buid', 'fpc', 'ApplicationGatewayAffinity', 'MOODLEID1_']
+        shown_cookies = set()
         for cookie in cookies_list:
-            if cookie.name in key_cookies:
-                print(f"  ✓ {cookie.name}: {cookie.value[:30]}...")
+            # 显示 MoodleSession
+            if 'moodle' in cookie.name.lower() and 'session' in cookie.name.lower():
+                if cookie.name not in shown_cookies:
+                    print(f"  ✓ {cookie.name}: {cookie.value[:30]}...")
+                    shown_cookies.add(cookie.name)
+            # 显示非 Moodle 域名的 cookies（可能是 SSO）
+            elif moodle_main_domain not in cookie.domain.lstrip('.'):
+                if cookie.name not in shown_cookies:
+                    print(f"  ✓ {cookie.name} ({cookie.domain}): {cookie.value[:20]}...")
+                    shown_cookies.add(cookie.name)
 
         return True
 
@@ -224,32 +245,47 @@ def test_cookies(domain: str, cookies_file: str):
         cookie_jar.load(ignore_discard=True, ignore_expires=True)
         session.cookies = cookie_jar
 
-        # 检查是否包含关键 cookies
-        has_moodle_session = any(cookie.name == 'MoodleSession' for cookie in cookie_jar)
-        has_sso_cookies = any(cookie.name in ['buid', 'fpc'] for cookie in cookie_jar)
+        # 检查是否包含关键 cookies（方案C - Cookie域名检测）
+        has_moodle_session = any('moodle' in cookie.name.lower() and 'session' in cookie.name.lower() for cookie in cookie_jar)
+
+        # 提取 Moodle 主域名
+        moodle_main_domain = domain.split('.')[-2] + '.' + domain.split('.')[-1] if '.' in domain else domain
+
+        # 检测是否有 SSO cookies（任何非 Moodle 域名的 cookies）
+        has_sso_cookies = any(
+            moodle_main_domain not in cookie.domain.lstrip('.') and
+            cookie.domain not in ['localhost', '127.0.0.1']
+            for cookie in cookie_jar
+        )
 
         # 测试访问
         moodle_url = f'https://{domain}/' if not domain.startswith('http') else domain
         response = session.get(moodle_url, timeout=10)
 
+        # 方案B - 域名比较检测 SSO 重定向
+        from urllib.parse import urlparse
+        original_domain = urlparse(moodle_url).netloc
+        final_domain = urlparse(response.url).netloc
+
         if 'login/logout.php' in response.text:
             print("✅ Cookies 有效！已成功认证")
             return True
-        elif 'login/index.php' in response.url:
+        elif 'login/index.php' in response.url and original_domain == final_domain:
+            # 重定向到同域名的登录页 = cookies 无效
             print("❌ Cookies 无效，被重定向到登录页")
             print(f"   请确保在浏览器中已登录 {domain}")
             return False
-        elif 'microsoftonline.com' in response.url:
-            # SSO 重定向 - 如果包含关键 cookies，认为导出成功
+        elif original_domain != final_domain:
+            # 重定向到不同域名 = SSO 认证
             if has_moodle_session and has_sso_cookies:
                 print("✅ Cookies 导出成功（包含 SSO 认证 cookies）")
-                print("   注意：访问时会重定向到 Microsoft SSO 认证")
+                print(f"   注意：访问时会重定向到 SSO 提供商 ({final_domain})")
                 print("   这是正常的 SSO 登录流程")
                 return True
             else:
-                print("⚠️  被重定向到 Microsoft SSO，但缺少关键 cookies")
+                print(f"⚠️  被重定向到 SSO 提供商 ({final_domain})，但缺少关键 cookies")
                 print(f"   MoodleSession: {'✓' if has_moodle_session else '✗'}")
-                print(f"   SSO cookies (buid/fpc): {'✓' if has_sso_cookies else '✗'}")
+                print(f"   SSO cookies: {'✓' if has_sso_cookies else '✗'}")
                 return False
         else:
             print("⚠️  无法确定 cookies 状态")
@@ -264,18 +300,26 @@ def test_cookies(domain: str, cookies_file: str):
         print(f"⚠️  测试失败: {e}")
         return False
 
-def export_cookies_interactive(domain: str = 'keats.kcl.ac.uk', output_file: str = None, ask_browser: bool = True):
+def export_cookies_interactive(domain: str = None, output_file: str = None, ask_browser: bool = True):
     """
     交互式导出 cookies（可被其他模块调用）
 
     Args:
-        domain: Moodle 域名（默认 keats.kcl.ac.uk）
+        domain: Moodle 域名（例如 moodle.example.com，如果为 None 则会提示用户输入）
         output_file: 输出文件路径（默认为当前目录的 Cookies.txt）
         ask_browser: 是否询问用户选择浏览器（默认 True）
 
     Returns:
         bool: 是否成功导出并验证 cookies
     """
+    # 如果没有提供域名，询问用户
+    if domain is None:
+        print("请输入你的 Moodle 网站域名")
+        print("示例: moodle.university.edu 或 elearning.school.com")
+        domain = input("Moodle 域名: ").strip()
+        if not domain:
+            print("❌ 域名不能为空")
+            return False
     if output_file is None:
         output_file = os.path.join(os.getcwd(), 'Cookies.txt')
 
@@ -424,9 +468,9 @@ def export_cookies_interactive(domain: str = 'keats.kcl.ac.uk', output_file: str
 
 
 def main():
-    """命令行入口（保持向后兼容）"""
-    # 默认配置（可以从命令行参数获取）
-    domain = 'keats.kcl.ac.uk'
+    """命令行入口"""
+    # 从命令行参数获取配置
+    domain = None
     output_file = os.path.join(os.getcwd(), 'Cookies.txt')
 
     if len(sys.argv) > 1:
@@ -434,6 +478,7 @@ def main():
     if len(sys.argv) > 2:
         output_file = sys.argv[2]
 
+    # 如果没有提供域名，export_cookies_interactive 会提示用户输入
     success = export_cookies_interactive(domain, output_file)
 
     if not success:

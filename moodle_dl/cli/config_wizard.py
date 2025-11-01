@@ -693,7 +693,7 @@ class ConfigWizard:
 
         Log.debug(
             'Moodle 浏览器 cookie（MoodleSession）会使用你的私有令牌自动生成，并存储在 `Cookies.txt` 文件中。'
-            + '对于 SSO 登录（如 Microsoft），你还需要手动从浏览器导出额外的 cookies（buid, fpc）。'
+            + '对于 SSO 登录（如 Microsoft、Google、Okta 等），你还需要手动从浏览器导出额外的 SSO 认证 cookies。'
         )
 
         if self.config.get_privatetoken() is None:
@@ -717,10 +717,10 @@ class ConfigWizard:
 
     def _export_browser_cookies_if_needed(self):
         """
-        引导用户导出浏览器 cookies（包含 Microsoft SSO 的 buid 和 fpc）
+        引导用户导出浏览器 cookies（包含 SSO 提供商的认证 cookies）
         """
         print('')
-        Log.warning('⚠️  对于 SSO 登录（如 Microsoft），需要从浏览器导出额外的 cookies。')
+        Log.warning('⚠️  对于 SSO 登录（如 Microsoft、Google、Okta 等），需要从浏览器导出额外的 cookies。')
         print('')
 
         # 获取 Moodle URL 和输出路径
@@ -737,20 +737,20 @@ class ConfigWizard:
         has_sso_cookies = False
 
         if cookies_exist:
-            # 检查是否包含 Microsoft SSO 所需的 cookies (buid, fpc)
-            has_sso_cookies = self._check_sso_cookies_exist(cookies_path)
+            # 检查是否包含 SSO cookies
+            has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_domain)
 
             if has_sso_cookies:
                 Log.info(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）: {cookies_path}')
             else:
-                Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies (buid, fpc): {cookies_path}')
+                Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies: {cookies_path}')
                 Log.info('   建议重新导出以获取完整的浏览器 cookies。')
             print('')
 
         # 询问是否要导出浏览器 cookies
         # 默认 Yes 的情况：1) 没有 cookies 文件  2) 有文件但缺少 SSO cookies
         should_export = Cutie.prompt_yes_or_no(
-            Log.blue_str('是否现在从浏览器导出完整的 cookies（包含 SSO 登录所需的 buid 和 fpc）？'),
+            Log.blue_str('是否现在从浏览器导出完整的 cookies（包含 SSO 登录所需的认证 cookies）？'),
             default_is_yes=(not cookies_exist or not has_sso_cookies),
         )
 
@@ -897,20 +897,40 @@ class ConfigWizard:
             Log.error(f'导出过程出错: {e}')
             Log.warning('你可以稍后手动运行：python3 export_browser_cookies.py')
 
-    def _check_sso_cookies_exist(self, cookies_path: str) -> bool:
+    def _check_sso_cookies_exist(self, cookies_path: str, moodle_domain: str) -> bool:
         """
-        检查 Cookies.txt 是否包含 Microsoft SSO 所需的 cookies
+        检查 Cookies.txt 是否包含 SSO cookies（方案C - Cookie域名检测）
+
+        Args:
+            cookies_path: Cookies.txt 文件路径
+            moodle_domain: Moodle 主域名
 
         Returns:
-            bool: True 如果包含 buid 或 fpc，False 否则
+            bool: True 如果包含非 Moodle 域名的 cookies（可能是 SSO），False 否则
         """
         try:
+            # 提取 Moodle 主域名（去掉子域名）
+            moodle_main_domain = '.'.join(moodle_domain.split('.')[-2:]) if '.' in moodle_domain else moodle_domain
+
             with open(cookies_path, 'r') as f:
-                content = f.read()
-                # 检查是否包含 Microsoft SSO 相关的 cookies
-                has_buid = 'buid' in content or 'microsoftonline.com' in content
-                has_fpc = 'fpc' in content
-                return has_buid or has_fpc
+                for line in f:
+                    # 跳过注释和空行
+                    if line.startswith('#') or not line.strip():
+                        continue
+
+                    # Netscape cookie format: domain, flag, path, secure, expiration, name, value
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 7:
+                        cookie_domain = parts[0].lstrip('.')
+
+                        # 检测是否有非 Moodle 域名的 cookies（可能是 SSO）
+                        if cookie_domain != moodle_domain and \
+                           moodle_main_domain not in cookie_domain and \
+                           cookie_domain not in ['localhost', '127.0.0.1']:
+                            # 发现了可能的 SSO cookie
+                            return True
+
+            return False
         except Exception:
             return False
 
