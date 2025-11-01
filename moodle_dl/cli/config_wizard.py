@@ -536,7 +536,7 @@ class ConfigWizard:
         # 创建选项列表
         choices = []
         for config_key, name, desc in modules:
-            choices.append(f'{name}\n    {desc}')
+            choices.append(f'{name}\t{desc}')
 
         # 显示多选界面
         Log.blue('请选择要下载的模块类型：')
