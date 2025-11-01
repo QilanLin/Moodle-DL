@@ -330,6 +330,7 @@ class DlEvent(Enum):
 @dataclass
 class DownloadOptions:
     token: str
+    moodle_url: str
     download_linked_files: bool
     download_domains_whitelist: List
     download_domains_blacklist: List

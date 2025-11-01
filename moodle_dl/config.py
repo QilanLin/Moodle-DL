@@ -317,6 +317,7 @@ class ConfigHelper:
 
         return DownloadOptions(
             token=self.get_token(),
+            moodle_url=self.get_moodle_URL().url_base,
             download_linked_files=self.get_download_linked_files(),
             download_domains_whitelist=self.get_download_domains_whitelist(),
             download_domains_blacklist=self.get_download_domains_blacklist(),
