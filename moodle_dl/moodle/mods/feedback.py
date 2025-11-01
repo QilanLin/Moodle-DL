@@ -145,6 +145,19 @@ class FeedbackMod(MoodleMod):
                     }
                 )
 
+                # Process item files (attached files to questions)
+                for item in items_data:
+                    item_files = item.get('itemfiles', [])
+                    if item_files:
+                        item_id = item.get('id', 0)
+                        item_name = item.get('name', 'item')
+
+                        # Set file properties and organize by item
+                        for item_file in item_files:
+                            item_file['filepath'] = f'/items/item_{item_id}_{PT.to_valid_name(item_name, is_file=False)}/'
+                            self.set_props_of_file(item_file, type='feedback_item_file')
+                            feedback_files.append(item_file)
+
             # Export analysis as separate file if available
             if analysis_data and analysis_data.get('itemsdata'):
                 feedback_files.append(
