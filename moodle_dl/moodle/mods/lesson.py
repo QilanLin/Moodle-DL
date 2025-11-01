@@ -74,6 +74,16 @@ class LessonMod(MoodleMod):
         await self.run_async_load_function_on_mod_entries(lessons, self.load_lesson_files)
 
     async def load_lesson_files(self, lesson: Dict):
+        """
+        加载课程文件（基于官方 Moodle Mobile App 改进）
+
+        改进点：
+        - 下载学生答案
+        - 下载教师反馈
+        - 完整的问题-答案-反馈记录
+
+        参考：moodleapp/src/addons/mod/lesson/services/lesson.ts
+        """
         # load only the last attempt
         # TODO: We could load all attempts, if needed
         lesson_id = lesson.get('id', 0)
@@ -81,6 +91,7 @@ class LessonMod(MoodleMod):
         try:
             user_attempt = await self.client.async_post('mod_lesson_get_user_attempt', data)
             user_attempt['lesson_name'] = lesson.get('name', '')
+            user_attempt['lesson_id'] = lesson_id
         except RequestRejectedError:
             logging.debug("No access rights for lesson %d", lesson_id)
             return
@@ -137,6 +148,10 @@ class LessonMod(MoodleMod):
                 }
             )
 
+        # 新增：下载问题答案和反馈（基于官方 Mobile App）
+        # 参考：mod_lesson_get_questions_attempts API
+        result += await self._get_questions_and_answers(attempt)
+
         attempt_pages_and_files = await self.run_async_collect_function_on_list(
             attempt.get('answerpages', []),
             self.load_attempt_page,
@@ -184,5 +199,94 @@ class LessonMod(MoodleMod):
                     'no_search_for_urls': True,
                 }
             )
+
+        return result
+
+    async def _get_questions_and_answers(self, attempt: Dict) -> List[Dict]:
+        """
+        获取课程中的问题、学生答案和教师反馈
+
+        基于官方 Moodle Mobile App 的实现
+        参考：moodleapp/src/addons/mod/lesson/services/lesson.ts
+
+        API: mod_lesson_get_questions_attempts
+
+        @param attempt: The user's lesson attempt data
+        @return: List of file dictionaries containing question-answer-feedback records
+        """
+        result = []
+        lesson_id = attempt.get('lesson_id', 0)
+        if lesson_id == 0:
+            return result
+
+        # Get the attempt number
+        # Note: Moodle API uses 'retake' number, not 'nquestions'
+        attempt_number = attempt.get('userstats', {}).get('lessonsclosed', 0)
+
+        try:
+            # Call API to get question attempts
+            data = {
+                'lessonid': lesson_id,
+                'attempt': attempt_number,
+                'correct': True,  # Include correct answers
+                'pageid': 0,  # 0 means all pages
+                'userid': self.user_id,
+            }
+
+            questions_data = await self.client.async_post('mod_lesson_get_questions_attempts', data)
+
+        except RequestRejectedError:
+            logging.debug("No access to questions for lesson %d", lesson_id)
+            return result
+        except Exception as e:
+            logging.debug("Error getting questions for lesson %d: %s", lesson_id, str(e))
+            return result
+
+        # Process each question attempt
+        attempts = questions_data.get('attempts', [])
+        if not attempts:
+            return result
+
+        for question_attempt in attempts:
+            # Build Markdown content with question, answer, feedback, score
+            question_title = question_attempt.get('title', 'Question')
+
+            markdown_content = f"# {question_title}\n\n"
+
+            # Add question content
+            question_html = question_attempt.get('contents', '')
+            if question_html:
+                markdown_content += f"## Question\n\n{question_html}\n\n"
+
+            # Add user's answer
+            user_answer = question_attempt.get('useranswer', '')
+            if user_answer:
+                markdown_content += f"## Your Answer\n\n{user_answer}\n\n"
+
+            # Add correct answer if available
+            correct_answer = question_attempt.get('correctanswer', '')
+            if correct_answer:
+                markdown_content += f"## Correct Answer\n\n{correct_answer}\n\n"
+
+            # Add feedback/response
+            response = question_attempt.get('response', '')
+            if response:
+                markdown_content += f"## Feedback\n\n{response}\n\n"
+
+            # Add score if available
+            if 'earned' in question_attempt:
+                earned = question_attempt.get('earned', 0)
+                total = question_attempt.get('total', 0)
+                markdown_content += f"## Score\n\n{earned} / {total}\n\n"
+
+            # Create file entry
+            filename = PT.to_valid_name(f"Q{question_attempt.get('id', 0)}_{question_title}", is_file=True)
+            result.append({
+                'filename': filename,
+                'filepath': '/answers/',
+                'timemodified': question_attempt.get('timeseen', 0),
+                'description': markdown_content,
+                'type': 'description',
+            })
 
         return result
