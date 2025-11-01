@@ -12,6 +12,7 @@ from moodle_dl.moodle.mods.calendar import CalendarMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.data import DataMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.folder import FolderMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.forum import ForumMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.glossary import GlossaryMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.lesson import LessonMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.page import PageMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.quiz import QuizMod  # noqa: F401 isort:skip

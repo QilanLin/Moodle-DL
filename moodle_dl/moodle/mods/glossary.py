@@ -1,0 +1,235 @@
+import logging
+from typing import Dict, List
+
+from moodle_dl.config import ConfigHelper
+from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
+from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
+
+
+class GlossaryMod(MoodleMod):
+    """
+    Glossary module handler
+
+    Based on official Moodle Mobile App implementation:
+    moodleapp/src/addons/mod/glossary/services/glossary.ts
+
+    Supports:
+    - Downloading all glossary entries (terms and definitions)
+    - Entry attachments (images, documents, etc.)
+    - Categorized entries
+    - Author information
+    - Tags
+    """
+
+    MOD_NAME = 'glossary'
+    MOD_PLURAL_NAME = 'glossaries'
+    MOD_MIN_VERSION = 2015111600  # 3.0
+
+    @classmethod
+    def download_condition(cls, config: ConfigHelper, file: File) -> bool:
+        return config.get_download_glossaries() or (
+            not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted)
+        )
+
+    async def real_fetch_mod_entries(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> Dict[int, Dict[int, Dict]]:
+        """
+        Fetch all glossary entries from courses
+
+        Process:
+        1. Get glossaries by courses
+        2. For each glossary, get all entries
+        3. Download entry definitions and attachments
+        """
+
+        result = {}
+        if not self.config.get_download_glossaries():
+            return result
+
+        # Get all glossaries for the courses
+        glossaries = (
+            await self.client.async_post(
+                'mod_glossary_get_glossaries_by_courses', self.get_data_for_mod_entries_endpoint(courses)
+            )
+        ).get('glossaries', [])
+
+        for glossary in glossaries:
+            course_id = glossary.get('course', 0)
+            module_id = glossary.get('coursemodule', 0)
+            glossary_name = glossary.get('name', 'unnamed glossary')
+
+            # Get glossary intro files
+            glossary_files = glossary.get('introfiles', [])
+            self.set_props_of_files(glossary_files, type='glossary_introfile')
+
+            # Add glossary intro as description
+            glossary_intro = glossary.get('intro', '')
+            if glossary_intro != '':
+                glossary_files.append(
+                    {
+                        'filename': 'Glossary intro',
+                        'filepath': '/',
+                        'description': glossary_intro,
+                        'type': 'description',
+                    }
+                )
+
+            self.add_module(
+                result,
+                course_id,
+                module_id,
+                {
+                    'id': glossary.get('id', 0),
+                    'name': glossary_name,
+                    'files': glossary_files,
+                    'entries': glossary.get('entries', 0),  # Number of entries
+                },
+            )
+
+        # Load glossary entries
+        await self.add_glossary_entries(result)
+        return result
+
+    async def add_glossary_entries(self, glossaries: Dict[int, Dict[int, Dict]]):
+        """
+        Fetch glossary entries
+        @param glossaries: Dictionary of all glossaries, indexed by courses, then module id
+        """
+        if not self.config.get_download_glossaries():
+            return
+
+        await self.run_async_load_function_on_mod_entries(glossaries, self.load_glossary_entries)
+
+    async def load_glossary_entries(self, glossary: Dict):
+        """
+        Load all entries for a glossary
+
+        Process:
+        1. Get all entries (using 'ALL' letter to get everything)
+        2. For each entry:
+           - Create definition file
+           - Download attachments
+           - Save metadata
+        """
+        glossary_id = glossary.get('id', 0)
+        glossary_name = glossary.get('name', 'glossary')
+
+        try:
+            # Get all entries using 'ALL' letter (gets all entries regardless of first letter)
+            # We can also iterate through alphabet letters, but 'ALL' is more efficient
+            entries_response = await self.client.async_post(
+                'mod_glossary_get_entries_by_letter',
+                {
+                    'id': glossary_id,
+                    'letter': 'ALL',
+                    'from': 0,
+                    'limit': 0,  # 0 means no limit
+                    'options': {
+                        'includenotapproved': False,
+                    },
+                },
+            )
+
+            entries = entries_response.get('entries', [])
+
+        except RequestRejectedError:
+            logging.debug("No access rights for glossary %d", glossary_id)
+            return
+        except Exception as e:
+            logging.debug("Error getting entries for glossary %d: %s", glossary_id, str(e))
+            return
+
+        # Process each entry
+        for entry in entries:
+            entry_files = self._create_entry_files(entry, glossary_name)
+            glossary['files'] += entry_files
+
+    def _create_entry_files(self, entry: Dict, glossary_name: str) -> List[Dict]:
+        """
+        Create files for a glossary entry
+
+        @param entry: Entry data
+        @param glossary_name: Parent glossary name
+        @return: List of file dictionaries
+        """
+        result = []
+        entry_id = entry.get('id', 0)
+        concept = entry.get('concept', 'Untitled')
+        definition = entry.get('definition', '')
+        author = entry.get('userfullname', 'Unknown')
+        time_created = entry.get('timecreated', 0)
+        time_modified = entry.get('timemodified', 0)
+
+        # Create safe filename for the entry
+        safe_concept = PT.to_valid_name(concept, is_file=False)
+
+        # Build entry content in Markdown format
+        entry_content = f"# {concept}\n\n"
+
+        # Add author and timestamps
+        entry_content += f"**Author:** {author}\n\n"
+        if time_modified > 0:
+            from datetime import datetime
+
+            modified_readable = datetime.fromtimestamp(time_modified).strftime('%Y-%m-%d %H:%M:%S')
+            entry_content += f"**Last modified:** {modified_readable}\n\n"
+
+        # Add definition
+        entry_content += f"## Definition\n\n{definition}\n\n"
+
+        # Add aliases if present
+        aliases = entry.get('aliases', [])
+        if aliases:
+            entry_content += f"## Aliases\n\n"
+            for alias in aliases:
+                alias_name = alias if isinstance(alias, str) else alias.get('alias', '')
+                if alias_name:
+                    entry_content += f"- {alias_name}\n"
+            entry_content += "\n"
+
+        # Add category if present
+        category_name = entry.get('categoryname', '')
+        if category_name:
+            entry_content += f"**Category:** {category_name}\n\n"
+
+        # Add tags if present
+        tags = entry.get('tags', [])
+        if tags:
+            entry_content += f"## Tags\n\n"
+            for tag in tags:
+                tag_name = tag.get('displayname', tag.get('rawname', 'Unknown'))
+                entry_content += f"- {tag_name}\n"
+            entry_content += "\n"
+
+        # Create the entry file
+        result.append(
+            {
+                'filename': safe_concept,
+                'filepath': '/entries/',
+                'timemodified': time_modified,
+                'description': entry_content,
+                'type': 'description',
+            }
+        )
+
+        # Add attachments
+        attachments = entry.get('attachments', [])
+        if attachments:
+            for attachment in attachments:
+                # Place attachments in entry-specific subdirectory
+                attachment['filepath'] = f'/entries/{safe_concept}_files/'
+                self.set_props_of_file(attachment, type='glossary_file')
+                result.append(attachment)
+
+        # Add inline files (images embedded in definition)
+        inline_files = entry.get('definitioninlinefiles', [])
+        if inline_files:
+            for inline_file in inline_files:
+                inline_file['filepath'] = f'/entries/{safe_concept}_files/'
+                self.set_props_of_file(inline_file, type='glossary_file')
+                result.append(inline_file)
+
+        return result

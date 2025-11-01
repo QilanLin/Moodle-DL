@@ -113,6 +113,10 @@ class ConfigHelper:
         # return a stored boolean if wikis should be downloaded
         return self.get_property_or('download_wikis', False)
 
+    def get_download_glossaries(self) -> bool:
+        # return a stored boolean if glossaries should be downloaded
+        return self.get_property_or('download_glossaries', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)
