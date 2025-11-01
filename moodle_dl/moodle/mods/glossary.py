@@ -398,3 +398,67 @@ class GlossaryMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch categories for glossary {glossary_id}: {e}")
             return []
+
+    async def _get_authors_list(self, glossary_id: int) -> List[str]:
+        """
+        Get list of authors who have contributed to glossary
+        Uses mod_glossary_get_entries_by_author API
+
+        Returns list of author identifiers
+        """
+        try:
+            # Get first page to see structure
+            response = await self.client.async_post(
+                'mod_glossary_get_entries_by_author',
+                {
+                    'id': glossary_id,
+                    'letter': 'ALL',  # Get all authors
+                    'field': 'LASTNAME',  # Sort by lastname
+                    'sort': 'ASC',
+                    'from': 0,
+                    'limit': 10  # Just get sample to verify API availability
+                }
+            )
+            # Extract unique authors from the response
+            entries = response.get('entries', [])
+            authors = list({entry.get('userfullname', ''): entry.get('userid', 0) for entry in entries}.items())
+            return [{'name': name, 'id': uid} for name, uid in authors if name]
+        except Exception as e:
+            logging.debug(f"Could not fetch authors for glossary {glossary_id}: {e}")
+            return []
+
+    async def _get_entries_by_date_info(self, glossary_id: int) -> Dict:
+        """
+        Get information about entries organized by date
+        Uses mod_glossary_get_entries_by_date API
+
+        Returns metadata about date-based organization
+        """
+        try:
+            # Get recent entries (newest first)
+            response = await self.client.async_post(
+                'mod_glossary_get_entries_by_date',
+                {
+                    'id': glossary_id,
+                    'order': 'CREATE',  # or 'UPDATE' for modification date
+                    'sort': 'DESC',  # Newest first
+                    'from': 0,
+                    'limit': 10  # Sample to verify API
+                }
+            )
+            entries = response.get('entries', [])
+            if entries:
+                newest_entry = entries[0].get('timecreated', 0) if entries else 0
+                oldest_entry = entries[-1].get('timecreated', 0) if len(entries) > 1 else newest_entry
+                return {
+                    'api_available': True,
+                    'sample_count': len(entries),
+                    'newest_entry_time': newest_entry,
+                    'oldest_entry_time': oldest_entry,
+                    'sort_orders_supported': ['CREATE', 'UPDATE'],
+                    'note': 'Entries can be browsed by creation or modification date'
+                }
+            return {'api_available': True, 'sample_count': 0}
+        except Exception as e:
+            logging.debug(f"Could not fetch date info for glossary {glossary_id}: {e}")
+            return {'api_available': False, 'error': str(e)}

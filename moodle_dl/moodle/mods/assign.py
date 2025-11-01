@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, List
 
@@ -52,6 +53,64 @@ class AssignMod(MoodleMod):
                         'type': 'description',
                     }
                 )
+
+            # Create comprehensive assignment metadata
+            assign_metadata = {
+                'assignment_id': assign.get('id', 0),
+                'course_id': assign.get('course', 0),
+                'module_id': assign.get('cmid', 0),
+                'name': assign.get('name', ''),
+                'intro': assign_intro,
+                'settings': {
+                    'allowsubmissionsfromdate': assign.get('allowsubmissionsfromdate', 0),
+                    'duedate': assign.get('duedate', 0),
+                    'cutoffdate': assign.get('cutoffdate', 0),
+                    'gradingduedate': assign.get('gradingduedate', 0),
+                    'alwaysshowdescription': assign.get('alwaysshowdescription', 0),
+                    'submissiondrafts': assign.get('submissiondrafts', 0),
+                    'sendnotifications': assign.get('sendnotifications', 0),
+                    'sendlatenotifications': assign.get('sendlatenotifications', 0),
+                    'sendstudentnotifications': assign.get('sendstudentnotifications', 1),
+                    'requiresubmissionstatement': assign.get('requiresubmissionstatement', 0),
+                    'requireallteammemberssubmit': assign.get('requireallteammemberssubmit', 0),
+                    'teamsubmission': assign.get('teamsubmission', 0),
+                    'blindmarking': assign.get('blindmarking', 0),
+                    'hidegrader': assign.get('hidegrader', 0),
+                    'revealidentities': assign.get('revealidentities', 0),
+                    'attemptreopenmethod': assign.get('attemptreopenmethod', 'none'),
+                    'maxattempts': assign.get('maxattempts', -1),
+                    'markingworkflow': assign.get('markingworkflow', 0),
+                    'markingallocation': assign.get('markingallocation', 0),
+                },
+                'grading': {
+                    'grade': assign.get('grade', 0),
+                    'gradingmethod': 'simple',  # Can be 'simple', 'rubric', 'guide'
+                },
+                'submissions': {
+                    'submissionattachments': assign.get('submissionattachments', 0),
+                    'maxsubmissionsizebytes': assign.get('maxsubmissionsizebytes', 0),
+                },
+                'notifications': {
+                    'sendnotifications': assign.get('sendnotifications', 0),
+                    'sendlatenotifications': assign.get('sendlatenotifications', 0),
+                },
+                'timestamps': {
+                    'timemodified': assign.get('timemodified', 0),
+                    'timecreated': assign.get('timecreated', 0),
+                },
+                'configs': assign.get('configs', []),
+            }
+
+            # Add metadata file
+            assign_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': assign.get('timemodified', 0),
+                    'content': json.dumps(assign_metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
 
             result[assign.get('cmid', 0)] = {
                 'id': assign.get('id', 0),
@@ -165,11 +224,68 @@ class AssignMod(MoodleMod):
                         )
                     found_module['files'] += self._get_files_of_plugins(submission, f'/all_submissions/{subfolder}/')
 
+    async def _get_assignment_grades(self, assign_id: int) -> List[Dict]:
+        """
+        Get detailed grading information for an assignment
+        Returns grades for all participants (teachers) or own grade (students)
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_assign_get_grades',
+                {
+                    'assignmentids': [assign_id],
+                    'since': 0  # Get all grades, not just recent ones
+                }
+            )
+            assignments = response.get('assignments', [])
+            if assignments:
+                return assignments[0].get('grades', [])
+            return []
+        except RequestRejectedError:
+            logging.debug(f"No access to grades for assignment {assign_id}")
+            return []
+        except Exception as e:
+            logging.debug(f"Could not fetch grades for assignment {assign_id}: {e}")
+            return []
+
     async def load_submissions(self, assign: Dict):
         "Fetches for a given assign module the submissions"
         data = {'userid': self.user_id, 'assignid': assign.get('id', 0)}
         submission = await self.client.async_post('mod_assign_get_submission_status', data)
         assign['files'] += self._get_files_of_submission(submission)
+
+        # Get detailed grades information
+        assign_id = assign.get('id', 0)
+        grades = await self._get_assignment_grades(assign_id)
+        if grades:
+            # Export grades as JSON metadata
+            grades_metadata = {
+                'assignment_id': assign_id,
+                'total_grades': len(grades),
+                'grades': [
+                    {
+                        'id': grade.get('id', 0),
+                        'userid': grade.get('userid', 0),
+                        'attemptnumber': grade.get('attemptnumber', 0),
+                        'timecreated': grade.get('timecreated', 0),
+                        'timemodified': grade.get('timemodified', 0),
+                        'grader': grade.get('grader', 0),
+                        'grade': grade.get('grade', ''),
+                        'gradefordisplay': grade.get('gradefordisplay', ''),
+                    }
+                    for grade in grades
+                ],
+            }
+
+            assign['files'].append(
+                {
+                    'filename': PT.to_valid_name('grades', is_file=True) + '.json',
+                    'filepath': '/submissions/',
+                    'timemodified': assign.get('timemodified', 0),
+                    'content': json.dumps(grades_metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
 
     def _get_files_of_submission(self, submission: Dict) -> List[Dict]:
         result = []

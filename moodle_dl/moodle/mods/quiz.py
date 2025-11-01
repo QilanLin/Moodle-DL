@@ -54,9 +54,11 @@ class QuizMod(MoodleMod):
             access_info = {}
             best_grade = {}
             feedback = ''
+            review_options = {}
             if self.config.get_download_quizzes():
                 access_info = await self._get_quiz_access_info(quiz_id)
                 best_grade = await self._get_user_best_grade(quiz_id)
+                review_options = await self._get_combined_review_options(quiz_id)
                 if best_grade.get('hasgrade', False):
                     feedback = await self._get_quiz_feedback(quiz_id, best_grade.get('grade', 0))
 
@@ -101,6 +103,7 @@ class QuizMod(MoodleMod):
                 'access_information': access_info,
                 'user_grade': best_grade,
                 'feedback': feedback,
+                'review_options': review_options,
                 'timestamps': {
                     'timeopen': quiz.get('timeopen', 0),
                     'timeclose': quiz.get('timeclose', 0),
@@ -282,3 +285,24 @@ class QuizMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch feedback for quiz {quiz_id} grade {grade}: {e}")
             return ''
+
+    async def _get_combined_review_options(self, quiz_id: int) -> Dict:
+        """
+        Get combined review options from all quiz attempts
+
+        This determines what the student can see when reviewing their attempts
+        (e.g., correct answers, marks, feedback, etc.)
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_quiz_get_combined_review_options',
+                {'quizid': quiz_id, 'userid': self.user_id}
+            )
+            return {
+                'someoptions': response.get('someoptions', {}),
+                'alloptions': response.get('alloptions', {}),
+                'note': 'Review options control what students can see when reviewing quiz attempts'
+            }
+        except Exception as e:
+            logging.debug(f"Could not fetch combined review options for quiz {quiz_id}: {e}")
+            return {}
