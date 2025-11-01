@@ -109,6 +109,10 @@ class ConfigHelper:
         # return a stored boolean if books should be downloaded
         return self.get_property_or('download_books', False)
 
+    def get_download_bigbluebuttonbns(self) -> bool:
+        # return a stored boolean if BigBlueButton meetings should be downloaded
+        return self.get_property_or('download_bigbluebuttonbns', False)
+
     def get_download_wikis(self) -> bool:
         # return a stored boolean if wikis should be downloaded
         return self.get_property_or('download_wikis', False)

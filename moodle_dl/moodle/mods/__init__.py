@@ -7,6 +7,7 @@ from moodle_dl.moodle.request_helper import RequestHelper
 from moodle_dl.types import Course
 
 from moodle_dl.moodle.mods.assign import AssignMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.bigbluebuttonbn import BigbluebuttonbnMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.book import BookMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.calendar import CalendarMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.choice import ChoiceMod  # noqa: F401 isort:skip
