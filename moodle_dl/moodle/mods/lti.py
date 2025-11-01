@@ -1,3 +1,4 @@
+import html
 import json
 import logging
 from typing import Dict, List
@@ -250,7 +251,7 @@ class LtiMod(MoodleMod):
 
         This mimics the official Moodle Mobile App's launcher generation
         """
-        html = f'''<!DOCTYPE html>
+        form_html = f'''<!DOCTYPE html>
 <html>
 <head>
     <meta charset="utf-8">
@@ -307,22 +308,22 @@ class LtiMod(MoodleMod):
             param_name = param.get('name', '')
             param_value = param.get('value', '')
 
-            # HTML escape the values
-            param_name_escaped = param_name.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
-            param_value_escaped = param_value.replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+            # HTML escape the values using standard library for security
+            param_name_escaped = html.escape(param_name, quote=True)
+            param_value_escaped = html.escape(param_value, quote=True)
 
             if param_name == 'ext_submit':
                 # Make this a visible submit button
-                html += f'        <input type="submit" class="submit-btn" value="{param_value_escaped}" />\n'
+                form_html += f'        <input type="submit" class="submit-btn" value="{param_value_escaped}" />\n'
             else:
                 # Hidden input
-                html += f'        <input type="hidden" name="{param_name_escaped}" value="{param_value_escaped}" />\n'
+                form_html += f'        <input type="hidden" name="{param_name_escaped}" value="{param_value_escaped}" />\n'
 
         # If no ext_submit button was found, add a default submit button
         if not any(p.get('name') == 'ext_submit' for p in parameters):
-            html += '        <input type="submit" class="submit-btn" value="Launch Tool" />\n'
+            form_html += '        <input type="submit" class="submit-btn" value="Launch Tool" />\n'
 
-        html += '''    </form>
+        form_html += '''    </form>
 
     <div class="params">
         <p><strong>Note:</strong> This form contains the LTI launch parameters. Submit the form to launch the external tool.</p>
@@ -337,4 +338,4 @@ class LtiMod(MoodleMod):
 </body>
 </html>
 '''
-        return html
+        return form_html
