@@ -69,16 +69,9 @@ class ChatMod(MoodleMod):
 
             # Get intro/description if available
             intro = chat.get('intro', '')
-            if intro:
-                chat_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(intro)
+            if intro_file:
+                chat_files.append(intro_file)
 
             # Get chat sessions
             sessions_data = await self._get_chat_sessions(chat_id)
@@ -101,28 +94,12 @@ class ChatMod(MoodleMod):
                     'timemodified': chat.get('timemodified', 0),
                 },
                 'sessions': sessions_data,
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_outcomes': True,
-                    'show_description': True,
-                    'purpose': 'communication',
-                },
+                'features': self.get_features(purpose='communication'),
                 'note': 'Chat is a real-time communication module with scheduled sessions. '
                 + 'This export includes chat settings, session history, and messages.',
             }
 
-            chat_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            chat_files.append(self.create_metadata_file(metadata))
 
             # Export sessions as separate files
             for session_info in sessions_data:

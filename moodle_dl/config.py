@@ -64,6 +64,23 @@ class ConfigHelper:
         """Check if a property exists in the configuration"""
         return key in self._whole_config
 
+    def get_download_option(self, option_name: str, default: bool = False) -> bool:
+        """
+        Generic getter for download_* configuration options.
+
+        Args:
+            option_name: The name of the option (e.g., 'submissions', 'quizzes')
+                        Will be prefixed with 'download_'
+            default: Default value if not configured
+
+        Returns:
+            bool: Whether the option should be downloaded
+
+        Example:
+            get_download_option('submissions') -> reads 'download_submissions'
+        """
+        return self.get_property_or(f'download_{option_name}', default)
+
     def set_property(self, key: str, value: any):
         # sets a property in the JSON object
         self._whole_config.update({key: value})
@@ -77,114 +94,88 @@ class ConfigHelper:
 
     # ---------------------------- GETTERS ------------------------------------
 
-    def get_download_submissions(self) -> str:
-        # return a stored boolean if submissions should be downloaded
-        return self.get_property_or('download_submissions', False)
+    # Download option getters - using generic method to avoid code duplication
+    def get_download_submissions(self) -> bool:
+        return self.get_download_option('submissions')
 
     def get_download_descriptions(self) -> bool:
-        # return a stored boolean if descriptions should be downloaded
-        return self.get_property_or('download_descriptions', False)
+        return self.get_download_option('descriptions')
 
     def get_download_links_in_descriptions(self) -> bool:
-        # return a stored boolean if links in descriptions should be downloaded
-        return self.get_property_or('download_links_in_descriptions', False)
+        return self.get_download_option('links_in_descriptions')
 
     def get_download_databases(self) -> bool:
-        # return a stored boolean if databases should be downloaded
-        return self.get_property_or('download_databases', False)
+        return self.get_download_option('databases')
 
     def get_download_forums(self) -> bool:
-        # return a stored boolean if forums should be downloaded
-        return self.get_property_or('download_forums', False)
+        return self.get_download_option('forums')
 
     def get_download_quizzes(self) -> bool:
-        # return a stored boolean if quizzes should be downloaded
-        return self.get_property_or('download_quizzes', False)
+        return self.get_download_option('quizzes')
 
     def get_download_lessons(self) -> bool:
-        # return a stored boolean if lessons should be downloaded
-        return self.get_property_or('download_lessons', False)
+        return self.get_download_option('lessons')
 
     def get_download_workshops(self) -> bool:
-        # return a stored boolean if workshops should be downloaded
-        return self.get_property_or('download_workshops', False)
+        return self.get_download_option('workshops')
 
-    def get_download_books(self) -> str:
-        # return a stored boolean if books should be downloaded
-        return self.get_property_or('download_books', False)
+    def get_download_books(self) -> bool:
+        return self.get_download_option('books')
 
     def get_download_bigbluebuttonbns(self) -> bool:
-        # return a stored boolean if BigBlueButton meetings should be downloaded
-        return self.get_property_or('download_bigbluebuttonbns', False)
+        return self.get_download_option('bigbluebuttonbns')
 
     def get_download_wikis(self) -> bool:
-        # return a stored boolean if wikis should be downloaded
-        return self.get_property_or('download_wikis', False)
+        return self.get_download_option('wikis')
 
     def get_download_glossaries(self) -> bool:
-        # return a stored boolean if glossaries should be downloaded
-        return self.get_property_or('download_glossaries', False)
+        return self.get_download_option('glossaries')
 
     def get_download_h5pactivities(self) -> bool:
-        # return a stored boolean if h5p activities should be downloaded
-        return self.get_property_or('download_h5pactivities', False)
+        return self.get_download_option('h5pactivities')
 
     def get_download_h5p_attempts(self) -> bool:
-        # return a stored boolean if h5p attempts/results should be downloaded
-        return self.get_property_or('download_h5p_attempts', False)
+        return self.get_download_option('h5p_attempts')
 
     def get_download_imscps(self) -> bool:
-        # return a stored boolean if imscp (IMS Content Package) should be downloaded
-        return self.get_property_or('download_imscps', False)
+        return self.get_download_option('imscps')
 
     def get_download_scorms(self) -> bool:
-        # return a stored boolean if scorm packages should be downloaded
-        return self.get_property_or('download_scorms', False)
+        return self.get_download_option('scorms')
 
     def get_download_scorm_scos(self) -> bool:
-        # return a stored boolean if scorm scos should be downloaded
-        return self.get_property_or('download_scorm_scos', False)
+        return self.get_download_option('scorm_scos')
 
     def get_download_scorm_attempts(self) -> bool:
-        # return a stored boolean if scorm attempts should be downloaded
-        return self.get_property_or('download_scorm_attempts', False)
+        return self.get_download_option('scorm_attempts')
 
     def get_download_subsections(self) -> bool:
-        # return a stored boolean if subsections should be downloaded
-        return self.get_property_or('download_subsections', False)
+        return self.get_download_option('subsections')
 
     def get_download_qbanks(self) -> bool:
-        # return a stored boolean if question banks should be downloaded
-        return self.get_property_or('download_qbanks', False)
+        return self.get_download_option('qbanks')
 
     def get_download_resources(self) -> bool:
-        # return a stored boolean if resource modules should be downloaded
         # Resource modules are one of the most commonly used in Moodle for file uploads
-        return self.get_property_or('download_resources', True)
+        return self.get_download_option('resources', default=True)
 
     def get_download_urls(self) -> bool:
-        # return a stored boolean if url modules should be downloaded
-        return self.get_property_or('download_urls', False)
+        return self.get_download_option('urls')
 
     def get_download_labels(self) -> bool:
-        # return a stored boolean if label modules should be downloaded
-        return self.get_property_or('download_labels', False)
+        return self.get_download_option('labels')
 
     def get_download_chats(self) -> bool:
-        # return a stored boolean if chat modules should be downloaded
-        return self.get_property_or('download_chats', False)
+        return self.get_download_option('chats')
 
     def get_download_choices(self) -> bool:
-        # return a stored boolean if choice modules should be downloaded
-        return self.get_property_or('download_choices', False)
+        return self.get_download_option('choices')
 
     def get_download_feedbacks(self) -> bool:
-        # return a stored boolean if feedback modules should be downloaded
-        return self.get_property_or('download_feedbacks', False)
+        return self.get_download_option('feedbacks')
 
     def get_download_surveys(self) -> bool:
-        # return a stored boolean if survey modules should be downloaded
-        return self.get_property_or('download_surveys', False)
+        return self.get_download_option('surveys')
 
     def get_download_ltis(self) -> bool:
         # LTI (external tool) module is always enabled for complete metadata export
@@ -193,9 +184,8 @@ class ConfigHelper:
         # Note: kalvidres and helixmedia still use cookie-based handling with dedicated extractors
         return True
 
-    def get_download_calendars(self) -> str:
-        # return a stored boolean if calendars should be downloaded
-        return self.get_property_or('download_calendars', False)
+    def get_download_calendars(self) -> bool:
+        return self.get_download_option('calendars')
 
     def get_userid_and_version(self) -> Tuple[str, int]:
         # return the userid and a version

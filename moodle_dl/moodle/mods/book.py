@@ -41,15 +41,10 @@ class BookMod(MoodleMod):
             self.set_props_of_files(book_files, type='book_file')
 
             book_intro = book.get('intro', '')
-            if book_intro != '':
-                book_files.append(
-                    {
-                        'filename': 'Book intro',
-                        'filepath': '/',
-                        'description': book_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(book_intro)
+            if intro_file:
+                intro_file['filename'] = 'Book intro'
+                book_files.append(intro_file)
 
             book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
             if len(book_contents) > 1:

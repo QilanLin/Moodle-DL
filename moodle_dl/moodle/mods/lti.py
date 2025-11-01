@@ -98,16 +98,9 @@ class LtiMod(MoodleMod):
 
             # Get LTI intro/description
             lti_intro = lti.get('intro', '')
-            if lti_intro:
-                lti_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': lti_intro,
-                        'type': 'description',
-                        'timemodified': lti.get('timemodified', 0),
-                    }
-                )
+            intro_file = self.create_intro_file(lti_intro, lti.get('timemodified', 0))
+            if intro_file:
+                lti_files.append(intro_file)
 
             # Get launch data (endpoint and parameters)
             launch_data = None
@@ -210,13 +203,7 @@ class LtiMod(MoodleMod):
                 }
 
             lti_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': lti.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=lti.get('timemodified', 0))
             )
 
             # Also create a URL shortcut to the tool (for manual access)

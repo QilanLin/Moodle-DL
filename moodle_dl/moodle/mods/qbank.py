@@ -78,16 +78,9 @@ class QbankMod(MoodleMod):
                     qbank_files = []
 
                     # Get qbank intro/description if available
-                    if qbank_description:
-                        qbank_files.append(
-                            {
-                                'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                                'filepath': '/',
-                                'description': qbank_description,
-                                'type': 'description',
-                                'timemodified': 0,
-                            }
-                        )
+                    intro_file = self.create_intro_file(qbank_description)
+                    if intro_file:
+                        qbank_files.append(intro_file)
 
                     # Get contents if any (though qbanks typically don't have downloadable files)
                     qbank_contents = module.get('contents', [])
@@ -129,15 +122,7 @@ class QbankMod(MoodleMod):
                         + 'in the Moodle Mobile App. This export provides metadata about the question bank.',
                     }
 
-                    qbank_files.append(
-                        {
-                            'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                            'filepath': '/',
-                            'timemodified': 0,
-                            'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                            'type': 'content',
-                        }
-                    )
+                    qbank_files.append(self.create_metadata_file(metadata))
 
                     self.add_module(
                         result,

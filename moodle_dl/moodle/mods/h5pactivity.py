@@ -75,15 +75,10 @@ class H5PActivityMod(MoodleMod):
 
             # Add intro description
             h5p_intro = h5p.get('intro', '')
-            if h5p_intro != '':
-                h5p_files.append(
-                    {
-                        'filename': 'H5P intro',
-                        'filepath': '/',
-                        'description': h5p_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(h5p_intro)
+            if intro_file:
+                intro_file['filename'] = 'H5P intro'
+                h5p_files.append(intro_file)
 
             # Add H5P package files
             package_files = h5p.get('package', [])
@@ -116,13 +111,7 @@ class H5PActivityMod(MoodleMod):
             }
 
             h5p_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': h5p.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=h5p.get('timemodified', 0))
             )
 
             self.add_module(

@@ -41,15 +41,10 @@ class WorkshopMod(MoodleMod):
             self.set_props_of_files(workshop_files, type='workshop_introfile')
 
             workshop_intro = workshop.get('intro', '')
-            if workshop_intro != '':
-                workshop_files.append(
-                    {
-                        'filename': 'Workshop intro',
-                        'filepath': '/',
-                        'description': workshop_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(workshop_intro)
+            if intro_file:
+                intro_file['filename'] = 'Workshop intro'
+                workshop_files.append(intro_file)
 
             workshop_instruct_authors = workshop.get('instructauthors', '')
             if workshop_instruct_authors != '':
@@ -135,30 +130,18 @@ class WorkshopMod(MoodleMod):
                     'timemodified': workshop.get('timemodified', 0),
                     'timecreated': workshop.get('timecreated', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': False,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'assessment',
-                },
+                'features': self.get_features(
+                    purpose='assessment',
+                    completion_tracks_views=False,
+                    grade_has_grade=True
+                ),
                 'note': 'Workshop is a peer assessment activity with flexible grading strategies. '
                 + 'This export includes comprehensive settings, workflow phases, submissions, and peer assessments.',
             }
 
             # Add metadata file
             workshop_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': workshop.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=workshop.get('timemodified', 0))
             )
 
             self.add_module(

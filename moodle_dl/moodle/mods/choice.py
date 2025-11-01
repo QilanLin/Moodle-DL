@@ -201,13 +201,7 @@ class ChoiceMod(MoodleMod):
                 }
 
             choice_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': choice.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=choice.get('timemodified', 0))
             )
 
             self.add_module(

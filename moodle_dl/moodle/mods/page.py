@@ -75,16 +75,9 @@ class PageMod(MoodleMod):
             page_files += page.get('contentfiles', [])
             self.set_props_of_files(page_files, type='page_file')
 
-            if page_intro != '':
-                page_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': page_intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(page_intro)
+            if intro_file:
+                page_files.append(intro_file)
 
             if page_content != '':
                 page_files.append(
@@ -134,30 +127,12 @@ class PageMod(MoodleMod):
                 'timestamps': {
                     'timemodified': page.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_has_grade': False,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'content',
-                },
+                'features': self.get_features(purpose='content'),
                 'note': 'Page is a simple content module for displaying HTML content. '
                 + 'This export includes the full HTML content, settings, and parsed display options.',
             }
 
-            page_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            page_files.append(self.create_metadata_file(metadata))
 
             self.add_module(
                 result,

@@ -94,16 +94,9 @@ class ResourceMod(MoodleMod):
 
             # Get intro/description if available
             intro = resource.get('intro', '')
-            if intro:
-                resource_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(intro)
+            if intro_file:
+                resource_files.append(intro_file)
 
             # Get content files (the actual resource files)
             content_files = resource.get('contentfiles', [])
@@ -179,15 +172,7 @@ class ResourceMod(MoodleMod):
                 + 'detailed file information.',
             }
 
-            resource_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            resource_files.append(self.create_metadata_file(metadata))
 
             self.add_module(
                 result,

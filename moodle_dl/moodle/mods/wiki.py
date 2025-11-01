@@ -70,15 +70,9 @@ class WikiMod(MoodleMod):
             self.set_props_of_files(wiki_files, type='wiki_introfile')
 
             # Add wiki intro as description
-            if wiki_intro != '':
-                wiki_files.append(
-                    {
-                        'filename': 'Wiki intro',
-                        'filepath': '/',
-                        'description': wiki_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(wiki_intro)
+            if intro_file:
+                wiki_files.append(intro_file)
 
             # Create comprehensive wiki metadata
             metadata = {
@@ -104,27 +98,13 @@ class WikiMod(MoodleMod):
                     'timemodified': wiki.get('timemodified', 0),
                     'timecreated': wiki.get('timecreated', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'collaboration',
-                },
+                'features': self.get_features(purpose='collaboration'),
                 'note': 'Wiki is a collaborative content creation module supporting multiple subwikis. '
                 + f'Mode: {wiki_mode}. This export includes all pages, attachments, and tags.',
             }
 
             wiki_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': wiki.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=wiki.get('timemodified', 0))
             )
 
             self.add_module(

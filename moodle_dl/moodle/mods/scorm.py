@@ -75,15 +75,10 @@ class ScormMod(MoodleMod):
 
             # Add intro description
             scorm_intro = scorm.get('intro', '')
-            if scorm_intro != '':
-                scorm_files.append(
-                    {
-                        'filename': 'SCORM intro',
-                        'filepath': '/',
-                        'description': scorm_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(scorm_intro)
+            if intro_file:
+                intro_file['filename'] = 'SCORM intro'
+                scorm_files.append(intro_file)
 
             # Add SCORM package file
             package_url = scorm.get('packageurl', '')
@@ -153,13 +148,7 @@ class ScormMod(MoodleMod):
             }
 
             scorm_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': scorm.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=scorm.get('timemodified', 0))
             )
 
             self.add_module(

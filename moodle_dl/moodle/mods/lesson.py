@@ -41,15 +41,10 @@ class LessonMod(MoodleMod):
             self.set_props_of_files(lesson_files, type='lesson_introfile')
 
             lesson_intro = lesson.get('intro', '')
-            if lesson_intro != '':
-                lesson_files.append(
-                    {
-                        'filename': 'Lesson intro',
-                        'filepath': '/',
-                        'description': lesson_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(lesson_intro)
+            if intro_file:
+                intro_file['filename'] = 'Lesson intro'
+                lesson_files.append(intro_file)
 
             # Get lesson access information if download is enabled
             access_info = {}
@@ -112,30 +107,18 @@ class LessonMod(MoodleMod):
                     'timemodified': lesson.get('timemodified', 0),
                     'timecreated': lesson.get('timecreated', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': False,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'assessment',
-                },
+                'features': self.get_features(
+                    purpose='assessment',
+                    completion_tracks_views=False,
+                    grade_has_grade=True
+                ),
                 'note': 'Lesson is a flexible activity for delivering content in adaptive ways. '
                 + 'This export includes comprehensive settings, access rules, and user attempt data.',
             }
 
             # Add metadata file
             lesson_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': lesson.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=lesson.get('timemodified', 0))
             )
 
             self.add_module(

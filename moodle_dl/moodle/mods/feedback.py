@@ -68,16 +68,9 @@ class FeedbackMod(MoodleMod):
 
             # Get intro/description if available
             intro = feedback.get('intro', '')
-            if intro:
-                feedback_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(intro)
+            if intro_file:
+                feedback_files.append(intro_file)
 
             # Get feedback items (questions)
             items_data = await self._get_feedback_items(feedback_id)
@@ -110,28 +103,15 @@ class FeedbackMod(MoodleMod):
                 },
                 'items': items_data,
                 'analysis': analysis_data,
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'completion_has_rules': True,
-                    'show_description': True,
-                    'purpose': 'communication',
-                },
+                'features': self.get_features(
+                    purpose='communication',
+                    completion_has_rules=True
+                ),
                 'note': 'Feedback is a customizable survey/questionnaire module. '
                 + 'This export includes feedback settings, questions, and response analysis.',
             }
 
-            feedback_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            feedback_files.append(self.create_metadata_file(metadata))
 
             # Export questions as separate file
             if items_data:

@@ -44,17 +44,10 @@ class FolderMod(MoodleMod):
             folder_files = folder.get('introfiles', [])
             self.set_props_of_files(folder_files, type='folder_file')
 
-            if folder_intro != '':
-                folder_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': folder_intro,
-                        'timemodified': folder_time_modified,
-                        'filter_urls_during_search_containing': ['/mod_folder/intro'],
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(folder_intro, folder_time_modified)
+            if intro_file:
+                intro_file['filter_urls_during_search_containing'] = ['/mod_folder/intro']
+                folder_files.append(intro_file)
 
             # Get folder contents from core_contents
             folder_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
@@ -92,30 +85,12 @@ class FolderMod(MoodleMod):
                 'timestamps': {
                     'timemodified': folder_time_modified,
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_has_grade': False,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'content',
-                },
+                'features': self.get_features(purpose='content'),
                 'note': 'Folder is a simple container for organizing files. '
                 + 'This export includes all files, folder settings, and display mode documentation.',
             }
 
-            folder_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            folder_files.append(self.create_metadata_file(metadata))
 
             self.add_module(
                 result,

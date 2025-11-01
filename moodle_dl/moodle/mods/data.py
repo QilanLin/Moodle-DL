@@ -38,16 +38,9 @@ class DataMod(MoodleMod):
             database_files = database.get('introfiles', [])
             self.set_props_of_files(database_files, type='database_introfile')
 
-            if database_intro != '':
-                database_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': database_intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(database_intro)
+            if intro_file:
+                database_files.append(intro_file)
 
             # Get field definitions (schema) for this database
             fields_data = await self._get_database_fields(database_id)
@@ -91,30 +84,16 @@ class DataMod(MoodleMod):
                 'timestamps': {
                     'timemodified': database.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': False,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'collaboration',
-                },
+                'features': self.get_features(
+                    purpose='collaboration',
+                    completion_tracks_views=False,
+                    grade_has_grade=True
+                ),
                 'note': 'Database is a structured data collection module. '
                 + 'This export includes schema definition (field types), all settings, and all entries with their metadata.',
             }
 
-            database_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            database_files.append(self.create_metadata_file(metadata))
 
             # Export schema as separate file if available
             if fields_data:

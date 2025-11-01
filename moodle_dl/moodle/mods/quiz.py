@@ -1,4 +1,3 @@
-import json
 import logging
 from typing import Dict, List
 
@@ -39,16 +38,9 @@ class QuizMod(MoodleMod):
             quiz_files = quiz.get('introfiles', [])
             self.set_props_of_files(quiz_files, type='quiz_introfile')
 
-            if quiz_intro != '':
-                quiz_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': quiz_intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(quiz_intro)
+            if intro_file:
+                quiz_files.append(intro_file)
 
             # Get additional quiz information if download is enabled
             access_info = {}
@@ -109,30 +101,16 @@ class QuizMod(MoodleMod):
                     'timeclose': quiz.get('timeclose', 0),
                     'timemodified': quiz.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': False,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'assessment',
-                },
+                'features': self.get_features(
+                    purpose='assessment',
+                    completion_tracks_views=False,
+                    grade_has_grade=True
+                ),
                 'note': 'Quiz is an assessment module with questions and grading. '
                 + 'This export includes quiz settings, access rules, and user performance data.',
             }
 
-            quiz_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            quiz_files.append(self.create_metadata_file(metadata))
 
             self.add_module(
                 result,

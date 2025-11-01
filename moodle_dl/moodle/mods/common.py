@@ -1,8 +1,9 @@
 import asyncio
+import json
 import logging
 import math
 from abc import ABCMeta, abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.request_helper import RequestHelper
@@ -225,3 +226,101 @@ class MoodleMod(metaclass=ABCMeta):
         if module_id in result[course_id]:
             logging.warning('Got duplicated module %s in course %s', module_id, course_id)
         result[course_id][module_id] = module
+
+    # ==================== DRY Helper Methods ====================
+    # These methods reduce code duplication across module implementations
+
+    @staticmethod
+    def create_metadata_file(
+        metadata: Dict,
+        filename: str = 'metadata',
+        filepath: str = '/',
+        timemodified: int = 0
+    ) -> Dict:
+        """
+        Helper method to create a metadata JSON file dictionary.
+
+        Args:
+            metadata: The metadata dictionary to export as JSON
+            filename: Base filename (without .json extension), default 'metadata'
+            filepath: File path, default '/'
+            timemodified: Modification timestamp, default 0
+
+        Returns:
+            Dict: File dictionary ready to be appended to module files list
+
+        Example:
+            metadata_file = self.create_metadata_file(metadata)
+            module_files.append(metadata_file)
+        """
+        return {
+            'filename': PT.to_valid_name(filename, is_file=True) + '.json',
+            'filepath': filepath,
+            'timemodified': timemodified,
+            'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+            'type': 'content',
+        }
+
+    @staticmethod
+    def create_intro_file(intro: str, timemodified: int = 0) -> Optional[Dict]:
+        """
+        Helper method to create an Introduction description file.
+
+        Args:
+            intro: The introduction/description text
+            timemodified: Modification timestamp, default 0
+
+        Returns:
+            Dict or None: File dictionary if intro is not empty, None otherwise
+
+        Example:
+            intro_file = self.create_intro_file(module_intro, module_time)
+            if intro_file:
+                module_files.append(intro_file)
+        """
+        if not intro or intro == '':
+            return None
+
+        return {
+            'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
+            'filepath': '/',
+            'description': intro,
+            'type': 'description',
+            'timemodified': timemodified,
+        }
+
+    # Default features for Moodle modules
+    DEFAULT_FEATURES = {
+        'groups': True,
+        'groupings': True,
+        'intro_support': True,
+        'completion_tracks_views': True,
+        'grade_has_grade': False,
+        'grade_outcomes': True,
+        'backup_moodle2': True,
+        'show_description': True,
+    }
+
+    @classmethod
+    def get_features(cls, purpose: str = 'content', **overrides) -> Dict:
+        """
+        Get module features dictionary with optional overrides.
+
+        Args:
+            purpose: Module purpose ('content', 'communication', 'collaboration', 'assessment')
+            **overrides: Any feature values to override (e.g., grade_has_grade=True)
+
+        Returns:
+            Dict: Complete features dictionary
+
+        Example:
+            'features': self.get_features(
+                purpose='collaboration',
+                grade_has_grade=True,
+                completion_has_rules=True
+            )
+        """
+        features = cls.DEFAULT_FEATURES.copy()
+        features['purpose'] = purpose
+        features.update(overrides)
+        return features

@@ -103,16 +103,9 @@ class BigbluebuttonbnMod(MoodleMod):
 
             # Get BBB intro/description
             bbb_intro = bbb.get('intro', '')
-            if bbb_intro:
-                bbb_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': bbb_intro,
-                        'type': 'description',
-                        'timemodified': bbb.get('timemodified', 0),
-                    }
-                )
+            intro_file = self.create_intro_file(bbb_intro, bbb.get('timemodified', 0))
+            if intro_file:
+                bbb_files.append(intro_file)
 
             # Get meeting info
             meeting_info = None
@@ -276,13 +269,7 @@ class BigbluebuttonbnMod(MoodleMod):
 
             # Add metadata file
             bbb_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': bbb.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=bbb.get('timemodified', 0))
             )
 
             self.add_module(

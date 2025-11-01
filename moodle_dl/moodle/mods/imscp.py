@@ -246,16 +246,9 @@ class ImscpMod(MoodleMod):
 
             # Get IMSCP intro/description
             imscp_intro = imscp.get('intro', '')
-            if imscp_intro:
-                imscp_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': imscp_intro,
-                        'type': 'description',
-                        'timemodified': imscp.get('timemodified', 0),
-                    }
-                )
+            intro_file = self.create_intro_file(imscp_intro, imscp.get('timemodified', 0))
+            if intro_file:
+                imscp_files.append(intro_file)
 
             # Get module contents from core_contents
             imscp_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
@@ -320,13 +313,7 @@ class ImscpMod(MoodleMod):
             }
 
             imscp_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': imscp.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=imscp.get('timemodified', 0))
             )
 
             self.add_module(

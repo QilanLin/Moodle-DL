@@ -37,15 +37,10 @@ class ForumMod(MoodleMod):
             self.set_props_of_files(forum_files, type='forum_introfile')
 
             forum_intro = forum.get('intro', '')
-            if forum_intro != '':
-                forum_files.append(
-                    {
-                        'filename': 'Forum intro',
-                        'filepath': '/',
-                        'description': forum_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(forum_intro)
+            if intro_file:
+                intro_file['filename'] = 'Forum intro'
+                forum_files.append(intro_file)
 
             # Create comprehensive forum metadata
             metadata = {
@@ -91,30 +86,17 @@ class ForumMod(MoodleMod):
                 'timestamps': {
                     'timemodified': forum.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'communication',
-                },
+                'features': self.get_features(
+                    purpose='communication',
+                    grade_has_grade=True
+                ),
                 'note': 'Forum is a communication module for discussions and Q&A. '
                 + 'This export includes comprehensive settings, access information, and all discussions.',
             }
 
             # Add metadata file
             forum_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': forum.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=forum.get('timemodified', 0))
             )
 
             self.add_module(

@@ -69,16 +69,9 @@ class GlossaryMod(MoodleMod):
             self.set_props_of_files(glossary_files, type='glossary_introfile')
 
             # Add glossary intro as description
-            if glossary_intro != '':
-                glossary_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': glossary_intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(glossary_intro)
+            if intro_file:
+                glossary_files.append(intro_file)
 
             # Get categories for this glossary
             categories_data = await self._get_glossary_categories(glossary_id)
@@ -130,30 +123,12 @@ class GlossaryMod(MoodleMod):
                 'timestamps': {
                     'timemodified': glossary.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_has_grade': True,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'collaboration',
-                },
+                'features': self.get_features(purpose='collaboration', grade_has_grade=True),
                 'note': 'Glossary is a collaborative knowledge building module. '
                 + 'This export includes comprehensive settings, categories, and all entries with their metadata.',
             }
 
-            glossary_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            glossary_files.append(self.create_metadata_file(metadata))
 
             # Export categories as separate file if available
             if categories_data:
@@ -205,7 +180,6 @@ class GlossaryMod(MoodleMod):
            - Save metadata
         """
         glossary_id = glossary.get('id', 0)
-        glossary_name = glossary.get('name', 'glossary')
 
         try:
             # Get all entries using 'ALL' letter (gets all entries regardless of first letter)
@@ -234,15 +208,14 @@ class GlossaryMod(MoodleMod):
 
         # Process each entry
         for entry in entries:
-            entry_files = self._create_entry_files(entry, glossary_name)
+            entry_files = self._create_entry_files(entry)
             glossary['files'] += entry_files
 
-    def _create_entry_files(self, entry: Dict, glossary_name: str) -> List[Dict]:
+    def _create_entry_files(self, entry: Dict) -> List[Dict]:
         """
         Create files for a glossary entry
 
         @param entry: Entry data
-        @param glossary_name: Parent glossary name
         @return: List of file dictionaries
         """
         result = []

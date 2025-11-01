@@ -66,16 +66,9 @@ class SurveyMod(MoodleMod):
 
             # Get intro/description if available
             intro = survey.get('intro', '')
-            if intro:
-                survey_files.append(
-                    {
-                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                        'filepath': '/',
-                        'description': intro,
-                        'type': 'description',
-                        'timemodified': 0,
-                    }
-                )
+            intro_file = self.create_intro_file(intro)
+            if intro_file:
+                survey_files.append(intro_file)
 
             # Get survey questions
             questions_data = await self._get_survey_questions(survey_id)
@@ -101,28 +94,15 @@ class SurveyMod(MoodleMod):
                 },
                 'questions': questions_data,
                 'question_count': len(questions_data),
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'completion_has_rules': True,
-                    'show_description': True,
-                    'purpose': 'communication',
-                },
+                'features': self.get_features(
+                    purpose='communication',
+                    completion_has_rules=True
+                ),
                 'note': 'Survey is a predefined questionnaire module. '
                 + 'This export includes survey settings and standardized questions.',
             }
 
-            survey_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': 0,
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
+            survey_files.append(self.create_metadata_file(metadata))
 
             # Export questions as separate file
             if questions_data:

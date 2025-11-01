@@ -75,16 +75,9 @@ class SubsectionMod(MoodleMod):
                     subsection_files = []
 
                     # Get subsection intro/description if available
-                    if subsection_description:
-                        subsection_files.append(
-                            {
-                                'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
-                                'filepath': '/',
-                                'description': subsection_description,
-                                'type': 'description',
-                                'timemodified': 0,
-                            }
-                        )
+                    intro_file = self.create_intro_file(subsection_description)
+                    if intro_file:
+                        subsection_files.append(intro_file)
 
                     # Get contents if any (though subsections typically don't have files)
                     subsection_contents = module.get('contents', [])
@@ -121,15 +114,7 @@ class SubsectionMod(MoodleMod):
                         + 'It does not contain files itself but serves as a structural element.',
                     }
 
-                    subsection_files.append(
-                        {
-                            'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                            'filepath': '/',
-                            'timemodified': 0,
-                            'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                            'type': 'content',
-                        }
-                    )
+                    subsection_files.append(self.create_metadata_file(metadata))
 
                     self.add_module(
                         result,

@@ -44,15 +44,9 @@ class AssignMod(MoodleMod):
             self.set_props_of_files(assign_files, type='assign_file')
 
             assign_intro = assign.get('intro', '')
-            if assign_intro != '':
-                assign_files.append(
-                    {
-                        'filename': 'Assignment intro',
-                        'filepath': '/',
-                        'description': assign_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(assign_intro)
+            if intro_file:
+                assign_files.append(intro_file)
 
             # Create comprehensive assignment metadata
             assign_metadata = {
@@ -103,13 +97,7 @@ class AssignMod(MoodleMod):
 
             # Add metadata file
             assign_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': assign.get('timemodified', 0),
-                    'content': json.dumps(assign_metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(assign_metadata, timemodified=assign.get('timemodified', 0))
             )
 
             result[assign.get('cmid', 0)] = {

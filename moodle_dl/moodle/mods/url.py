@@ -80,15 +80,9 @@ class UrlMod(MoodleMod):
 
             # Add intro description
             url_intro = url_mod.get('intro', '')
-            if url_intro != '':
-                url_files.append(
-                    {
-                        'filename': 'URL intro',
-                        'filepath': '/',
-                        'description': url_intro,
-                        'type': 'description',
-                    }
-                )
+            intro_file = self.create_intro_file(url_intro)
+            if intro_file:
+                url_files.append(intro_file)
 
             # Get the external URL
             external_url = url_mod.get('externalurl', '')
@@ -112,29 +106,13 @@ class UrlMod(MoodleMod):
                 'timestamps': {
                     'time_modified': url_mod.get('timemodified', 0),
                 },
-                'features': {
-                    'groups': True,
-                    'groupings': True,
-                    'intro_support': True,
-                    'completion_tracks_views': True,
-                    'grade_has_grade': False,
-                    'grade_outcomes': True,
-                    'backup_moodle2': True,
-                    'show_description': True,
-                    'purpose': 'content',
-                },
+                'features': self.get_features(purpose='content'),
                 'note': 'URL module provides links to external resources. '
                 + 'This export includes URL metadata, display settings, and parameters.',
             }
 
             url_files.append(
-                {
-                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
-                    'filepath': '/',
-                    'timemodified': url_mod.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
+                self.create_metadata_file(metadata, timemodified=url_mod.get('timemodified', 0))
             )
 
             # Note: The actual URL shortcut files (.url, .webloc, .desktop) are already
