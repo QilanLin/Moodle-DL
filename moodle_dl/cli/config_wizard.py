@@ -519,11 +519,19 @@ class ConfigWizard:
         ]
 
         # 获取当前配置
+        # 检查是否是初始化（配置项不存在）还是重新配置（配置项已存在）
+        is_initial_setup = not self.config.has_property(modules[0][0])  # 检查第一个配置项是否存在
+
         current_selections = []
         for i, (config_key, name, desc) in enumerate(modules):
-            getter_method = getattr(self.config, f'get_{config_key}', None)
-            if getter_method and getter_method():
+            if is_initial_setup:
+                # 初始化时默认全选
                 current_selections.append(i)
+            else:
+                # 重新配置时使用现有配置值
+                getter_method = getattr(self.config, f'get_{config_key}', None)
+                if getter_method and getter_method():
+                    current_selections.append(i)
 
         # 创建选项列表
         choices = []
