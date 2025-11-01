@@ -153,6 +153,11 @@ class ConfigHelper:
         # return a stored boolean if question banks should be downloaded
         return self.get_property_or('download_qbanks', False)
 
+    def get_download_resources(self) -> bool:
+        # return a stored boolean if resource modules should be downloaded
+        # Resource modules are one of the most commonly used in Moodle for file uploads
+        return self.get_property_or('download_resources', True)
+
     def get_download_urls(self) -> bool:
         # return a stored boolean if url modules should be downloaded
         return self.get_property_or('download_urls', False)

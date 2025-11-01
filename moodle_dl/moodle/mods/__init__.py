@@ -23,6 +23,7 @@ from moodle_dl.moodle.mods.lti import LtiMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.page import PageMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.qbank import QbankMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.quiz import QuizMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.resource import ResourceMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.scorm import ScormMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.subsection import SubsectionMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.url import UrlMod  # noqa: F401 isort:skip
