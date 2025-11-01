@@ -110,13 +110,14 @@ class QbankMod(MoodleMod):
                             'uservisible': module.get('uservisible', True),
                             'availabilityinfo': module.get('availabilityinfo', ''),
                         },
-                        'features': {
-                            'publishes_questions': True,
-                            'uses_questions': True,
-                            'show_description': True,
-                            'can_display_in_app': False,
-                            'no_view_link': True,
-                            'purpose': 'content',
+                        'supported_features': {
+                            'BACKUP_MOODLE2': True,
+                            'PUBLISHES_QUESTIONS': True,
+                            'SHOW_DESCRIPTION': True,
+                            'USES_QUESTIONS': True,
+                            'CAN_DISPLAY': False,
+                            'NO_VIEW_LINK': True,
+                            'MOD_PURPOSE': 'CONTENT',
                         },
                         'compatibility': {
                             'moodle_version': '4.3+',

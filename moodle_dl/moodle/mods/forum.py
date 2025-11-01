@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime
 from typing import Dict, List
@@ -73,6 +74,29 @@ class ForumMod(MoodleMod):
 
     async def load_latest_discussions(self, forum: Dict):
         "Adds the discussions that needs to be updated to the forum dict"
+
+        # Get forum access information (permissions and capabilities)
+        forum_id = forum.get('id', 0)
+        try:
+            access_info = await self.client.async_post(
+                'mod_forum_get_forum_access_information',
+                {'forumid': forum_id}
+            )
+
+            # Export access information as JSON file
+            if access_info:
+                forum['files'].append(
+                    {
+                        'filename': PT.to_valid_name('access_information', is_file=True) + '.json',
+                        'filepath': '/',
+                        'timemodified': 0,
+                        'content': json.dumps(access_info, indent=2, ensure_ascii=False),
+                        'type': 'content',
+                    }
+                )
+        except Exception as e:
+            logging.debug(f"Could not fetch access information for forum {forum_id}: {e}")
+
         page_num = 0
         last_timestamp = self.last_timestamps.get(self.MOD_NAME, {}).get(forum.get('_cmid', 0), 0)
         latest_discussions = []

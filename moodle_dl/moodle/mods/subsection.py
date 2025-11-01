@@ -92,14 +92,19 @@ class SubsectionMod(MoodleMod):
                         subsection_files.extend(subsection_contents)
 
                     # Create metadata about the subsection
+                    # Get target section if available (the section this subsection links to)
+                    section_id = section.get('id', 0)
+                    target_section_id = module.get('target', section_id)
+
                     metadata = {
                         'subsection_id': module_id,
                         'course_id': course_id,
                         'name': subsection_name,
                         'description': subsection_description,
                         'section_reference': {
-                            'section_id': section.get('id', 0),
+                            'section_id': section_id,
                             'section_name': section.get('name', ''),
+                            'target_section_id': target_section_id,
                         },
                         'module_info': {
                             'visible': module.get('visible', 1),

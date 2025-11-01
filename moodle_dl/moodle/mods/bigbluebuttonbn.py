@@ -246,6 +246,7 @@ class BigbluebuttonbnMod(MoodleMod):
                             'name': p.get('name', ''),
                             'url': p.get('url', ''),
                             'icon': p.get('iconname', ''),
+                            'icon_desc': p.get('icondesc', ''),
                         }
                         for p in meeting_info.get('presentations', [])
                     ],

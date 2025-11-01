@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, List
 
@@ -5,6 +6,7 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
 
 
 class WorkshopMod(MoodleMod):
@@ -133,7 +135,16 @@ class WorkshopMod(MoodleMod):
         except RequestRejectedError:
             grades = {}
 
-        workshop_files = self._get_files_of_workshop(submissions, grades)
+        # Get user plan (workflow phases and tasks)
+        try:
+            user_plan = await self.client.async_post('mod_workshop_get_user_plan', data)
+        except RequestRejectedError:
+            user_plan = {}
+        except Exception as e:
+            logging.debug(f"Could not fetch user plan for workshop {workshop_id}: {e}")
+            user_plan = {}
+
+        workshop_files = self._get_files_of_workshop(submissions, grades, user_plan)
         workshop['files'] += workshop_files
 
     async def load_foreign_submission(self, assessment: Dict) -> Dict:
@@ -175,8 +186,31 @@ class WorkshopMod(MoodleMod):
             logging.debug("No access rights for workshop submission %d", assessment_submission_id)
             return None
 
-    def _get_files_of_workshop(self, submissions: List[Dict], grades: Dict) -> List:
+    def _get_files_of_workshop(self, submissions: List[Dict], grades: Dict, user_plan: Dict) -> List:
         result = []
+
+        # Export user plan (workflow phases and tasks)
+        if user_plan and user_plan.get('userplan'):
+            user_plan_data = user_plan.get('userplan', {})
+            phases = user_plan_data.get('phases', [])
+
+            # Create comprehensive user plan metadata
+            plan_metadata = {
+                'phases': phases,
+                'examples': user_plan_data.get('examples', []),
+                'phase_count': len(phases),
+                'note': 'Workshop user plan shows workflow phases (Setup, Submission, Assessment, etc.) and tasks for the current user.',
+            }
+
+            result.append(
+                {
+                    'filename': PT.to_valid_name('user_plan', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(plan_metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
 
         # Grades
         assessment_long_str_grade = grades.get('assessmentlongstrgrade', '')
