@@ -240,8 +240,7 @@ class ImscpMod(MoodleMod):
             imscp_files = []
 
             # Copy introfiles to avoid modifying the original dict
-            intro_files = list(imscp.get('introfiles', []))
-            self.set_props_of_files(intro_files, type='imscp_file')
+            intro_files = self.get_introfiles(imscp, 'imscp_file', copy=True)
             imscp_files.extend(intro_files)
 
             # Get IMSCP intro/description

@@ -324,3 +324,59 @@ class MoodleMod(metaclass=ABCMeta):
         features['purpose'] = purpose
         features.update(overrides)
         return features
+
+    def get_introfiles(
+        self,
+        module: Dict,
+        file_type: str,
+        copy: bool = False,
+        additional_keys: List[str] = None
+    ) -> List[Dict]:
+        """
+        Helper method to get and process introfiles from a module dictionary.
+
+        This helper reduces the repetitive pattern of getting introfiles,
+        optionally merging with other file keys, and setting the file type.
+
+        Args:
+            module: Module dictionary containing 'introfiles' key
+            file_type: Type to set for the files (e.g., 'module_introfile', 'module_file')
+            copy: Whether to copy the list to avoid modifying original dict (default False)
+            additional_keys: Additional file keys to merge (e.g., ['mediafiles', 'contentfiles'])
+
+        Returns:
+            List[Dict]: Processed file dictionaries with type property set
+
+        Examples:
+            # Simple case:
+            files = self.get_introfiles(module, 'module_introfile')
+
+            # With copy:
+            files = self.get_introfiles(module, 'module_file', copy=True)
+
+            # With additional file keys:
+            files = self.get_introfiles(
+                module, 'page_file',
+                additional_keys=['contentfiles']
+            )
+        """
+        # Get introfiles with optional copy
+        if copy:
+            files = list(module.get('introfiles', []))
+        else:
+            files = module.get('introfiles', [])
+
+        # Merge additional file keys if specified
+        if additional_keys:
+            for key in additional_keys:
+                additional_files = module.get(key, [])
+                if isinstance(files, list):
+                    files += additional_files
+                else:
+                    # If files was not a list, convert it
+                    files = list(files) + additional_files
+
+        # Set type for all files
+        self.set_props_of_files(files, type=file_type)
+
+        return files

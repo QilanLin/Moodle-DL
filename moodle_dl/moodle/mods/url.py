@@ -75,8 +75,7 @@ class UrlMod(MoodleMod):
             url_name = url_mod.get('name', 'unnamed url')
 
             # Get intro files
-            url_files = url_mod.get('introfiles', [])
-            self.set_props_of_files(url_files, type='url_introfile')
+            url_files = self.get_introfiles(url_mod, 'url_introfile')
 
             # Add intro description
             url_intro = url_mod.get('intro', '')

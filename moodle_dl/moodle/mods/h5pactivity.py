@@ -70,8 +70,7 @@ class H5PActivityMod(MoodleMod):
             h5p_name = h5p.get('name', 'unnamed h5p activity')
 
             # Get intro files
-            h5p_files = h5p.get('introfiles', [])
-            self.set_props_of_files(h5p_files, type='h5p_introfile')
+            h5p_files = self.get_introfiles(h5p, 'h5p_introfile')
 
             # Add intro description
             h5p_intro = h5p.get('intro', '')

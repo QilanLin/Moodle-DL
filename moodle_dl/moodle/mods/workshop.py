@@ -34,11 +34,9 @@ class WorkshopMod(MoodleMod):
             workshop_id = workshop.get('id', 0)
             workshop_name = workshop.get('name', 'unnamed workshop')
 
-            workshop_files = workshop.get('introfiles', [])
-            workshop_files += workshop.get('instructauthorsfiles', [])
-            workshop_files += workshop.get('instructreviewersfiles', [])
-            workshop_files += workshop.get('conclusionfiles', [])
-            self.set_props_of_files(workshop_files, type='workshop_introfile')
+            workshop_files = self.get_introfiles(
+                workshop, 'workshop_file', additional_keys=['instructauthorsfiles', 'instructreviewersfiles', 'conclusionfiles']
+            )
 
             workshop_intro = workshop.get('intro', '')
             intro_file = self.create_intro_file(workshop_intro)

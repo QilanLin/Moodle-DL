@@ -69,8 +69,7 @@ class ScormMod(MoodleMod):
             scorm_name = scorm.get('name', 'unnamed scorm')
 
             # Get intro files
-            scorm_files = scorm.get('introfiles', [])
-            self.set_props_of_files(scorm_files, type='scorm_introfile')
+            scorm_files = self.get_introfiles(scorm, 'scorm_introfile')
 
             # Add intro description
             scorm_intro = scorm.get('intro', '')

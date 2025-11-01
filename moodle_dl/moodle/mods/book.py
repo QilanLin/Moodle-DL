@@ -37,8 +37,7 @@ class BookMod(MoodleMod):
             book_name = book.get('name', 'unnamed book')
 
             # Create a copy to avoid modifying the original dict
-            book_files = list(book.get('introfiles', []))
-            self.set_props_of_files(book_files, type='book_file')
+            book_files = self.get_introfiles(book, 'book_file', copy=True)
 
             book_intro = book.get('intro', '')
             intro_file = self.create_intro_file(book_intro)

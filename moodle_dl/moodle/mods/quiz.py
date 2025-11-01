@@ -35,8 +35,7 @@ class QuizMod(MoodleMod):
             quiz_name = quiz.get('name', 'unnamed quiz')
             quiz_intro = quiz.get('intro', '')
 
-            quiz_files = quiz.get('introfiles', [])
-            self.set_props_of_files(quiz_files, type='quiz_introfile')
+            quiz_files = self.get_introfiles(quiz, 'quiz_introfile')
 
             intro_file = self.create_intro_file(quiz_intro)
             if intro_file:

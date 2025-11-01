@@ -35,8 +35,7 @@ class DataMod(MoodleMod):
             database_name = database.get('name', 'db')
             database_intro = database.get('intro', '')
 
-            database_files = database.get('introfiles', [])
-            self.set_props_of_files(database_files, type='database_introfile')
+            database_files = self.get_introfiles(database, 'database_introfile')
 
             intro_file = self.create_intro_file(database_intro)
             if intro_file:

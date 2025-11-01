@@ -71,9 +71,7 @@ class PageMod(MoodleMod):
             page_content = page.get('content', '')
             page_intro = page.get('intro', '')
 
-            page_files = page.get('introfiles', [])
-            page_files += page.get('contentfiles', [])
-            self.set_props_of_files(page_files, type='page_file')
+            page_files = self.get_introfiles(page, 'page_file', additional_keys=['contentfiles'])
 
             intro_file = self.create_intro_file(page_intro)
             if intro_file:

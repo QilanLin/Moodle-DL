@@ -41,8 +41,7 @@ class FolderMod(MoodleMod):
             folder_intro = folder.get('intro', '')
             folder_time_modified = folder.get('timemodified', 0)
 
-            folder_files = folder.get('introfiles', [])
-            self.set_props_of_files(folder_files, type='folder_file')
+            folder_files = self.get_introfiles(folder, 'folder_file')
 
             intro_file = self.create_intro_file(folder_intro, folder_time_modified)
             if intro_file:

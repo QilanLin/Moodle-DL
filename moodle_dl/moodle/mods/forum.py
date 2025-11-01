@@ -33,8 +33,7 @@ class ForumMod(MoodleMod):
             forum_id = forum.get('id', 0)
             forum_name = forum.get('name', 'forum')
 
-            forum_files = forum.get('introfiles', [])
-            self.set_props_of_files(forum_files, type='forum_introfile')
+            forum_files = self.get_introfiles(forum, 'forum_introfile')
 
             forum_intro = forum.get('intro', '')
             intro_file = self.create_intro_file(forum_intro)

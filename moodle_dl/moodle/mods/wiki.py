@@ -66,8 +66,7 @@ class WikiMod(MoodleMod):
             first_page_title = wiki.get('firstpagetitle', 'Main Page')
 
             # Get wiki intro files
-            wiki_files = wiki.get('introfiles', [])
-            self.set_props_of_files(wiki_files, type='wiki_introfile')
+            wiki_files = self.get_introfiles(wiki, 'wiki_introfile')
 
             # Add wiki intro as description
             intro_file = self.create_intro_file(wiki_intro)

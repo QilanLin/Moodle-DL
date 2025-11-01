@@ -69,8 +69,7 @@ class LabelMod(MoodleMod):
 
             # Get intro files (embedded media and attachments)
             # Copy the list to avoid modifying the original label dict
-            label_files = list(label.get('introfiles', []))
-            self.set_props_of_files(label_files, type='label_file')
+            label_files = self.get_introfiles(label, 'label_file', copy=True)
 
             # Get the HTML content
             label_intro = label.get('intro', '')

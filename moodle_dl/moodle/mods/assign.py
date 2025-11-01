@@ -38,10 +38,7 @@ class AssignMod(MoodleMod):
     def extract_assign_modules(self, assignments: List[Dict]) -> Dict[int, Dict]:
         result = {}
         for assign in assignments:
-            assign_files = assign.get('introfiles', [])
-            assign_files += assign.get('introattachments', [])
-
-            self.set_props_of_files(assign_files, type='assign_file')
+            assign_files = self.get_introfiles(assign, 'assign_file', additional_keys=['introattachments'])
 
             assign_intro = assign.get('intro', '')
             intro_file = self.create_intro_file(assign_intro)

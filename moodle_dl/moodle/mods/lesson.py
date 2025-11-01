@@ -36,9 +36,7 @@ class LessonMod(MoodleMod):
             lesson_id = lesson.get('id', 0)
             lesson_name = lesson.get('name', 'unnamed lesson')
 
-            lesson_files = lesson.get('introfiles', [])
-            lesson_files += lesson.get('mediafiles', [])
-            self.set_props_of_files(lesson_files, type='lesson_introfile')
+            lesson_files = self.get_introfiles(lesson, 'lesson_introfile', additional_keys=['mediafiles'])
 
             lesson_intro = lesson.get('intro', '')
             intro_file = self.create_intro_file(lesson_intro)

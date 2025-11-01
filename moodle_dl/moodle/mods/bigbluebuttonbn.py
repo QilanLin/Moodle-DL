@@ -97,8 +97,7 @@ class BigbluebuttonbnMod(MoodleMod):
             bbb_files = []
 
             # Copy introfiles to avoid modifying the original dict
-            intro_files = list(bbb.get('introfiles', []))
-            self.set_props_of_files(intro_files, type='bbb_file')
+            intro_files = self.get_introfiles(bbb, 'bbb_file', copy=True)
             bbb_files.extend(intro_files)
 
             # Get BBB intro/description

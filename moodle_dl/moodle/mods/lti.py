@@ -92,8 +92,7 @@ class LtiMod(MoodleMod):
             lti_files = []
 
             # Copy introfiles to avoid modifying the original dict
-            intro_files = list(lti.get('introfiles', []))
-            self.set_props_of_files(intro_files, type='lti_file')
+            intro_files = self.get_introfiles(lti, 'lti_file', copy=True)
             lti_files.extend(intro_files)
 
             # Get LTI intro/description

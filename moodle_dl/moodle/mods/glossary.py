@@ -65,8 +65,7 @@ class GlossaryMod(MoodleMod):
             glossary_intro = glossary.get('intro', '')
 
             # Get glossary intro files
-            glossary_files = glossary.get('introfiles', [])
-            self.set_props_of_files(glossary_files, type='glossary_introfile')
+            glossary_files = self.get_introfiles(glossary, 'glossary_introfile')
 
             # Add glossary intro as description
             intro_file = self.create_intro_file(glossary_intro)
