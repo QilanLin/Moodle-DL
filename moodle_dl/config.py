@@ -137,6 +137,10 @@ class ConfigHelper:
         # return a stored boolean if scorm attempts should be downloaded
         return self.get_property_or('download_scorm_attempts', False)
 
+    def get_download_urls(self) -> bool:
+        # return a stored boolean if url modules should be downloaded
+        return self.get_property_or('download_urls', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)

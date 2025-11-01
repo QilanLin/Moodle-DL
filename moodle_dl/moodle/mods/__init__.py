@@ -18,6 +18,7 @@ from moodle_dl.moodle.mods.lesson import LessonMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.page import PageMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.quiz import QuizMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.scorm import ScormMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.url import UrlMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.wiki import WikiMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.workshop import WorkshopMod  # noqa: F401 isort:skip
 
