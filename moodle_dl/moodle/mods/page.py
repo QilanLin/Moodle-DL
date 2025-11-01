@@ -1,8 +1,10 @@
+import json
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
 
 
 class PageMod(MoodleMod):
@@ -27,21 +29,24 @@ class PageMod(MoodleMod):
         result = {}
         for page in pages:
             course_id = page.get('course', 0)
+            module_id = page.get('coursemodule', 0)
+            page_id = page.get('id', 0)
             page_name = page.get('name', 'unnamed page')
             page_content = page.get('content', '')
+            page_intro = page.get('intro', '')
 
             page_files = page.get('introfiles', [])
             page_files += page.get('contentfiles', [])
             self.set_props_of_files(page_files, type='page_file')
 
-            page_intro = page.get('intro', '')
             if page_intro != '':
                 page_files.append(
                     {
-                        'filename': 'Page intro',
+                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
                         'filepath': '/',
                         'description': page_intro,
                         'type': 'description',
+                        'timemodified': 0,
                     }
                 )
 
@@ -59,12 +64,58 @@ class PageMod(MoodleMod):
                     }
                 )
 
+            # Create comprehensive metadata
+            metadata = {
+                'page_id': page_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': page_name,
+                'intro': page_intro,
+                'content': page_content,
+                'settings': {
+                    'contentformat': page.get('contentformat', 1),
+                    'legacyfiles': page.get('legacyfiles', 0),
+                    'legacyfileslast': page.get('legacyfileslast'),
+                    'display': page.get('display', 5),
+                    'displayoptions': page.get('displayoptions', ''),
+                    'revision': page.get('revision', 1),
+                    'printheading': page.get('printheading', 1),
+                    'printlastmodified': page.get('printlastmodified', 1),
+                },
+                'timestamps': {
+                    'timemodified': page.get('timemodified', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'grade_has_grade': False,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'content',
+                },
+                'note': 'Page is a simple content module for displaying HTML content. '
+                + 'This export includes the full HTML content, settings, and display options.',
+            }
+
+            page_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
             self.add_module(
                 result,
                 course_id,
-                page.get('coursemodule', 0),
+                module_id,
                 {
-                    'id': page.get('id', 0),
+                    'id': page_id,
                     'name': page_name,
                     'files': page_files,
                 },

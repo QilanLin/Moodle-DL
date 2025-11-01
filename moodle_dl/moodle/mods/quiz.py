@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, List
 
@@ -30,28 +31,113 @@ class QuizMod(MoodleMod):
         result = {}
         for quiz in quizzes:
             course_id = quiz.get('course', 0)
+            module_id = quiz.get('coursemodule', 0)
+            quiz_id = quiz.get('id', 0)
+            quiz_name = quiz.get('name', 'unnamed quiz')
+            quiz_intro = quiz.get('intro', '')
 
             quiz_files = quiz.get('introfiles', [])
             self.set_props_of_files(quiz_files, type='quiz_introfile')
 
-            quiz_intro = quiz.get('intro', '')
             if quiz_intro != '':
                 quiz_files.append(
                     {
-                        'filename': 'Quiz intro',
+                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
                         'filepath': '/',
                         'description': quiz_intro,
                         'type': 'description',
+                        'timemodified': 0,
                     }
                 )
+
+            # Get additional quiz information if download is enabled
+            access_info = {}
+            best_grade = {}
+            feedback = ''
+            if self.config.get_download_quizzes():
+                access_info = await self._get_quiz_access_info(quiz_id)
+                best_grade = await self._get_user_best_grade(quiz_id)
+                if best_grade.get('hasgrade', False):
+                    feedback = await self._get_quiz_feedback(quiz_id, best_grade.get('grade', 0))
+
+            # Create comprehensive metadata
+            metadata = {
+                'quiz_id': quiz_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': quiz_name,
+                'intro': quiz_intro,
+                'settings': {
+                    'timeopen': quiz.get('timeopen', 0),
+                    'timeclose': quiz.get('timeclose', 0),
+                    'timelimit': quiz.get('timelimit', 0),
+                    'overduehandling': quiz.get('overduehandling', 'autosubmit'),
+                    'graceperiod': quiz.get('graceperiod', 0),
+                    'preferredbehaviour': quiz.get('preferredbehaviour', 'deferredfeedback'),
+                    'canredoquestions': quiz.get('canredoquestions', 0),
+                    'attempts': quiz.get('attempts', 0),
+                    'attemptonlast': quiz.get('attemptonlast', 0),
+                    'grademethod': quiz.get('grademethod', 1),
+                    'decimalpoints': quiz.get('decimalpoints', 2),
+                    'questiondecimalpoints': quiz.get('questiondecimalpoints', -1),
+                    'reviewattempt': quiz.get('reviewattempt', 0),
+                    'reviewcorrectness': quiz.get('reviewcorrectness', 0),
+                    'reviewmarks': quiz.get('reviewmarks', 0),
+                    'reviewspecificfeedback': quiz.get('reviewspecificfeedback', 0),
+                    'reviewgeneralfeedback': quiz.get('reviewgeneralfeedback', 0),
+                    'reviewrightanswer': quiz.get('reviewrightanswer', 0),
+                    'reviewoverallfeedback': quiz.get('reviewoverallfeedback', 0),
+                    'questionsperpage': quiz.get('questionsperpage', 1),
+                    'navmethod': quiz.get('navmethod', 'free'),
+                    'shuffleanswers': quiz.get('shuffleanswers', 1),
+                    'sumgrades': quiz.get('sumgrades', 0),
+                    'grade': quiz.get('grade', 0),
+                    'browsersecurity': quiz.get('browsersecurity', '-'),
+                    'allowofflineattempts': quiz.get('allowofflineattempts', 0),
+                    'autosaveperiod': quiz.get('autosaveperiod', 0),
+                    'hasfeedback': quiz.get('hasfeedback', 0),
+                    'hasquestions': quiz.get('hasquestions', 0),
+                },
+                'access_information': access_info,
+                'user_grade': best_grade,
+                'feedback': feedback,
+                'timestamps': {
+                    'timeopen': quiz.get('timeopen', 0),
+                    'timeclose': quiz.get('timeclose', 0),
+                    'timemodified': quiz.get('timemodified', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': False,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'assessment',
+                },
+                'note': 'Quiz is an assessment module with questions and grading. '
+                + 'This export includes quiz settings, access rules, and user performance data.',
+            }
+
+            quiz_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
 
             self.add_module(
                 result,
                 course_id,
-                quiz.get('coursemodule', 0),
+                module_id,
                 {
-                    'id': quiz.get('id', 0),
-                    'name': quiz.get('name', 'unnamed quiz'),
+                    'id': quiz_id,
+                    'name': quiz_name,
                     'files': quiz_files,
                 },
             )
@@ -134,3 +220,65 @@ class QuizMod(MoodleMod):
         )
 
         return result
+
+    async def _get_quiz_access_info(self, quiz_id: int) -> Dict:
+        """
+        Get quiz access information including rules and warnings
+
+        Returns access rules, active rule names, prevent access reasons, and warnings
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_quiz_get_quiz_access_information',
+                {'quizid': quiz_id}
+            )
+            return {
+                'accessrules': response.get('accessrules', []),
+                'activerulenames': response.get('activerulenames', []),
+                'preventaccessreasons': response.get('preventaccessreasons', []),
+                'canattempt': response.get('canattempt', False),
+                'canmanage': response.get('canmanage', False),
+                'canpreview': response.get('canpreview', False),
+                'canreviewmyattempts': response.get('canreviewmyattempts', True),
+                'canviewreports': response.get('canviewreports', False),
+                'warnings': response.get('warnings', []),
+            }
+        except Exception as e:
+            logging.debug(f"Could not fetch access information for quiz {quiz_id}: {e}")
+            return {}
+
+    async def _get_user_best_grade(self, quiz_id: int) -> Dict:
+        """
+        Get user's best grade for quiz
+
+        Returns whether user has a grade, the grade value, and grade to pass
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_quiz_get_user_best_grade',
+                {'quizid': quiz_id, 'userid': self.user_id}
+            )
+            return {
+                'hasgrade': response.get('hasgrade', False),
+                'grade': response.get('grade'),
+                'gradetopass': response.get('gradetopass'),
+            }
+        except Exception as e:
+            logging.debug(f"Could not fetch best grade for quiz {quiz_id}: {e}")
+            return {}
+
+    async def _get_quiz_feedback(self, quiz_id: int, grade: float) -> str:
+        """
+        Get feedback for a specific grade
+
+        Returns the feedback text for the given grade
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_quiz_get_quiz_feedback_for_grade',
+                {'quizid': quiz_id, 'grade': grade}
+            )
+            return response.get('feedbacktext', '')
+        except Exception as e:
+            logging.debug(f"Could not fetch feedback for quiz {quiz_id} grade {grade}: {e}")
+            return ''

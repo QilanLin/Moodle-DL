@@ -1,8 +1,10 @@
+import json
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
 
 
 class FolderMod(MoodleMod):
@@ -28,15 +30,18 @@ class FolderMod(MoodleMod):
         for folder in folders:
             course_id = folder.get('course', 0)
             module_id = folder.get('coursemodule', 0)
-            folder_files = folder.get('introfiles', [])
+            folder_id = folder.get('id', 0)
+            folder_name = folder.get('name', 'unnamed folder')
+            folder_intro = folder.get('intro', '')
             folder_time_modified = folder.get('timemodified', 0)
+
+            folder_files = folder.get('introfiles', [])
             self.set_props_of_files(folder_files, type='folder_file')
 
-            folder_intro = folder.get('intro', '')
             if folder_intro != '':
                 folder_files.append(
                     {
-                        'filename': 'Folder intro',
+                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
                         'filepath': '/',
                         'description': folder_intro,
                         'timemodified': folder_time_modified,
@@ -45,15 +50,60 @@ class FolderMod(MoodleMod):
                     }
                 )
 
-            folder_files += self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+            # Get folder contents from core_contents
+            folder_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+            folder_files += folder_contents
+
+            # Create comprehensive metadata
+            metadata = {
+                'folder_id': folder_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': folder_name,
+                'intro': folder_intro,
+                'settings': {
+                    'revision': folder.get('revision', 1),
+                    'display': folder.get('display', 0),
+                    'showexpanded': folder.get('showexpanded', 1),
+                    'showdownloadfolder': folder.get('showdownloadfolder', 1),
+                    'forcedownload': folder.get('forcedownload', 1),
+                },
+                'file_count': len(folder_contents),
+                'timestamps': {
+                    'timemodified': folder_time_modified,
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'grade_has_grade': False,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'content',
+                },
+                'note': 'Folder is a simple container for organizing files. '
+                + 'This export includes all files and folder settings.',
+            }
+
+            folder_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
 
             self.add_module(
                 result,
                 course_id,
                 module_id,
                 {
-                    'id': folder.get('id', 0),
-                    'name': folder.get('name', 'unnamed folder'),
+                    'id': folder_id,
+                    'name': folder_name,
                     'timemodified': folder_time_modified,
                     'files': folder_files,
                 },
