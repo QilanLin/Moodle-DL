@@ -150,8 +150,11 @@ class ConfigHelper:
         return self.get_property_or('download_choices', False)
 
     def get_download_ltis(self) -> bool:
-        # return a stored boolean if LTI (external tool) modules should be downloaded
-        return self.get_property_or('download_ltis', False)
+        # LTI (external tool) module is always enabled for complete metadata export
+        # This method is kept for backward compatibility but always returns True
+        # The old cookie-based handling for 'lti' has been replaced with the full LTI module
+        # Note: kalvidres and helixmedia still use cookie-based handling with dedicated extractors
+        return True
 
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded

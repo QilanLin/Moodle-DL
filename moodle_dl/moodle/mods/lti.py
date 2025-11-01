@@ -38,9 +38,8 @@ class LtiMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        return config.get_download_ltis() or (
-            not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted)
-        )
+        # LTI module is always enabled
+        return not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted)
 
     def _get_launch_container_name(self, launch_container: int) -> str:
         """Get human-readable name for launch container mode"""
@@ -67,9 +66,8 @@ class LtiMod(MoodleMod):
         """
 
         result = {}
-        if not self.config.get_download_ltis():
-            return result
 
+        # LTI module is always enabled - no configuration check needed
         # Get all LTI tools for the courses
         try:
             response = await self.client.async_post(
