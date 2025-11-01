@@ -149,6 +149,10 @@ class ConfigHelper:
         # return a stored boolean if subsections should be downloaded
         return self.get_property_or('download_subsections', False)
 
+    def get_download_qbanks(self) -> bool:
+        # return a stored boolean if question banks should be downloaded
+        return self.get_property_or('download_qbanks', False)
+
     def get_download_urls(self) -> bool:
         # return a stored boolean if url modules should be downloaded
         return self.get_property_or('download_urls', False)
