@@ -1,9 +1,12 @@
+import json
 import logging
+from datetime import datetime
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
 
 
 class DataMod(MoodleMod):
@@ -69,7 +72,14 @@ class DataMod(MoodleMod):
         await self.run_async_load_function_on_mod_entries(databases, self.load_database_files)
 
     async def load_database_files(self, database: Dict):
-        "Fetches for a given assign database the database files"
+        """
+        Fetches for a given database the database files and metadata
+
+        Improvement based on official Moodle Mobile App:
+        - Downloads entry files
+        - Exports entry metadata (author, timestamps, approval status, ratings, tags)
+        - Creates JSON metadata files for each entry
+        """
         data = {'databaseid': database.get('id', 0)}
         access = await self.client.async_post('mod_data_get_data_access_information', data)
         if not access.get('timeavailable', False):
@@ -82,13 +92,97 @@ class DataMod(MoodleMod):
 
     @classmethod
     def _get_files_of_db_entries(cls, entries: Dict) -> List:
+        """
+        Extract files and metadata from database entries
+
+        Based on official Moodle Mobile App implementation.
+        Creates:
+        - Entry files (images, documents, etc.)
+        - Metadata JSON files with entry information
+        - Human-readable metadata descriptions
+        """
         result = []
-        for entry in entries.get('entries', []):
+        entry_list = entries.get('entries', [])
+
+        for entry in entry_list:
+            entry_id = entry.get('id', 0)
+            entry_name = f"Entry {entry_id}"
+
+            # Extract metadata
+            metadata = {
+                'entry_id': entry_id,
+                'database_id': entry.get('dataid', 0),
+                'author': {
+                    'user_id': entry.get('userid', 0),
+                    'full_name': entry.get('fullname', 'Unknown'),
+                },
+                'group_id': entry.get('groupid', 0),
+                'timestamps': {
+                    'created': entry.get('timecreated', 0),
+                    'created_readable': datetime.fromtimestamp(entry.get('timecreated', 0)).strftime('%Y-%m-%d %H:%M:%S')
+                    if entry.get('timecreated', 0) > 0
+                    else 'N/A',
+                    'modified': entry.get('timemodified', 0),
+                    'modified_readable': datetime.fromtimestamp(entry.get('timemodified', 0)).strftime('%Y-%m-%d %H:%M:%S')
+                    if entry.get('timemodified', 0) > 0
+                    else 'N/A',
+                },
+                'status': {
+                    'approved': entry.get('approved', False),
+                    'can_manage': entry.get('canmanageentry', False),
+                },
+                'tags': entry.get('tags', []),
+            }
+
+            # Add rating info if available
+            if 'ratinginfo' in entries:
+                metadata['rating'] = entries.get('ratinginfo', {})
+
+            # Create JSON metadata file
+            result.append({
+                'filename': PT.to_valid_name(f"{entry_name}_metadata", is_file=True) + '.json',
+                'filepath': f'/entry_{entry_id}/',
+                'timemodified': entry.get('timemodified', 0),
+                'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                'type': 'content',
+            })
+
+            # Create human-readable metadata description
+            metadata_text = f"# Database Entry {entry_id}\n\n"
+            metadata_text += f"## Author\n"
+            metadata_text += f"- Name: {metadata['author']['full_name']}\n"
+            metadata_text += f"- User ID: {metadata['author']['user_id']}\n\n"
+            metadata_text += f"## Timestamps\n"
+            metadata_text += f"- Created: {metadata['timestamps']['created_readable']}\n"
+            metadata_text += f"- Modified: {metadata['timestamps']['modified_readable']}\n\n"
+            metadata_text += f"## Status\n"
+            metadata_text += f"- Approved: {'Yes' if metadata['status']['approved'] else 'No'}\n"
+            metadata_text += f"- Group ID: {metadata['group_id']}\n\n"
+
+            if metadata['tags']:
+                metadata_text += f"## Tags\n"
+                for tag in metadata['tags']:
+                    tag_name = tag.get('displayname', tag.get('rawname', 'Unknown'))
+                    metadata_text += f"- {tag_name}\n"
+                metadata_text += "\n"
+
+            result.append({
+                'filename': PT.to_valid_name(f"{entry_name}_info", is_file=True),
+                'filepath': f'/entry_{entry_id}/',
+                'timemodified': entry.get('timemodified', 0),
+                'description': metadata_text,
+                'type': 'description',
+            })
+
+            # Extract entry files
             for entry_content in entry.get('contents', []):
                 for entry_file in entry_content.get('files', []):
                     filename = entry_file.get('filename', '')
                     if filename.startswith('thumb_'):
                         continue
+
+                    # Place files in entry-specific subdirectory
+                    entry_file['filepath'] = f'/entry_{entry_id}' + entry_file.get('filepath', '/')
                     cls.set_props_of_file(entry_file, type='database_file')
                     result.append(entry_file)
 
