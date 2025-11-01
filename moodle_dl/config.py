@@ -166,9 +166,21 @@ class ConfigHelper:
         # return a stored boolean if label modules should be downloaded
         return self.get_property_or('download_labels', False)
 
+    def get_download_chats(self) -> bool:
+        # return a stored boolean if chat modules should be downloaded
+        return self.get_property_or('download_chats', False)
+
     def get_download_choices(self) -> bool:
         # return a stored boolean if choice modules should be downloaded
         return self.get_property_or('download_choices', False)
+
+    def get_download_feedbacks(self) -> bool:
+        # return a stored boolean if feedback modules should be downloaded
+        return self.get_property_or('download_feedbacks', False)
+
+    def get_download_surveys(self) -> bool:
+        # return a stored boolean if survey modules should be downloaded
+        return self.get_property_or('download_surveys', False)
 
     def get_download_ltis(self) -> bool:
         # LTI (external tool) module is always enabled for complete metadata export

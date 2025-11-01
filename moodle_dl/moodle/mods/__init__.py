@@ -10,8 +10,10 @@ from moodle_dl.moodle.mods.assign import AssignMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.bigbluebuttonbn import BigbluebuttonbnMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.book import BookMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.calendar import CalendarMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.chat import ChatMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.choice import ChoiceMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.data import DataMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.feedback import FeedbackMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.folder import FolderMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.forum import ForumMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.glossary import GlossaryMod  # noqa: F401 isort:skip
@@ -26,6 +28,7 @@ from moodle_dl.moodle.mods.quiz import QuizMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.resource import ResourceMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.scorm import ScormMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.subsection import SubsectionMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.survey import SurveyMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.url import UrlMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.wiki import WikiMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.workshop import WorkshopMod  # noqa: F401 isort:skip
