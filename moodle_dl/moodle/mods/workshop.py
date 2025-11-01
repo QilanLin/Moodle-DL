@@ -30,6 +30,10 @@ class WorkshopMod(MoodleMod):
         result = {}
         for workshop in workshops:
             course_id = workshop.get('course', 0)
+            module_id = workshop.get('coursemodule', 0)
+            workshop_id = workshop.get('id', 0)
+            workshop_name = workshop.get('name', 'unnamed workshop')
+
             workshop_files = workshop.get('introfiles', [])
             workshop_files += workshop.get('instructauthorsfiles', [])
             workshop_files += workshop.get('instructreviewersfiles', [])
@@ -80,13 +84,90 @@ class WorkshopMod(MoodleMod):
                     }
                 )
 
+            # Get workshop access information if download is enabled
+            access_info = {}
+            if self.config.get_download_workshops():
+                access_info = await self._get_workshop_access_info(workshop_id)
+
+            # Create comprehensive workshop metadata
+            metadata = {
+                'workshop_id': workshop_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': workshop_name,
+                'intro': workshop_intro,
+                'settings': {
+                    # Grading settings
+                    'grade': workshop.get('grade', 100),
+                    'gradinggrade': workshop.get('gradinggrade', 20),
+                    'strategy': workshop.get('strategy', 'accumulative'),
+                    'evaluation': workshop.get('evaluation', 'best'),
+                    'gradedecimals': workshop.get('gradedecimals', 2),
+                    # Submission settings
+                    'nattachments': workshop.get('nattachments', 1),
+                    'attachmentextensions': workshop.get('attachmentextensions', ''),
+                    'submissionfiletypes': workshop.get('submissionfiletypes', ''),
+                    'maxbytes': workshop.get('maxbytes', 0),
+                    'latesubmissions': workshop.get('latesubmissions', 0),
+                    # Assessment settings
+                    'useselfassessment': workshop.get('useselfassessment', 0),
+                    'overallfeedbackmode': workshop.get('overallfeedbackmode', 1),
+                    'overallfeedbackfiles': workshop.get('overallfeedbackfiles', 0),
+                    'overallfeedbackmaxbytes': workshop.get('overallfeedbackmaxbytes', 0),
+                    'overallfeedbackfiletypes': workshop.get('overallfeedbackfiletypes', ''),
+                    # Example submissions settings
+                    'useexamples': workshop.get('useexamples', 0),
+                    'examplesmode': workshop.get('examplesmode', 0),
+                    # Availability settings
+                    'submissionstart': workshop.get('submissionstart', 0),
+                    'submissionend': workshop.get('submissionend', 0),
+                    'assessmentstart': workshop.get('assessmentstart', 0),
+                    'assessmentend': workshop.get('assessmentend', 0),
+                    # Phase settings
+                    'phase': workshop.get('phase', 0),
+                    'phaseswitchassessment': workshop.get('phaseswitchassessment', 0),
+                    # Feedback settings
+                    'conclusion': workshop.get('conclusion', ''),
+                    'conclusionformat': workshop.get('conclusionformat', 1),
+                },
+                'access_information': access_info,
+                'timestamps': {
+                    'timemodified': workshop.get('timemodified', 0),
+                    'timecreated': workshop.get('timecreated', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': False,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'assessment',
+                },
+                'note': 'Workshop is a peer assessment activity with flexible grading strategies. '
+                + 'This export includes comprehensive settings, workflow phases, submissions, and peer assessments.',
+            }
+
+            # Add metadata file
+            workshop_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': workshop.get('timemodified', 0),
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
             self.add_module(
                 result,
                 course_id,
-                workshop.get('coursemodule', 0),
+                module_id,
                 {
-                    'id': workshop.get('id', 0),
-                    'name': workshop.get('name', 'unnamed workshop'),
+                    'id': workshop_id,
+                    'name': workshop_name,
                     'files': workshop_files,
                 },
             )
@@ -261,3 +342,44 @@ class WorkshopMod(MoodleMod):
             result += submission_files
 
         return result
+
+    async def _get_workshop_access_info(self, workshop_id: int) -> Dict:
+        """
+        Get workshop access information including permissions and availability
+
+        Returns user capabilities and access restrictions
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_workshop_get_workshop_access_information',
+                {'workshopid': workshop_id}
+            )
+            return {
+                'canview': response.get('canview', False),
+                'canaddinstance': response.get('canaddinstance', False),
+                'canswitchphase': response.get('canswitchphase', False),
+                'caneditdimensions': response.get('caneditdimensions', False),
+                'cansubmit': response.get('cansubmit', False),
+                'canpeerassess': response.get('canpeerassess', False),
+                'canmanageexamples': response.get('canmanageexamples', False),
+                'canallocate': response.get('canallocate', False),
+                'canpublishsubmissions': response.get('canpublishsubmissions', False),
+                'canviewauthornames': response.get('canviewauthornames', False),
+                'canviewreviewernames': response.get('canviewreviewernames', False),
+                'canviewallsubmissions': response.get('canviewallsubmissions', False),
+                'canviewpublishedsubmissions': response.get('canviewpublishedsubmissions', False),
+                'canviewauthorpublished': response.get('canviewauthorpublished', False),
+                'canviewallassessments': response.get('canviewallassessments', False),
+                'canoverridegrades': response.get('canoverridegrades', False),
+                'canignoredeadlines': response.get('canignoredeadlines', False),
+                'candeletesubmissions': response.get('candeletesubmissions', False),
+                'creatingsubmissionallowed': response.get('creatingsubmissionallowed', False),
+                'modifyingsubmissionallowed': response.get('modifyingsubmissionallowed', False),
+                'assessingallowed': response.get('assessingallowed', False),
+                'assessingexamplesallowed': response.get('assessingexamplesallowed', False),
+                'warnings': response.get('warnings', []),
+            }
+        except Exception as e:
+            logging.debug(f"Could not fetch access information for workshop {workshop_id}: {e}")
+            return {}
+

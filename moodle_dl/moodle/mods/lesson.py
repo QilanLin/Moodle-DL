@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from typing import Dict, List
@@ -31,6 +32,10 @@ class LessonMod(MoodleMod):
         result = {}
         for lesson in lessons:
             course_id = lesson.get('course', 0)
+            module_id = lesson.get('coursemodule', 0)
+            lesson_id = lesson.get('id', 0)
+            lesson_name = lesson.get('name', 'unnamed lesson')
+
             lesson_files = lesson.get('introfiles', [])
             lesson_files += lesson.get('mediafiles', [])
             self.set_props_of_files(lesson_files, type='lesson_introfile')
@@ -46,13 +51,100 @@ class LessonMod(MoodleMod):
                     }
                 )
 
+            # Get lesson access information if download is enabled
+            access_info = {}
+            if self.config.get_download_lessons():
+                access_info = await self._get_lesson_access_info(lesson_id)
+
+            # Create comprehensive lesson metadata
+            metadata = {
+                'lesson_id': lesson_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': lesson_name,
+                'intro': lesson_intro,
+                'settings': {
+                    # Practice and review settings
+                    'practice': lesson.get('practice', 0),
+                    'modattempts': lesson.get('modattempts', 0),
+                    'usepassword': lesson.get('usepassword', 0),
+                    'grade': lesson.get('grade', 0),
+                    'custom': lesson.get('custom', 1),
+                    'ongoing': lesson.get('ongoing', 0),
+                    'usemaxgrade': lesson.get('usemaxgrade', 0),
+                    'maxanswers': lesson.get('maxanswers', 4),
+                    'maxattempts': lesson.get('maxattempts', 5),
+                    'review': lesson.get('review', 0),
+                    'nextpagedefault': lesson.get('nextpagedefault', 0),
+                    # Feedback and scoring settings
+                    'feedback': lesson.get('feedback', 1),
+                    'minquestions': lesson.get('minquestions', 0),
+                    'maxpages': lesson.get('maxpages', 0),
+                    # Timing settings
+                    'timelimit': lesson.get('timelimit', 0),
+                    'retake': lesson.get('retake', 1),
+                    'activitylink': lesson.get('activitylink', 0),
+                    # Media and appearance settings
+                    'mediafile': lesson.get('mediafile', ''),
+                    'mediaheight': lesson.get('mediaheight', 100),
+                    'mediawidth': lesson.get('mediawidth', 650),
+                    'mediaclose': lesson.get('mediaclose', 0),
+                    'slideshow': lesson.get('slideshow', 0),
+                    'width': lesson.get('width', 640),
+                    'height': lesson.get('height', 480),
+                    'bgcolor': lesson.get('bgcolor', '#FFFFFF'),
+                    'displayleft': lesson.get('displayleft', 0),
+                    'displayleftif': lesson.get('displayleftif', 0),
+                    'progressbar': lesson.get('progressbar', 0),
+                    # Availability settings
+                    'available': lesson.get('available', 1),
+                    'deadline': lesson.get('deadline', 0),
+                    # Dependent lesson settings
+                    'dependency': lesson.get('dependency', 0),
+                    'timespent': lesson.get('timespent', 0),
+                    'completed': lesson.get('completed', 0),
+                    'gradebetterthan': lesson.get('gradebetterthan', 0),
+                    # Availability and control of flow settings
+                    'allowofflineattempts': lesson.get('allowofflineattempts', 0),
+                },
+                'access_information': access_info,
+                'timestamps': {
+                    'timemodified': lesson.get('timemodified', 0),
+                    'timecreated': lesson.get('timecreated', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': False,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'assessment',
+                },
+                'note': 'Lesson is a flexible activity for delivering content in adaptive ways. '
+                + 'This export includes comprehensive settings, access rules, and user attempt data.',
+            }
+
+            # Add metadata file
+            lesson_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': lesson.get('timemodified', 0),
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
             self.add_module(
                 result,
                 course_id,
-                lesson.get('coursemodule', 0),
+                module_id,
                 {
-                    'id': lesson.get('id', 0),
-                    'name': lesson.get('name', 'unnamed lesson'),
+                    'id': lesson_id,
+                    'name': lesson_name,
                     'files': lesson_files,
                 },
             )
@@ -290,3 +382,29 @@ class LessonMod(MoodleMod):
             })
 
         return result
+
+    async def _get_lesson_access_info(self, lesson_id: int) -> Dict:
+        """
+        Get lesson access information including restrictions and availability
+
+        Returns access rules, preventaccessreasons, and user capabilities
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_lesson_get_lesson_access_information',
+                {'lessonid': lesson_id}
+            )
+            return {
+                'canmanage': response.get('canmanage', False),
+                'cangrade': response.get('cangrade', False),
+                'canviewreports': response.get('canviewreports', False),
+                'reviewmode': response.get('reviewmode', False),
+                'attemptscount': response.get('attemptscount', 0),
+                'lastpageseen': response.get('lastpageseen', 0),
+                'leftduringtimedsession': response.get('leftduringtimedsession', False),
+                'preventaccessreasons': response.get('preventaccessreasons', []),
+                'warnings': response.get('warnings', []),
+            }
+        except Exception as e:
+            logging.debug(f"Could not fetch access information for lesson {lesson_id}: {e}")
+            return {}
