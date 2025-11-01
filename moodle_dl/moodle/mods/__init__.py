@@ -17,6 +17,7 @@ from moodle_dl.moodle.mods.glossary import GlossaryMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.h5pactivity import H5PActivityMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.label import LabelMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.lesson import LessonMod  # noqa: F401 isort:skip
+from moodle_dl.moodle.mods.lti import LtiMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.page import PageMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.quiz import QuizMod  # noqa: F401 isort:skip
 from moodle_dl.moodle.mods.scorm import ScormMod  # noqa: F401 isort:skip

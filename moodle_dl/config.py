@@ -149,6 +149,10 @@ class ConfigHelper:
         # return a stored boolean if choice modules should be downloaded
         return self.get_property_or('download_choices', False)
 
+    def get_download_ltis(self) -> bool:
+        # return a stored boolean if LTI (external tool) modules should be downloaded
+        return self.get_property_or('download_ltis', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)
