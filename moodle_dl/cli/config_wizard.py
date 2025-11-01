@@ -179,10 +179,10 @@ class ConfigWizard:
         Log.info(
             '为了避免下载你注册的所有 Moodle 课程，你可以在这里选择要下载的课程。'
             + '你可以创建白名单或黑名单。'
-            + '\n\n- 使用白名单时，只有勾选✅的课程会被下载，'
+            + '\n\n- 使用白名单时，勾选✅的课程会被下载，未勾选的不下载。'
             + '未来注册的新课程默认不下载（需要手动添加到白名单）。'
-            + '\n- 使用黑名单时，勾选✅的课程会被下载，取消勾选的课程不会被下载，'
-            + '未来注册的新课程会自动下载（除非添加到黑名单）。'
+            + '\n- 使用黑名单时，勾选❌的课程会被排除（不下载），未勾选的会下载。'
+            + '未来注册的新课程会自动下载（除非手动添加到黑名单）。'
         )
         print('')
         use_whitelist = len(dont_download_course_ids) == 0
@@ -200,16 +200,16 @@ class ConfigWizard:
             for i, course in enumerate(courses):
                 choices.append(f'{int(course.id):5}\t{course.fullname}')
 
-                # 复选框的含义统一为"是否下载这门课程"
-                # 白名单模式：默认全不选（空白名单），勾选的加入白名单
-                # 黑名单模式：默认全选（下载所有），取消勾选的加入黑名单
+                # 复选框的含义：
+                # 白名单模式：勾选 = 下载这门课程
+                # 黑名单模式：勾选 = 排除这门课程（不下载）
                 if use_whitelist:
-                    # 白名单：只勾选在 download_course_ids 中的课程
+                    # 白名单：勾选在 download_course_ids 中的课程
                     if course.id in download_course_ids:
                         defaults.append(i)
                 else:
-                    # 黑名单：勾选所有不在 dont_download_course_ids 中的课程（即要下载的课程）
-                    if course.id not in dont_download_course_ids:
+                    # 黑名单：勾选在 dont_download_course_ids 中的课程（要排除的）
+                    if course.id in dont_download_course_ids:
                         defaults.append(i)
 
             if use_whitelist:
@@ -224,16 +224,16 @@ class ConfigWizard:
                     selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
                 )
             else:
-                Log.blue('哪些课程应该被下载？')
-                Log.info('[勾选✅的课程会被下载，新课程默认自动下载]')
-                # 黑名单模式：统一使用 ✅ 表示"会下载"，取消勾选的进入黑名单
+                Log.blue('哪些课程应该被排除（不下载）？')
+                Log.info('[勾选❌的课程会被排除，新课程默认自动下载]')
+                # 黑名单模式：使用 ❌ 表示"排除/不下载"
                 selected_courses = Cutie.select_multiple(
                     options=choices,
                     ticked_indices=defaults,
                     deselected_unticked_prefix='\033[1m( )\033[0m ',
-                    deselected_ticked_prefix='\033[1m(\033[32m✅\033[0;1m)\033[0m ',
-                    selected_unticked_prefix='\033[32;1m{ }\033[0m ',
-                    selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+                    deselected_ticked_prefix='\033[1m(\033[31m❌\033[0;1m)\033[0m ',  # 红色 ❌
+                    selected_unticked_prefix='\033[31;1m{ }\033[0m ',
+                    selected_ticked_prefix='\033[31;1m{❌}\033[0m ',  # 红色 ❌
                 )
             print('')
 
@@ -251,24 +251,26 @@ class ConfigWizard:
 
             # 保存课程选择
             # 白名单模式：保存勾选的课程（要下载的）
-            # 黑名单模式：保存未勾选的课程（不要下载的）
+            # 黑名单模式：保存勾选的课程（要排除的）
             course_ids = []
             for i, course in enumerate(courses):
-                if use_whitelist:
-                    # 白名单：勾选的课程加入白名单
-                    if i in selected_courses:
-                        course_ids.append(course.id)
-                else:
-                    # 黑名单：未勾选的课程加入黑名单
-                    if i not in selected_courses:
-                        course_ids.append(course.id)
+                if i in selected_courses:
+                    course_ids.append(course.id)
 
             if use_whitelist:
                 self.config.set_property('download_course_ids', course_ids)
                 self.config.remove_property('dont_download_course_ids')
             else:
-                self.config.set_property('dont_download_course_ids', course_ids)
-                self.config.remove_property('download_course_ids')
+                # 黑名单模式
+                if len(course_ids) == 0:
+                    # 用户没有勾选任何课程要排除，黑名单为空
+                    # 删除配置项，等同于"下载所有课程"
+                    self.config.remove_property('dont_download_course_ids')
+                    self.config.remove_property('download_course_ids')
+                else:
+                    # 保存要排除的课程
+                    self.config.set_property('dont_download_course_ids', course_ids)
+                    self.config.remove_property('download_course_ids')
 
             # 退出循环，返回外层导航
             break
