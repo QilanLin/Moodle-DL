@@ -117,6 +117,14 @@ class ConfigHelper:
         # return a stored boolean if glossaries should be downloaded
         return self.get_property_or('download_glossaries', False)
 
+    def get_download_h5pactivities(self) -> bool:
+        # return a stored boolean if h5p activities should be downloaded
+        return self.get_property_or('download_h5pactivities', False)
+
+    def get_download_h5p_attempts(self) -> bool:
+        # return a stored boolean if h5p attempts/results should be downloaded
+        return self.get_property_or('download_h5p_attempts', False)
+
     def get_download_calendars(self) -> str:
         # return a stored boolean if calendars should be downloaded
         return self.get_property_or('download_calendars', False)
