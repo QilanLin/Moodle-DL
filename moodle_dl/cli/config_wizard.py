@@ -357,12 +357,12 @@ class ConfigWizard:
                         choices.append(
                             (
                                 f'{int(course.id):5}\t{overwrite_name_with} ({course.fullname})'
-                                + f' cfs={create_directory_structure}'
+                                + f'\tcfs={create_directory_structure}'
                             )
                         )
 
                     else:
-                        choices.append(f'{int(course.id):5}\t{course.fullname}  cfs={create_directory_structure}')
+                        choices.append(f'{int(course.id):5}\t{course.fullname}\tcfs={create_directory_structure}')
 
                     choices_courses.append(course)
 
