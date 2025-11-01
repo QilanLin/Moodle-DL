@@ -202,6 +202,7 @@ class FeedbackMod(MoodleMod):
                     'dependitem': item.get('dependitem', 0),
                     'dependvalue': item.get('dependvalue', ''),
                     'options': item.get('options', ''),
+                    'itemfiles': item.get('itemfiles', []),
                 }
                 for item in items
             ]

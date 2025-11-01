@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, List
 
@@ -59,21 +60,110 @@ class GlossaryMod(MoodleMod):
         for glossary in glossaries:
             course_id = glossary.get('course', 0)
             module_id = glossary.get('coursemodule', 0)
+            glossary_id = glossary.get('id', 0)
             glossary_name = glossary.get('name', 'unnamed glossary')
+            glossary_intro = glossary.get('intro', '')
 
             # Get glossary intro files
             glossary_files = glossary.get('introfiles', [])
             self.set_props_of_files(glossary_files, type='glossary_introfile')
 
             # Add glossary intro as description
-            glossary_intro = glossary.get('intro', '')
             if glossary_intro != '':
                 glossary_files.append(
                     {
-                        'filename': 'Glossary intro',
+                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
                         'filepath': '/',
                         'description': glossary_intro,
                         'type': 'description',
+                        'timemodified': 0,
+                    }
+                )
+
+            # Get categories for this glossary
+            categories_data = await self._get_glossary_categories(glossary_id)
+
+            # Create comprehensive glossary metadata
+            metadata = {
+                'glossary_id': glossary_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': glossary_name,
+                'intro': glossary_intro,
+                'settings': {
+                    # Display settings
+                    'allowduplicatedentries': glossary.get('allowduplicatedentries', 0),
+                    'displayformat': glossary.get('displayformat', 'dictionary'),
+                    'mainglossary': glossary.get('mainglossary', 0),
+                    'showspecial': glossary.get('showspecial', 1),
+                    'showalphabet': glossary.get('showalphabet', 1),
+                    'showall': glossary.get('showall', 1),
+                    # Permissions
+                    'allowcomments': glossary.get('allowcomments', 0),
+                    'allowprintview': glossary.get('allowprintview', 1),
+                    'usedynalink': glossary.get('usedynalink', 1),
+                    'defaultapproval': glossary.get('defaultapproval', 1),
+                    'globalglossary': glossary.get('globalglossary', 0),
+                    'editalways': glossary.get('editalways', 0),
+                    # Display options
+                    'entbypage': glossary.get('entbypage', 10),
+                    'approvaldisplayformat': glossary.get('approvaldisplayformat', 'default'),
+                    # Browse modes
+                    'browsemodes': glossary.get('browsemodes', []),
+                    'canaddentry': glossary.get('canaddentry', 0),
+                },
+                'rss': {
+                    'rsstype': glossary.get('rsstype', 0),
+                    'rssarticles': glossary.get('rssarticles', 0),
+                },
+                'assessment': {
+                    'assessed': glossary.get('assessed', 0),
+                    'assesstimestart': glossary.get('assesstimestart', 0),
+                    'assesstimefinish': glossary.get('assesstimefinish', 0),
+                    'scale': glossary.get('scale', 0),
+                },
+                'completion': {
+                    'completionentries': glossary.get('completionentries', 0),
+                },
+                'entries_count': glossary.get('entries', 0),
+                'categories': categories_data,
+                'timestamps': {
+                    'timemodified': glossary.get('timemodified', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'collaboration',
+                },
+                'note': 'Glossary is a collaborative knowledge building module. '
+                + 'This export includes comprehensive settings, categories, and all entries with their metadata.',
+            }
+
+            glossary_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
+            # Export categories as separate file if available
+            if categories_data:
+                glossary_files.append(
+                    {
+                        'filename': 'categories.json',
+                        'filepath': '/',
+                        'timemodified': 0,
+                        'content': json.dumps(categories_data, indent=2, ensure_ascii=False),
+                        'type': 'content',
                     }
                 )
 
@@ -82,7 +172,7 @@ class GlossaryMod(MoodleMod):
                 course_id,
                 module_id,
                 {
-                    'id': glossary.get('id', 0),
+                    'id': glossary_id,
                     'name': glossary_name,
                     'files': glossary_files,
                     'entries': glossary.get('entries', 0),  # Number of entries
@@ -215,6 +305,56 @@ class GlossaryMod(MoodleMod):
             }
         )
 
+        # Create comprehensive entry metadata
+        entry_metadata = {
+            'entry_id': entry_id,
+            'glossary_id': entry.get('glossaryid', 0),
+            'concept': concept,
+            'definition': definition,
+            'user': {
+                'userid': entry.get('userid', 0),
+                'userfullname': author,
+                'userpictureurl': entry.get('userpictureurl', ''),
+            },
+            'formatting': {
+                'definitionformat': entry.get('definitionformat', 1),
+                'definitiontrust': entry.get('definitiontrust', 0),
+            },
+            'flags': {
+                'teacherentry': entry.get('teacherentry', 0),
+                'approved': entry.get('approved', 1),
+            },
+            'linking': {
+                'sourceglossaryid': entry.get('sourceglossaryid', 0),
+                'usedynalink': entry.get('usedynalink', 1),
+                'casesensitive': entry.get('casesensitive', 0),
+                'fullmatch': entry.get('fullmatch', 1),
+            },
+            'category': {
+                'categoryid': entry.get('categoryid', 0),
+                'categoryname': category_name,
+            },
+            'aliases': [alias if isinstance(alias, str) else alias.get('alias', '') for alias in aliases],
+            'tags': [{'name': tag.get('displayname', tag.get('rawname', '')), 'id': tag.get('id', 0)} for tag in tags],
+            'timestamps': {
+                'timecreated': time_created,
+                'timemodified': time_modified,
+            },
+            'attachments_count': len(entry.get('attachments', [])),
+            'inline_files_count': len(entry.get('definitioninlinefiles', [])),
+        }
+
+        # Add entry metadata as JSON file
+        result.append(
+            {
+                'filename': PT.to_valid_name(f'{safe_concept}_metadata', is_file=True) + '.json',
+                'filepath': '/entries/',
+                'timemodified': 0,
+                'content': json.dumps(entry_metadata, indent=2, ensure_ascii=False),
+                'type': 'content',
+            }
+        )
+
         # Add attachments
         attachments = entry.get('attachments', [])
         if attachments:
@@ -233,3 +373,28 @@ class GlossaryMod(MoodleMod):
                 result.append(inline_file)
 
         return result
+
+    async def _get_glossary_categories(self, glossary_id: int) -> List[Dict]:
+        """
+        Get all categories for a glossary
+
+        Returns list of category data
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_glossary_get_categories',
+                {'id': glossary_id, 'from': 0, 'limit': 0}
+            )
+            categories = response.get('categories', [])
+            return [
+                {
+                    'id': cat.get('id', 0),
+                    'glossaryid': cat.get('glossaryid', 0),
+                    'name': cat.get('name', ''),
+                    'usedynalink': cat.get('usedynalink', 1),
+                }
+                for cat in categories
+            ]
+        except Exception as e:
+            logging.debug(f"Could not fetch categories for glossary {glossary_id}: {e}")
+            return []

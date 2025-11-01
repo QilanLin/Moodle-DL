@@ -30,27 +30,87 @@ class DataMod(MoodleMod):
         result = {}
         for database in databases:
             course_id = database.get('course', 0)
+            module_id = database.get('coursemodule', 0)
+            database_id = database.get('id', 0)
+            database_name = database.get('name', 'db')
+            database_intro = database.get('intro', '')
+
             database_files = database.get('introfiles', [])
             self.set_props_of_files(database_files, type='database_introfile')
 
-            database_intro = database.get('intro', '')
             if database_intro != '':
                 database_files.append(
                     {
-                        'filename': 'Database intro',
+                        'filename': PT.to_valid_name('Introduction', is_file=True) + '.html',
                         'filepath': '/',
                         'description': database_intro,
                         'type': 'description',
+                        'timemodified': 0,
+                    }
+                )
+
+            # Get field definitions (schema) for this database
+            fields_data = await self._get_database_fields(database_id)
+
+            # Create comprehensive database metadata
+            metadata = {
+                'database_id': database_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': database_name,
+                'intro': database_intro,
+                'schema': {
+                    'fields': fields_data,
+                    'field_count': len(fields_data),
+                },
+                'settings': database.get('settings', {}),
+                'timestamps': {
+                    'timemodified': database.get('timemodified', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': False,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'collaboration',
+                },
+                'note': 'Database is a structured data collection module. '
+                + 'This export includes schema definition (field types) and all entries with their metadata.',
+            }
+
+            database_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': 0,
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
+            # Export schema as separate file if available
+            if fields_data:
+                database_files.append(
+                    {
+                        'filename': 'schema.json',
+                        'filepath': '/',
+                        'timemodified': 0,
+                        'content': json.dumps(fields_data, indent=2, ensure_ascii=False),
+                        'type': 'content',
                     }
                 )
 
             self.add_module(
                 result,
                 course_id,
-                database.get('coursemodule', 0),
+                module_id,
                 {
-                    'id': database.get('id', 0),
-                    'name': database.get('name', 'db'),
+                    'id': database_id,
+                    'name': database_name,
                     'files': database_files,
                 },
             )
@@ -187,3 +247,33 @@ class DataMod(MoodleMod):
                     result.append(entry_file)
 
         return result
+
+    async def _get_database_fields(self, database_id: int) -> List[Dict]:
+        """
+        Get field definitions (schema) for a database
+
+        Returns list of field data including type, name, description, and parameters
+        """
+        try:
+            response = await self.client.async_post(
+                'mod_data_get_fields',
+                {'databaseid': database_id}
+            )
+            fields = response.get('fields', [])
+            return [
+                {
+                    'id': field.get('id', 0),
+                    'dataid': field.get('dataid', 0),
+                    'type': field.get('type', ''),
+                    'name': field.get('name', ''),
+                    'description': field.get('description', ''),
+                    'required': field.get('required', 0),
+                    'param1': field.get('param1', ''),
+                    'param2': field.get('param2', ''),
+                    'param3': field.get('param3', ''),
+                }
+                for field in fields
+            ]
+        except Exception as e:
+            logging.debug(f"Could not fetch fields for database {database_id}: {e}")
+            return []

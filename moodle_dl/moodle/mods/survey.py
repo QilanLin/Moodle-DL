@@ -92,7 +92,11 @@ class SurveyMod(MoodleMod):
                     'days': survey.get('days', 0),
                     'questions': survey.get('questions', ''),
                 },
+                'completion': {
+                    'surveydone': survey.get('surveydone', 0),
+                },
                 'timestamps': {
+                    'timecreated': survey.get('timecreated', 0),
                     'timemodified': survey.get('timemodified', 0),
                 },
                 'questions': questions_data,
