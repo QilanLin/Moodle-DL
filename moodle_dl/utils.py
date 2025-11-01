@@ -1417,3 +1417,115 @@ class Cutie:
             print()
         print('\033[K\n\033[K\n\033[K\n\033[3A')
         return is_selected and is_yes
+
+
+# ==============================================================================
+# URL Helper - 基于 Moodle Mobile App 官方实现
+# 参考：moodleapp/src/core/singletons/url.ts
+# ==============================================================================
+
+class UrlHelper:
+    """URL 处理助手类，提供 Moodle 特定的 URL 操作"""
+
+    @staticmethod
+    def fix_pluginfile_url(
+        url: str,
+        token: str,
+        moodle_base_url: str,
+        add_lang: bool = False,
+        lang: Optional[str] = None,
+    ) -> str:
+        """
+        修复 Moodle pluginfile URL，使其可以正确下载
+
+        基于 Moodle Mobile App 的 fixPluginfileURL 实现
+        参考：src/core/singletons/url.ts:fixPluginfileURL()
+
+        主要功能：
+        1. 处理 HTML 转义（&amp; → &）
+        2. 检查 URL 是否已包含 token（避免重复添加）
+        3. 转换 /pluginfile.php → /webservice/pluginfile.php
+        4. 添加必要参数：token, offline=1, lang（可选）
+        5. 只处理属于当前站点的 pluginfile URL
+
+        Args:
+            url: 要修复的 URL
+            token: Moodle token
+            moodle_base_url: Moodle 站点基础 URL（例如 https://moodle.example.com）
+            add_lang: 是否添加 lang 参数（默认 False）
+            lang: 语言代码（例如 'zh_cn'，仅当 add_lang=True 时使用）
+
+        Returns:
+            修复后的 URL
+
+        Examples:
+            >>> url = "https://moodle.example.com/pluginfile.php/123/mod_resource/content/1/file.pdf"
+            >>> fixed = UrlHelper.fix_pluginfile_url(url, "mytoken", "https://moodle.example.com")
+            >>> "/webservice/pluginfile.php" in fixed and "token=mytoken" in fixed
+            True
+        """
+        import urllib.parse as urlparse
+
+        if not url:
+            return ''
+
+        # 1. 处理 HTML 转义（Moodle 有时会返回 &amp;）
+        url = url.replace('&amp;', '&')
+
+        # 2. 检查是否已包含 token（避免重复添加）
+        if 'token=' in url:
+            # URL 已经包含 token，直接返回
+            return url
+
+        # 3. 检查是否为 pluginfile URL
+        if '/pluginfile.php' not in url:
+            # 不是 pluginfile URL，不需要修复
+            return url
+
+        # 4. 确保 moodle_base_url 不以 / 结尾
+        moodle_base_url_clean = moodle_base_url.rstrip('/')
+
+        # 5. 检查 URL 是否属于当前站点
+        if not url.startswith(moodle_base_url_clean):
+            # URL 不属于当前站点，不处理（可能是外部资源）
+            return url
+
+        # 6. 转换 /pluginfile.php → /webservice/pluginfile.php
+        # 官方逻辑：如果 URL 是 {siteUrl}/pluginfile.php，则转换为 webservice/pluginfile.php
+        if '/webservice/pluginfile.php' not in url:
+            url = url.replace('/pluginfile.php', '/webservice/pluginfile.php')
+
+        # 7. 添加必要参数
+        url_parts = list(urlparse.urlparse(url))
+        query = dict(urlparse.parse_qsl(url_parts[4]))
+
+        # 添加 token（用于认证）
+        query['token'] = token
+
+        # 添加 offline=1（外部仓库需要这个参数）
+        # 参考：官方注释 "Always send offline=1 (it's for external repositories)"
+        query['offline'] = '1'
+
+        # 可选：添加语言参数
+        if add_lang and lang:
+            query['lang'] = lang
+
+        url_parts[4] = urlparse.urlencode(query)
+
+        return urlparse.urlunparse(url_parts)
+
+    @staticmethod
+    def is_pluginfile_url(url: str) -> bool:
+        """
+        检查 URL 是否为 Moodle pluginfile URL
+
+        Args:
+            url: 要检查的 URL
+
+        Returns:
+            如果是 pluginfile URL 返回 True，否则返回 False
+        """
+        if not url:
+            return False
+
+        return '/pluginfile.php' in url or '/tokenpluginfile.php' in url

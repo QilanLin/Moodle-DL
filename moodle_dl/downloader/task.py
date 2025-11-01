@@ -33,7 +33,7 @@ from moodle_dl.types import (
     TaskState,
     TaskStatus,
 )
-from moodle_dl.utils import LINK_TEMPLATES, MoodleDLCookieJar
+from moodle_dl.utils import LINK_TEMPLATES, MoodleDLCookieJar, UrlHelper
 from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import (
     SslHelper,
@@ -103,15 +103,38 @@ class Task:
 
     def add_token_to_url(self, url: str) -> str:
         """
-        Adds the Moodle token to a URL
+        Adds the Moodle token to a URL (使用改进的 URL 处理)
+
+        基于官方 Moodle Mobile App 的 fixPluginfileURL 实现
+        参考：moodleapp/src/core/singletons/url.ts
+
+        改进点：
+        - 处理 HTML 转义 (&amp; → &)
+        - 避免重复添加 token
+        - 自动转换 pluginfile.php → webservice/pluginfile.php
+        - 添加 offline=1 参数（外部仓库必需）
+
         @param url: The URL to that the token should be added.
         @return: The URL with the token.
         """
-        url_parts = list(urlparse.urlparse(url))
-        query = dict(urlparse.parse_qsl(url_parts[4]))
-        query.update({'token': self.opts.token})
-        url_parts[4] = urlparse.urlencode(query)
-        return urlparse.urlunparse(url_parts)
+        # 使用改进的 URL 处理方法
+        fixed_url = UrlHelper.fix_pluginfile_url(
+            url=url, token=self.opts.token, moodle_base_url=self.opts.moodle_url
+        )
+
+        # 如果不是 pluginfile URL，使用原来的简单方法
+        if fixed_url == url and not UrlHelper.is_pluginfile_url(url):
+            # 不是 pluginfile URL，使用原来的方法（兼容性）
+            if 'token=' in url:
+                return url  # 已包含 token，直接返回
+
+            url_parts = list(urlparse.urlparse(url))
+            query = dict(urlparse.parse_qsl(url_parts[4]))
+            query.update({'token': self.opts.token})
+            url_parts[4] = urlparse.urlencode(query)
+            return urlparse.urlunparse(url_parts)
+
+        return fixed_url
 
     def create_target_file(self, target_path: str) -> str:
         """
