@@ -717,7 +717,11 @@ class Task:
             if self.opts.cookies_text is not None:
                 cookie_jar = convert_to_aiohttp_cookie_jar(MoodleDLCookieJar(StringIO(self.opts.cookies_text)))
 
-            ssl_context = SslHelper.get_ssl_context(self.opts.global_opts.skip_cert_verify)
+            ssl_context = SslHelper.get_ssl_context(
+                self.opts.global_opts.skip_cert_verify,
+                self.opts.global_opts.allow_insecure_ssl,
+                self.opts.global_opts.use_all_ciphers,
+            )
             timeout = aiohttp.ClientTimeout(total=30)
 
             async with aiohttp.ClientSession(
@@ -730,10 +734,13 @@ class Task:
                         logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status)
                         return False
 
-                    # Check if redirected to login
+                    # Check if redirected to Moodle login (but allow Microsoft SSO)
                     final_url = str(response.url)
-                    if 'login' in final_url.lower() or 'enrol' in final_url.lower():
-                        logging.warning('[%d] Redirected to login page, cookies may be invalid', self.task_id)
+                    logging.debug('[%d] Kalvidres page URL: %s', self.task_id, final_url)
+
+                    # Only consider it a login redirect if it's the Moodle login page, not Microsoft SSO
+                    if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and 'microsoftonline.com' not in final_url:
+                        logging.warning('[%d] Redirected to Moodle login page at %s, cookies may be invalid', self.task_id, final_url)
                         return False
 
                     html_content = await response.text()
