@@ -89,6 +89,9 @@ class File:
         # For Created HTML-Files like Quizzes
         self.html_content = None
 
+        # For JSON/text content files (like metadata.json)
+        self.content = None
+
         # To manage the corresponding moved or changed files
         self.old_file = None
         self.new_file = None

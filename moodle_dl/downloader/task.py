@@ -686,6 +686,22 @@ class Task:
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as html_file:
             await html_file.write(html_content)
 
+    async def create_content_file(self):
+        "Create a content file (e.g., metadata.json)"
+        logging.debug('[%d] Creating a content file', self.task_id)
+
+        content = ''
+        if self.file.content is not None:
+            content = self.file.content
+
+        if content == '':
+            logging.debug('[%d] Remove target file because content file would be empty', self.task_id)
+            os.remove(self.file.saved_to)
+            return
+
+        async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as content_file:
+            await content_file.write(content)
+
     def move_old_file(self) -> bool:
         """
         Try to move the old file to the new location.
@@ -1038,6 +1054,10 @@ class Task:
             elif self.file.content_type == 'html':
                 # Create a HTML file instead of downloading it
                 await self.create_html_file()
+
+            elif self.file.content_type == 'content':
+                # Create a content file (like metadata.json) instead of downloading it
+                await self.create_content_file()
 
             elif self.file.module_modname.startswith('index_mod'):
                 await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
