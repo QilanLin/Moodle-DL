@@ -1,3 +1,4 @@
+import json
 import logging
 from typing import Dict, List
 
@@ -58,14 +59,17 @@ class WikiMod(MoodleMod):
         for wiki in wikis:
             course_id = wiki.get('course', 0)
             module_id = wiki.get('coursemodule', 0)
+            wiki_id = wiki.get('id', 0)
             wiki_name = wiki.get('name', 'unnamed wiki')
+            wiki_intro = wiki.get('intro', '')
+            wiki_mode = wiki.get('wikimode', 'collaborative')
+            first_page_title = wiki.get('firstpagetitle', 'Main Page')
 
             # Get wiki intro files
             wiki_files = wiki.get('introfiles', [])
             self.set_props_of_files(wiki_files, type='wiki_introfile')
 
             # Add wiki intro as description
-            wiki_intro = wiki.get('intro', '')
             if wiki_intro != '':
                 wiki_files.append(
                     {
@@ -76,16 +80,63 @@ class WikiMod(MoodleMod):
                     }
                 )
 
+            # Create comprehensive wiki metadata
+            metadata = {
+                'wiki_id': wiki_id,
+                'course_id': course_id,
+                'module_id': module_id,
+                'name': wiki_name,
+                'intro': wiki_intro,
+                'settings': {
+                    'wikimode': wiki_mode,  # collaborative, individual, or group
+                    'firstpagetitle': first_page_title,
+                    'defaultformat': wiki.get('defaultformat', 'html'),
+                    'forceformat': wiki.get('forceformat', 1),
+                    'editbegin': wiki.get('editbegin', 0),
+                    'editend': wiki.get('editend', 0),
+                },
+                'capabilities': {
+                    'cancreatepages': wiki.get('cancreatepages', True),
+                    'caneditpages': wiki.get('caneditpages', True),
+                    'canviewpage': wiki.get('canviewpage', True),
+                },
+                'timestamps': {
+                    'timemodified': wiki.get('timemodified', 0),
+                    'timecreated': wiki.get('timecreated', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'collaboration',
+                },
+                'note': 'Wiki is a collaborative content creation module supporting multiple subwikis. '
+                + f'Mode: {wiki_mode}. This export includes all pages, attachments, and tags.',
+            }
+
+            wiki_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': wiki.get('timemodified', 0),
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
             self.add_module(
                 result,
                 course_id,
                 module_id,
                 {
-                    'id': wiki.get('id', 0),
+                    'id': wiki_id,
                     'name': wiki_name,
                     'files': wiki_files,
-                    'firstpagetitle': wiki.get('firstpagetitle', 'Main Page'),
-                    'wikimode': wiki.get('wikimode', 'collaborative'),
+                    'firstpagetitle': first_page_title,
+                    'wikimode': wiki_mode,
                 },
             )
 

@@ -38,14 +38,43 @@ class CalendarMod(MoodleMod):
             return result
 
         last_timestamp = self.last_timestamps.get(self.MOD_NAME, {}).get(course_events_module_id, 0)
-        calendar_req_data = {
-            'options': {'timestart': last_timestamp, 'userevents': 0},
-            'events': self.get_data_for_mod_entries_endpoint(courses),
-        }
 
-        events = (await self.client.async_post('core_calendar_get_calendar_events', calendar_req_data)).get(
-            'events', []
-        )
+        # Try to use action events API first (more efficient, available since Moodle 3.3)
+        events = []
+        try:
+            if self.version >= 2017051500:  # 3.3+
+                # Get action events sorted by time
+                action_events_response = await self.client.async_post(
+                    'core_calendar_get_action_events_by_timesort',
+                    {
+                        'timesortfrom': last_timestamp,
+                        'timesortto': None,  # No end limit
+                        'limitnum': 0,  # No limit
+                    }
+                )
+                events = action_events_response.get('events', [])
+
+                # Filter events by course IDs
+                course_ids = {course.id for course in courses}
+                events = [e for e in events if e.get('courseid', 0) in course_ids]
+            else:
+                # Fallback to traditional API
+                calendar_req_data = {
+                    'options': {'timestart': last_timestamp, 'userevents': 0},
+                    'events': self.get_data_for_mod_entries_endpoint(courses),
+                }
+                events = (await self.client.async_post('core_calendar_get_calendar_events', calendar_req_data)).get(
+                    'events', []
+                )
+        except Exception:
+            # Fallback to traditional API if action events fail
+            calendar_req_data = {
+                'options': {'timestart': last_timestamp, 'userevents': 0},
+                'events': self.get_data_for_mod_entries_endpoint(courses),
+            }
+            events = (await self.client.async_post('core_calendar_get_calendar_events', calendar_req_data)).get(
+                'events', []
+            )
 
         events_per_course = self.sort_by_courseid(events)
 
@@ -101,6 +130,14 @@ class CalendarMod(MoodleMod):
                         'no_search_for_urls': True,
                     }
                 )
+
+                # Process event attachments if any
+                event_attachments = event.get('attachments', [])
+                if event_attachments:
+                    for attachment in event_attachments:
+                        attachment['filepath'] = f'/events/{PT.to_valid_name(event_name, is_file=False)}/'
+                        self.set_props_of_file(attachment, type='calendar_attachment')
+                        event_files.append(attachment)
 
                 # Create comprehensive event metadata
                 event_metadata = {

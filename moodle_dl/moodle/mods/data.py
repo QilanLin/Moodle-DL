@@ -63,7 +63,31 @@ class DataMod(MoodleMod):
                     'fields': fields_data,
                     'field_count': len(fields_data),
                 },
-                'settings': database.get('settings', {}),
+                'settings': {
+                    # Entries settings
+                    'requiredentries': database.get('requiredentries', 0),
+                    'requiredentriestoview': database.get('requiredentriestoview', 0),
+                    'maxentries': database.get('maxentries', 0),
+                    # Approval and comments
+                    'approval': database.get('approval', 0),
+                    'comments': database.get('comments', 0),
+                    'manageapproved': database.get('manageapproved', 0),
+                    # Timing
+                    'timeavailablefrom': database.get('timeavailablefrom', 0),
+                    'timeavailableto': database.get('timeavailableto', 0),
+                    'timeviewfrom': database.get('timeviewfrom', 0),
+                    'timeviewto': database.get('timeviewto', 0),
+                    # Display settings
+                    'defaultsort': database.get('defaultsort', 0),
+                    'defaultsortdir': database.get('defaultsortdir', 0),
+                    # Rating settings
+                    'assessed': database.get('assessed', 0),
+                    'assesstimestart': database.get('assesstimestart', 0),
+                    'assesstimefinish': database.get('assesstimefinish', 0),
+                    'scale': database.get('scale', 1),
+                    # Notification settings
+                    'notification': database.get('notification', 0),
+                },
                 'timestamps': {
                     'timemodified': database.get('timemodified', 0),
                 },
@@ -79,7 +103,7 @@ class DataMod(MoodleMod):
                     'purpose': 'collaboration',
                 },
                 'note': 'Database is a structured data collection module. '
-                + 'This export includes schema definition (field types) and all entries with their metadata.',
+                + 'This export includes schema definition (field types), all settings, and all entries with their metadata.',
             }
 
             database_files.append(

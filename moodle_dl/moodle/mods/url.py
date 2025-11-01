@@ -108,10 +108,23 @@ class UrlMod(MoodleMod):
                     'type_name': self._get_display_type_name(display_type),
                     'options': self._parse_display_options(display_options),
                 },
-                'parameters': parameters,
+                'parameters': self._parse_parameters(parameters),
                 'timestamps': {
                     'time_modified': url_mod.get('timemodified', 0),
                 },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'grade_has_grade': False,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'content',
+                },
+                'note': 'URL module provides links to external resources. '
+                + 'This export includes URL metadata, display settings, and parameters.',
             }
 
             url_files.append(
@@ -187,3 +200,51 @@ class UrlMod(MoodleMod):
             logging.debug("Error parsing display options '%s': %s", display_options, str(e))
 
         return options
+
+    def _parse_parameters(self, parameters: str) -> Dict:
+        """
+        Parse URL parameters string into dictionary
+
+        Parameters are stored in serialized format. In Moodle, this is typically:
+        - PHP serialized array (e.g., "a:1:{s:4:\"name\";s:5:\"value\";}")
+        - URL parameter format (e.g., "param1=value1&param2=value2")
+        - Empty string if no parameters
+
+        @param parameters: Parameters string
+        @return: Parsed parameters dictionary or structured representation
+        """
+        if not parameters:
+            return {}
+
+        # Try to parse as URL-encoded parameters first
+        if '=' in parameters and not parameters.startswith('a:'):
+            parsed = {}
+            try:
+                pairs = parameters.split('&')
+                for pair in pairs:
+                    if '=' in pair:
+                        key, value = pair.split('=', 1)
+                        # URL decode and type conversion
+                        if value.isdigit():
+                            parsed[key] = int(value)
+                        elif value.lower() in ('true', 'false'):
+                            parsed[key] = value.lower() == 'true'
+                        else:
+                            parsed[key] = value
+                return parsed
+            except Exception as e:
+                logging.debug("Error parsing URL parameters '%s': %s", parameters, str(e))
+
+        # If it's PHP serialized or other format, return as structured metadata
+        if parameters.startswith('a:'):
+            return {
+                'format': 'php_serialized',
+                'raw': parameters,
+                'note': 'PHP serialized data - requires PHP unserialize for parsing'
+            }
+
+        # Return raw string in structured format for unknown formats
+        return {
+            'format': 'unknown',
+            'raw': parameters,
+        }
