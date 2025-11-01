@@ -732,12 +732,18 @@ class Task:
                 logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status_code)
                 return False
 
-            # Check if redirected to Moodle login (but allow Microsoft SSO)
+            # Check if redirected to Moodle login page
             final_url = response.url
             logging.debug('[%d] Kalvidres page URL: %s', self.task_id, final_url)
 
-            # Only consider it a login redirect if it's the Moodle login page, not Microsoft SSO
-            if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and 'microsoftonline.com' not in final_url:
+            # Extract domain from original URL and final URL
+            from urllib.parse import urlparse
+            original_domain = urlparse(url).netloc
+            final_domain = urlparse(final_url).netloc
+
+            # If redirected to login/index.php on the SAME domain, cookies are invalid
+            # If redirected to a DIFFERENT domain, it's likely SSO (Microsoft, Google, etc.) which is ok
+            if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and final_domain == original_domain:
                 logging.warning('[%d] Redirected to Moodle login page at %s, cookies may be invalid', self.task_id, final_url)
                 return False
 
@@ -867,9 +873,20 @@ class Task:
 
             partner_id = partner_id_match.group(1)
 
+            # Extract Kaltura CDN domain from the page (e.g., cdnapisec.kaltura.com, cfvod.kaltura.com, etc.)
+            # Look for embedIframeJs or embedPlaykitJs URLs which indicate the CDN being used
+            kaltura_cdn_match = re.search(r'https?://([^/]*kaltura\.com)/p/\d+/embed', browseandembed_response.text)
+            if kaltura_cdn_match:
+                kaltura_cdn = kaltura_cdn_match.group(1)
+                logging.debug('[%d] Found Kaltura CDN from page: %s', self.task_id, kaltura_cdn)
+            else:
+                # Fallback to common Kaltura CDN if not found in page
+                kaltura_cdn = 'cdnapisec.kaltura.com'
+                logging.debug('[%d] Using default Kaltura CDN: %s', self.task_id, kaltura_cdn)
+
             # Construct the Kaltura iframe embed URL that yt-dlp can download
             kaltura_iframe_url = (
-                f'https://cdnapisec.kaltura.com/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
+                f'https://{kaltura_cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
                 f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
             )
 
