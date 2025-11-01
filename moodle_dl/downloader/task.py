@@ -713,9 +713,7 @@ class Task:
             logging.debug('[%d] Extracting text from kalvidres URL: %s', self.task_id, url)
 
             # Create aiohttp session with cookies
-            cookie_jar = None
-            if self.opts.cookies_text is not None:
-                cookie_jar = convert_to_aiohttp_cookie_jar(MoodleDLCookieJar(StringIO(self.opts.cookies_text)))
+            cookie_jar = self.get_cookie_jar()
 
             ssl_context = SslHelper.get_ssl_context(
                 self.opts.global_opts.skip_cert_verify,
