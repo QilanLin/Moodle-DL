@@ -30,6 +30,9 @@ class ForumMod(MoodleMod):
         for forum in forums:
             course_id = forum.get('course', 0)
             forum_module_id = forum.get('cmid', 0)
+            forum_id = forum.get('id', 0)
+            forum_name = forum.get('name', 'forum')
+
             forum_files = forum.get('introfiles', [])
             self.set_props_of_files(forum_files, type='forum_introfile')
 
@@ -44,13 +47,83 @@ class ForumMod(MoodleMod):
                     }
                 )
 
+            # Create comprehensive forum metadata
+            metadata = {
+                'forum_id': forum_id,
+                'course_id': course_id,
+                'module_id': forum_module_id,
+                'name': forum_name,
+                'intro': forum_intro,
+                'settings': {
+                    # Forum type and behavior
+                    'type': forum.get('type', 'general'),
+                    'duedate': forum.get('duedate', 0),
+                    'cutoffdate': forum.get('cutoffdate', 0),
+                    # Subscription settings
+                    'forcesubscribe': forum.get('forcesubscribe', 0),
+                    'trackingtype': forum.get('trackingtype', 1),
+                    # Post settings
+                    'maxbytes': forum.get('maxbytes', 0),
+                    'maxattachments': forum.get('maxattachments', 1),
+                    'displaywordcount': forum.get('displaywordcount', 0),
+                    # Rating settings
+                    'assessed': forum.get('assessed', 0),
+                    'assesstimestart': forum.get('assesstimestart', 0),
+                    'assesstimefinish': forum.get('assesstimefinish', 0),
+                    'scale': forum.get('scale', 0),
+                    # Display settings
+                    'rsstype': forum.get('rsstype', 0),
+                    'rssarticles': forum.get('rssarticles', 0),
+                    # Blocking and threshold settings
+                    'blockafter': forum.get('blockafter', 0),
+                    'blockperiod': forum.get('blockperiod', 0),
+                    'warnafter': forum.get('warnafter', 0),
+                    # Q&A settings (for Q&A forums)
+                    'lockdiscussionafter': forum.get('lockdiscussionafter', 0),
+                },
+                'capabilities': {
+                    'cancreatediscussions': forum.get('cancreatediscussions', False),
+                    'canviewdiscussions': forum.get('canviewdiscussions', True),
+                },
+                'counts': {
+                    'discussions': forum.get('numdiscussions', 0),
+                },
+                'timestamps': {
+                    'timemodified': forum.get('timemodified', 0),
+                },
+                'features': {
+                    'groups': True,
+                    'groupings': True,
+                    'intro_support': True,
+                    'completion_tracks_views': True,
+                    'grade_has_grade': True,
+                    'grade_outcomes': True,
+                    'backup_moodle2': True,
+                    'show_description': True,
+                    'purpose': 'communication',
+                },
+                'note': 'Forum is a communication module for discussions and Q&A. '
+                + 'This export includes comprehensive settings, access information, and all discussions.',
+            }
+
+            # Add metadata file
+            forum_files.append(
+                {
+                    'filename': PT.to_valid_name('metadata', is_file=True) + '.json',
+                    'filepath': '/',
+                    'timemodified': forum.get('timemodified', 0),
+                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                    'type': 'content',
+                }
+            )
+
             self.add_module(
                 result,
                 course_id,
                 forum_module_id,
                 {
-                    'id': forum.get('id', 0),
-                    'name': forum.get('name', 'forum'),
+                    'id': forum_id,
+                    'name': forum_name,
                     'files': forum_files,
                     '_cmid': forum_module_id,
                 },

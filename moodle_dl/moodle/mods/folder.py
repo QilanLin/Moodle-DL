@@ -12,6 +12,12 @@ class FolderMod(MoodleMod):
     MOD_PLURAL_NAME = 'folders'
     MOD_MIN_VERSION = 2017051500  # 3.3
 
+    # Display mode constants for folder
+    DISPLAY_MODES = {
+        0: {'name': 'INLINE', 'description': 'Display folder contents inline on course page'},
+        1: {'name': 'SEPARATE', 'description': 'Display folder on separate page'},
+    }
+
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
         # TODO: Add download condition
@@ -54,6 +60,13 @@ class FolderMod(MoodleMod):
             folder_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
             folder_files += folder_contents
 
+            # Parse display mode
+            display_mode = folder.get('display', 0)
+            display_mode_info = self.DISPLAY_MODES.get(display_mode, {
+                'name': f'UNKNOWN_{display_mode}',
+                'description': f'Unknown display mode {display_mode}'
+            })
+
             # Create comprehensive metadata
             metadata = {
                 'folder_id': folder_id,
@@ -63,12 +76,19 @@ class FolderMod(MoodleMod):
                 'intro': folder_intro,
                 'settings': {
                     'revision': folder.get('revision', 1),
-                    'display': folder.get('display', 0),
+                    'display': display_mode,
+                    'display_mode_name': display_mode_info['name'],
+                    'display_mode_description': display_mode_info['description'],
                     'showexpanded': folder.get('showexpanded', 1),
                     'showdownloadfolder': folder.get('showdownloadfolder', 1),
                     'forcedownload': folder.get('forcedownload', 1),
                 },
                 'file_count': len(folder_contents),
+                'download_options': {
+                    'can_download_folder': folder.get('showdownloadfolder', 1) == 1,
+                    'folder_zip_available': folder.get('showdownloadfolder', 1) == 1,
+                    'force_download_files': folder.get('forcedownload', 1) == 1,
+                },
                 'timestamps': {
                     'timemodified': folder_time_modified,
                 },
@@ -84,7 +104,7 @@ class FolderMod(MoodleMod):
                     'purpose': 'content',
                 },
                 'note': 'Folder is a simple container for organizing files. '
-                + 'This export includes all files and folder settings.',
+                + 'This export includes all files, folder settings, and display mode documentation.',
             }
 
             folder_files.append(

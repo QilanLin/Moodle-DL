@@ -12,10 +12,46 @@ class PageMod(MoodleMod):
     MOD_PLURAL_NAME = 'pages'
     MOD_MIN_VERSION = 2017051500  # 3.3
 
+    # Display mode constants (RESOURCELIB_DISPLAY_*)
+    DISPLAY_MODES = {
+        0: {'name': 'AUTOMATIC', 'description': 'Automatic - best option for file type'},
+        1: {'name': 'EMBED', 'description': 'Embed - display in page'},
+        2: {'name': 'FRAME', 'description': 'Open in frame'},
+        3: {'name': 'NEW', 'description': 'Open in new window'},
+        4: {'name': 'DOWNLOAD', 'description': 'Force download'},
+        5: {'name': 'OPEN', 'description': 'Open directly (default for page)'},
+        6: {'name': 'POPUP', 'description': 'Open in popup window'},
+    }
+
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
         # TODO: Add download condition
         return True
+
+    @staticmethod
+    def _parse_display_options(displayoptions_str: str) -> Dict:
+        """
+        Parse display options string into structured dictionary
+
+        Format: "printintro=1,printlastmodified=1,popupwidth=620,popupheight=450"
+        """
+        if not displayoptions_str:
+            return {}
+
+        options = {}
+        for pair in displayoptions_str.split(','):
+            if '=' in pair:
+                key, value = pair.split('=', 1)
+                key = key.strip()
+                value = value.strip()
+
+                # Try to convert to int if possible
+                try:
+                    options[key] = int(value)
+                except ValueError:
+                    options[key] = value
+
+        return options
 
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
@@ -64,6 +100,16 @@ class PageMod(MoodleMod):
                     }
                 )
 
+            # Parse display mode and options
+            display_mode = page.get('display', 5)
+            display_mode_info = self.DISPLAY_MODES.get(display_mode, {
+                'name': f'UNKNOWN_{display_mode}',
+                'description': f'Unknown display mode {display_mode}'
+            })
+
+            displayoptions_str = page.get('displayoptions', '')
+            displayoptions_parsed = self._parse_display_options(displayoptions_str)
+
             # Create comprehensive metadata
             metadata = {
                 'page_id': page_id,
@@ -76,8 +122,11 @@ class PageMod(MoodleMod):
                     'contentformat': page.get('contentformat', 1),
                     'legacyfiles': page.get('legacyfiles', 0),
                     'legacyfileslast': page.get('legacyfileslast'),
-                    'display': page.get('display', 5),
-                    'displayoptions': page.get('displayoptions', ''),
+                    'display': display_mode,
+                    'display_mode_name': display_mode_info['name'],
+                    'display_mode_description': display_mode_info['description'],
+                    'displayoptions_raw': displayoptions_str,
+                    'displayoptions_parsed': displayoptions_parsed,
                     'revision': page.get('revision', 1),
                     'printheading': page.get('printheading', 1),
                     'printlastmodified': page.get('printlastmodified', 1),
@@ -97,7 +146,7 @@ class PageMod(MoodleMod):
                     'purpose': 'content',
                 },
                 'note': 'Page is a simple content module for displaying HTML content. '
-                + 'This export includes the full HTML content, settings, and display options.',
+                + 'This export includes the full HTML content, settings, and parsed display options.',
             }
 
             page_files.append(
