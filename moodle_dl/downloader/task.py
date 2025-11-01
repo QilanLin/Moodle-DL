@@ -709,39 +709,40 @@ class Task:
         try:
             import re
             import html as html_module
+            import requests
+            from http.cookiejar import MozillaCookieJar
 
             logging.debug('[%d] Extracting text from kalvidres URL: %s', self.task_id, url)
 
-            # Create aiohttp session with cookies
-            cookie_jar = self.get_cookie_jar()
+            # Use requests library for better cookie handling with redirects
+            session = requests.Session()
 
-            ssl_context = SslHelper.get_ssl_context(
-                self.opts.global_opts.skip_cert_verify,
-                self.opts.global_opts.allow_insecure_ssl,
-                self.opts.global_opts.use_all_ciphers,
-            )
-            timeout = aiohttp.ClientTimeout(total=30)
+            # Load cookies from Cookies.txt if available
+            if self.opts.cookies_text is not None:
+                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
+                cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = cookie_jar
 
-            async with aiohttp.ClientSession(
-                cookie_jar=cookie_jar,
-                timeout=timeout,
-                connector=aiohttp.TCPConnector(ssl=ssl_context)
-            ) as session:
-                async with session.get(url, headers=self.RQ_HEADER) as response:
-                    if response.status != 200:
-                        logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status)
-                        return False
+            # Set SSL verification
+            verify_ssl = not self.opts.global_opts.skip_cert_verify
 
-                    # Check if redirected to Moodle login (but allow Microsoft SSO)
-                    final_url = str(response.url)
-                    logging.debug('[%d] Kalvidres page URL: %s', self.task_id, final_url)
+            # Make request with cookies and follow redirects
+            response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
 
-                    # Only consider it a login redirect if it's the Moodle login page, not Microsoft SSO
-                    if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and 'microsoftonline.com' not in final_url:
-                        logging.warning('[%d] Redirected to Moodle login page at %s, cookies may be invalid', self.task_id, final_url)
-                        return False
+            if response.status_code != 200:
+                logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status_code)
+                return False
 
-                    html_content = await response.text()
+            # Check if redirected to Moodle login (but allow Microsoft SSO)
+            final_url = response.url
+            logging.debug('[%d] Kalvidres page URL: %s', self.task_id, final_url)
+
+            # Only consider it a login redirect if it's the Moodle login page, not Microsoft SSO
+            if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and 'microsoftonline.com' not in final_url:
+                logging.warning('[%d] Redirected to Moodle login page at %s, cookies may be invalid', self.task_id, final_url)
+                return False
+
+            html_content = response.text
 
             # Extract text content using generic DOM-based method
             text_data = {}
