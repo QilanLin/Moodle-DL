@@ -710,7 +710,6 @@ class Task:
             import re
             import html as html_module
             import requests
-            from http.cookiejar import MozillaCookieJar
 
             logging.debug('[%d] Extracting text from kalvidres URL: %s', self.task_id, url)
 
@@ -778,6 +777,108 @@ class Task:
         except Exception as e:
             logging.warning('[%d] Failed to extract kalvidres text: %s', self.task_id, e)
             return False
+
+    async def extract_kalvidres_video_url(self, url: str) -> str:
+        """
+        Extract the Kaltura iframe embed URL from a kalvidres page that yt-dlp can download.
+
+        @param url: The kalvidres page URL
+        @return: Kaltura iframe embed URL or None if extraction fails
+        """
+        try:
+            import re
+            import requests
+
+            logging.debug('[%d] Extracting Kaltura video URL from: %s', self.task_id, url)
+
+            # Use requests library for cookie handling
+            session = requests.Session()
+
+            # Load cookies if available
+            if self.opts.cookies_text is not None:
+                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
+                cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = cookie_jar
+
+            # Fetch the kalvidres page
+            verify_ssl = not self.opts.global_opts.skip_cert_verify
+            response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+
+            if response.status_code != 200:
+                logging.warning('[%d] Failed to fetch kalvidres page for video URL extraction', self.task_id)
+                return None
+
+            html_content = response.text
+
+            # Extract iframe src with lti_launch.php
+            iframe_match = re.search(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"', html_content)
+            if not iframe_match:
+                logging.warning('[%d] Could not find lti_launch iframe in kalvidres page', self.task_id)
+                return None
+
+            lti_launch_url = iframe_match.group(1).replace('&amp;', '&')
+            logging.debug('[%d] LTI launch URL: %s', self.task_id, lti_launch_url)
+
+            # Fetch lti_launch.php to get the browseandembed URL
+            lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+
+            if lti_response.status_code != 200:
+                logging.warning('[%d] Failed to fetch lti_launch.php', self.task_id)
+                return None
+
+            lti_html = lti_response.text
+
+            # Extract target_link_uri which contains the browseandembed URL
+            target_uri_match = re.search(r'name="target_link_uri"\s+value="([^"]+)"', lti_html)
+            if not target_uri_match:
+                logging.warning('[%d] Could not find target_link_uri in lti_launch page', self.task_id)
+                return None
+
+            browseandembed_url = target_uri_match.group(1)
+            logging.debug('[%d] Found browseandembed URL: %s', self.task_id, browseandembed_url)
+
+            # Extract entry ID from browseandembed URL (format: .../entryid/1_xxxxx/...)
+            entry_id_match = re.search(r'/entryid/([^/]+)/', browseandembed_url)
+            if not entry_id_match:
+                logging.warning('[%d] Could not extract entry ID from browseandembed URL', self.task_id)
+                return None
+
+            entry_id = entry_id_match.group(1)
+
+            # Extract playerSkin/uiconf_id from browseandembed URL (format: .../playerSkin/12345...)
+            uiconf_id_match = re.search(r'/playerSkin/(\d+)', browseandembed_url)
+            if not uiconf_id_match:
+                logging.warning('[%d] Could not extract uiconf_id from browseandembed URL', self.task_id)
+                return None
+
+            uiconf_id = uiconf_id_match.group(1)
+
+            # Fetch the browseandembed page to extract partner_id
+            browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+            if browseandembed_response.status_code != 200:
+                logging.warning('[%d] Failed to fetch browseandembed page', self.task_id)
+                return None
+
+            # Extract partner ID from the page (format: partnerId=2368101)
+            partner_id_match = re.search(r'partnerId[=:](\d+)', browseandembed_response.text)
+            if not partner_id_match:
+                logging.warning('[%d] Could not extract partner_id from browseandembed page', self.task_id)
+                return None
+
+            partner_id = partner_id_match.group(1)
+
+            # Construct the Kaltura iframe embed URL that yt-dlp can download
+            kaltura_iframe_url = (
+                f'https://cdnapisec.kaltura.com/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
+                f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
+            )
+
+            logging.info('[%d] Constructed Kaltura iframe URL: %s', self.task_id, kaltura_iframe_url)
+            return kaltura_iframe_url
+
+        except Exception as e:
+            logging.warning('[%d] Failed to extract kalvidres video URL: %s', self.task_id, e)
+            return None
 
     def _clean_html_simple(self, html_text: str) -> str:
         """Clean HTML tags, return plain text"""
@@ -912,8 +1013,28 @@ class Task:
                     logging.info('[%d] Extracting kalvidres text content...', self.task_id)
                     await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
 
-                # Download video (for all cookie_mod types including kalvidres)
-                await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+                    # Extract the real Kaltura video URL for yt-dlp
+                    logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)
+                    kaltura_url = await self.extract_kalvidres_video_url(self.file.content_fileurl)
+
+                    if kaltura_url:
+                        # Temporarily replace the URL with the extracted Kaltura URL
+                        original_url = self.file.content_fileurl
+                        self.file.content_fileurl = kaltura_url
+                        logging.info('[%d] Using extracted Kaltura URL: %s', self.task_id, kaltura_url)
+
+                        # Download video with the extracted URL
+                        await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+
+                        # Restore original URL
+                        self.file.content_fileurl = original_url
+                    else:
+                        # Fallback to original URL if extraction fails
+                        logging.warning('[%d] Failed to extract Kaltura URL, trying original URL', self.task_id)
+                        await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+                else:
+                    # Download video (for other cookie_mod types)
+                    await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
 
             elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
                 # 先尝试下载 HTTP 内容
