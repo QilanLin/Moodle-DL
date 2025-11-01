@@ -77,11 +77,18 @@ class MoodleService:
         download_public_course_ids = self.config.get_download_public_course_ids()
         dont_download_course_ids = self.config.get_dont_download_course_ids()
 
+        # Determine filter mode based on which property exists in config
+        use_whitelist = None
+        if self.config.has_property('download_course_ids'):
+            use_whitelist = True  # Whitelist mode (even if empty list)
+        elif self.config.has_property('dont_download_course_ids'):
+            use_whitelist = False  # Blacklist mode
+
         courses_list = core_handler.fetch_courses(user_id)
         courses = []
         # Filter unselected courses
         for course in courses_list:
-            if MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids):
+            if MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids, use_whitelist):
                 courses.append(course)
 
         public_courses_list = core_handler.fetch_courses_info(download_public_course_ids)
@@ -172,6 +179,13 @@ class MoodleService:
         exclude_file_extensions = config.get_exclude_file_extensions()
         max_file_size = config.get_max_file_size()
 
+        # Determine filter mode based on which property exists in config
+        use_whitelist = None
+        if config.has_property('download_course_ids'):
+            use_whitelist = True  # Whitelist mode (even if empty list)
+        elif config.has_property('dont_download_course_ids'):
+            use_whitelist = False  # Blacklist mode
+
         download_also_with_cookie = config.get_download_also_with_cookie()
         if cookie_handler is not None:
             cookies_are_valid = cookie_handler.test_cookies()
@@ -193,7 +207,7 @@ class MoodleService:
 
         for course in changes:
             if not MoodleService.should_download_course(
-                course.id, download_course_ids + download_public_course_ids, dont_download_course_ids
+                course.id, download_course_ids + download_public_course_ids, dont_download_course_ids, use_whitelist
             ):
                 # Filter courses that should not be downloaded
                 continue
@@ -274,13 +288,42 @@ class MoodleService:
 
     @staticmethod
     def should_download_course(
-        course_id: int, download_course_ids: List[int], dont_download_course_ids: List[int]
+        course_id: int, download_course_ids: List[int], dont_download_course_ids: List[int],
+        use_whitelist: bool = None
     ) -> bool:
-        "Checks if a course is in whitelist and not in blacklist"
-        inBlacklist = course_id in dont_download_course_ids
-        inWhitelist = course_id in download_course_ids or len(download_course_ids) == 0
+        """
+        Checks if a course should be downloaded.
 
-        return inWhitelist and not inBlacklist
+        Args:
+            course_id: The course ID to check
+            download_course_ids: List of course IDs in whitelist
+            dont_download_course_ids: List of course IDs in blacklist
+            use_whitelist: If True, use whitelist mode; if False, use blacklist mode;
+                          if None, auto-detect based on lists
+
+        Modes:
+            - Whitelist mode: Only download courses in download_course_ids (even if empty list)
+            - Blacklist mode: Download all courses except those in dont_download_course_ids
+            - Default (no configuration): Download all courses
+        """
+        # Auto-detect mode if not specified
+        if use_whitelist is None:
+            # If blacklist has items, it's blacklist mode
+            if len(dont_download_course_ids) > 0:
+                use_whitelist = False
+            # If whitelist has items, it's whitelist mode
+            elif len(download_course_ids) > 0:
+                use_whitelist = True
+            # Both empty = default behavior (download all)
+            else:
+                return True
+
+        # Blacklist mode: download all except blacklisted courses
+        if not use_whitelist:
+            return course_id not in dont_download_course_ids
+
+        # Whitelist mode: only download whitelisted courses (even if list is empty)
+        return course_id in download_course_ids
 
     @staticmethod
     def should_download_section(section_id: int, dont_download_sections_ids: List[int]) -> bool:

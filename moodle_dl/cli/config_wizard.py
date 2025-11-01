@@ -308,6 +308,13 @@ class ConfigWizard:
         download_course_ids = self.config.get_download_course_ids()
         dont_download_course_ids = self.config.get_dont_download_course_ids()
 
+        # Determine filter mode based on which property exists in config
+        use_whitelist = None
+        if self.config.has_property('download_course_ids'):
+            use_whitelist = True  # Whitelist mode (even if empty list)
+        elif self.config.has_property('dont_download_course_ids'):
+            use_whitelist = False  # Blacklist mode
+
         self.section_seperator()
         Log.info(
             '你可以为每个课程设置特殊选项。\n'
@@ -327,7 +334,7 @@ class ConfigWizard:
             choices.append('None')
 
             for course in courses:
-                if MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids):
+                if MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids, use_whitelist):
                     current_course_settings = options_of_courses.get(str(course.id), None)
 
                     # create default settings

@@ -60,6 +60,10 @@ class ConfigHelper:
         except KeyError:
             return default
 
+    def has_property(self, key: str) -> bool:
+        """Check if a property exists in the configuration"""
+        return key in self._whole_config
+
     def set_property(self, key: str, value: any):
         # sets a property in the JSON object
         self._whole_config.update({key: value})
