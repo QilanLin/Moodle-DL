@@ -671,7 +671,7 @@ class Task:
             await md_file.write(md_content)
 
     async def create_html_file(self):
-        "Create a HTML file"
+        "Create a HTML file and optionally a Markdown version"
         logging.debug('[%d] Creating a html file', self.task_id)
 
         html_content = ''
@@ -683,8 +683,29 @@ class Task:
             os.remove(self.file.saved_to)
             return
 
+        # Save HTML version
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as html_file:
             await html_file.write(html_content)
+
+        # Also create a Markdown version for easier reading (especially for blocks)
+        if self.file.module_modname.startswith('block_'):
+            try:
+                from html2text import HTML2Text
+                h2t_handler = HTML2Text()
+                h2t_handler.ignore_links = False
+                h2t_handler.ignore_images = False
+                h2t_handler.body_width = 0  # Don't wrap lines
+
+                md_content = h2t_handler.handle(html_content).strip()
+
+                if md_content:
+                    md_path = self.file.saved_to.replace('.html', '.md')
+                    async with aiofiles.open(md_path, 'w+', encoding='utf-8') as md_file:
+                        await md_file.write(md_content)
+                    logging.debug('[%d] Created Markdown version: %s', self.task_id, md_path)
+            except Exception as e:
+                logging.debug('[%d] Failed to create Markdown version: %s', self.task_id, e)
+                # Continue even if Markdown conversion fails
 
     async def create_content_file(self):
         "Create a content file (e.g., metadata.json)"

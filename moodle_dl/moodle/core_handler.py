@@ -164,3 +164,23 @@ class CoreHandler:
     async def async_load_course_core(self, course: Course) -> List[Dict]:
         data = {'courseid': course.id}
         return await self.client.async_post('core_course_get_contents', data)
+
+    def fetch_course_blocks(self, course_id: int) -> List[Dict]:
+        """
+        Fetches the course blocks (sidebar widgets) for a course from the Moodle system.
+        These blocks can contain important information like Key Contacts, announcements, etc.
+
+        @param course_id: The id of the requested course.
+        @return: A list of all block dictionaries
+        """
+        if self.version < 2017051500:  # 3.3 - API introduced in Moodle 3.3
+            return []
+
+        data = {'courseid': course_id, 'returncontents': 1}
+
+        try:
+            result = self.client.post('core_block_get_course_blocks', data)
+            return result.get('blocks', [])
+        except Exception:
+            # If the API call fails (e.g., not supported), return empty list
+            return []

@@ -7,6 +7,7 @@ import urllib.parse as urlparse
 from typing import Dict, List
 
 from moodle_dl.types import Course, File, MoodleURL
+from moodle_dl.utils import PathTools as PT
 
 
 class ResultBuilder:
@@ -443,3 +444,81 @@ class ResultBuilder:
                 fetched_mods[mod_name] = mod_courses.get(course.id, {})
 
             course.files = self.get_files_in_sections(course_sections, fetched_mods)
+
+    def get_files_from_blocks(self, course_blocks: List[Dict], course_id: int) -> List[File]:
+        """
+        Processes course blocks and creates File objects for HTML blocks that contain content.
+        These blocks typically appear in the course sidebar and can contain important information
+        like Key Contacts, announcements, etc.
+
+        @param course_blocks: List of block dictionaries from core_block_get_course_blocks API
+        @param course_id: The course ID
+        @return: A list of File objects representing the blocks
+        """
+        files = []
+
+        for block in course_blocks:
+            block_name = block.get('name', '')
+            block_instance_id = block.get('instanceid', 0)
+            block_visible = block.get('visible', True)
+
+            # Only process visible blocks that have contents
+            if not block_visible or 'contents' not in block:
+                continue
+
+            contents = block['contents']
+            title = contents.get('title', '')
+            content = contents.get('content', '')
+
+            # Skip blocks without meaningful content
+            if not title or not content:
+                continue
+
+            # Filter to only include useful blocks (HTML blocks and similar)
+            # Skip pure navigation blocks like calendar, search, etc.
+            if block_name in ['calendar_month', 'calendar_upcoming', 'search_forums', 'activity_modules']:
+                continue
+
+            # Create a safe filename from the block title
+            safe_title = PT.to_valid_name(title, is_file=False)
+            filename = safe_title
+
+            # Create location info for the block
+            location = {
+                'module_id': block_instance_id,
+                'section_name': '_course_info',  # Special section for course-level info
+                'section_id': 0,
+                'module_name': title,
+                'module_modname': f'block_{block_name}',
+            }
+
+            # Calculate hash for change detection
+            hash_content = hashlib.md5((content).encode('utf-8')).hexdigest()
+
+            # Create File object for HTML version
+            # We save blocks as HTML files so they can be easily converted to Markdown by the downloader
+            block_file = File(
+                **location,
+                content_filepath='/',
+                content_filename=filename,
+                content_fileurl='',
+                content_filesize=len(content),
+                content_timemodified=0,
+                content_type='html',  # Use 'html' type so downloader saves as .html
+                content_isexternalfile=False,
+                file_hash=hash_content,
+            )
+            block_file.html_content = content
+            files.append(block_file)
+
+        return files
+
+    def add_blocks_to_course(self, course: Course, course_blocks: List[Dict]):
+        """
+        Adds block files to a course's file list.
+
+        @param course: The course object to add blocks to
+        @param course_blocks: List of block dictionaries for this course
+        """
+        block_files = self.get_files_from_blocks(course_blocks, course.id)
+        course.files.extend(block_files)

@@ -132,9 +132,22 @@ class MoodleService:
         fetched_mods_files = await fetch_mods_files(mods, courses, core_contents)
 
         logging.debug('正在合并 API 结果...')
-        ResultBuilder(moodle_url, version, get_mod_plurals()).add_files_to_courses(
+        result_builder = ResultBuilder(moodle_url, version, get_mod_plurals())
+        result_builder.add_files_to_courses(
             courses, core_contents, fetched_mods_files
         )
+
+        # Fetch and add course blocks (sidebar widgets like Key Contacts, announcements, etc.)
+        logging.debug('正在获取课程 blocks...')
+        for course in courses:
+            try:
+                course_blocks = core_handler.fetch_course_blocks(course.id)
+                if course_blocks:
+                    result_builder.add_blocks_to_course(course, course_blocks)
+                    logging.debug(f'已为课程 {course.id} "{course.fullname}" 获取 {len(course_blocks)} 个 blocks')
+            except Exception as e:
+                logging.debug(f'获取课程 {course.id} 的 blocks 失败: {e}')
+                # Continue even if blocks fetch fails
 
         logging.debug('正在检查变化...')
         changes = database.changes_of_new_version(courses)
