@@ -35,7 +35,7 @@ class NotificationsWizard:
         # 获取当前已配置的服务
         current_selections = []
         for i, (config_key, name, method_name) in enumerate(services):
-            if self.config.get_property(config_key) is not None:
+            if self.config.has_property(config_key):
                 current_selections.append(i)
 
         # 创建选项列表
