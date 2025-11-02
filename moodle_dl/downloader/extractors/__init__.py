@@ -6,6 +6,7 @@ from yt_dlp.YoutubeDL import YoutubeDL
 from moodle_dl.downloader.extractors.echo360 import Echo360IE  # noqa: F401
 from moodle_dl.downloader.extractors.googledrive import GoogleDriveIE  # noqa: F401
 from moodle_dl.downloader.extractors.helixmedia_lti import HelixmediaLtiIE  # noqa: F401
+from moodle_dl.downloader.extractors.kalvidres_embedded import KalvidresEmbeddedIE  # noqa: F401
 from moodle_dl.downloader.extractors.kalvidres_lti import KalvidresLtiIE  # noqa: F401
 from moodle_dl.downloader.extractors.opencast_lti import OpencastLtiIE  # noqa: F401
 from moodle_dl.downloader.extractors.owncloud import OwnCloudIE  # noqa: F401

@@ -137,6 +137,12 @@ class MoodleService:
             courses, core_contents, fetched_mods_files
         )
 
+        # Debug: Check how many kalvidres files were added
+        for course in courses:
+            kalvidres_count = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
+            if kalvidres_count > 0:
+                logging.info(f'✨ Course "{course.fullname}" has {kalvidres_count} Kaltura videos AFTER add_files_to_courses()')
+
         # Fetch and add course blocks (sidebar widgets like Key Contacts, announcements, etc.)
         logging.debug('正在获取课程 blocks...')
         for course in courses:
@@ -149,8 +155,21 @@ class MoodleService:
                 logging.debug(f'获取课程 {course.id} 的 blocks 失败: {e}')
                 # Continue even if blocks fetch fails
 
+        # Debug: Final check before changes detection
+        for course in courses:
+            kalvidres_count = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
+            if kalvidres_count > 0:
+                logging.info(f'🔍 Course "{course.fullname}" has {kalvidres_count} Kaltura videos BEFORE changes detection')
+
         logging.debug('正在检查变化...')
         changes = database.changes_of_new_version(courses)
+
+        # Debug: Check kalvidres in changes
+        for change in changes:
+            kalvidres_in_changes = len([f for f in change.files if f.module_modname == 'cookie_mod-kalvidres'])
+            if kalvidres_in_changes > 0:
+                logging.info(f'📝 Changes for "{change.fullname}" contains {kalvidres_in_changes} Kaltura videos')
+
         changes = self.add_options_to_courses(changes)
         changes = self.filter_courses(changes, self.config, cookie_handler, courses)
 
@@ -200,8 +219,10 @@ class MoodleService:
             use_whitelist = False  # Blacklist mode
 
         download_also_with_cookie = config.get_download_also_with_cookie()
+        logging.info(f'🍪 Cookie download config value: {download_also_with_cookie}')
         if cookie_handler is not None:
             cookies_are_valid = cookie_handler.test_cookies()
+            logging.info(f'🍪 Cookie validation result: {cookies_are_valid}')
             if not cookies_are_valid and download_also_with_cookie:
                 # Allow using manually provided browser cookies even if autologin cookies fail
                 # This is needed for plugins like kalvidres that don't work with mobile API
@@ -214,6 +235,7 @@ class MoodleService:
                 download_also_with_cookie = True
             else:
                 download_also_with_cookie = False
+        logging.info(f'🍪 Final download_also_with_cookie value: {download_also_with_cookie}')
 
         all_mods_classes = get_all_mods_classes()
         filtered_changes = []
@@ -236,14 +258,28 @@ class MoodleService:
                     logging.warning('ID 为 %d 的 Moodle 课程在线上已不可用。', course.id)
                     continue
 
+            # Debug: Count kalvidres files before filtering
+            kalvidres_before = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
+            if kalvidres_before > 0:
+                logging.info(f'📊 Course "{course.fullname}" has {kalvidres_before} Kaltura videos BEFORE filtering')
+
             course_files = []
+            kalvidres_filtered_count = 0
             for file in course.files:
                 # Filter files based on module options
                 modules_conditions_met = True
+                failing_mod = None
                 for mod in all_mods_classes:
                     if not mod.download_condition(config, file):
                         modules_conditions_met = False
+                        failing_mod = mod.MOD_NAME
                         break
+
+                # Debug kalvidres files
+                is_kalvidres = file.module_modname == 'cookie_mod-kalvidres'
+                if is_kalvidres and not modules_conditions_met:
+                    kalvidres_filtered_count += 1
+                    logging.debug(f'❌ Kalvidres file "{file.content_filename}" filtered by module: {failing_mod}')
 
                 # Filter Files based on other options
                 if (
@@ -268,6 +304,16 @@ class MoodleService:
                     and (max_file_size == 0 or file.content_filesize < max_file_size)
                 ):
                     course_files.append(file)
+                elif is_kalvidres:
+                    logging.debug(f'❌ Kalvidres file "{file.content_filename}" filtered by other conditions')
+
+            if kalvidres_filtered_count > 0:
+                logging.warning(f'⚠️  Filtered out {kalvidres_filtered_count} Kaltura videos due to module download conditions')
+
+            kalvidres_passed = len([f for f in course_files if f.module_modname == 'cookie_mod-kalvidres'])
+            if kalvidres_passed > 0:
+                logging.info(f'✅ {kalvidres_passed} Kaltura videos passed all filters for course "{course.fullname}"')
+
             course.files = course_files
 
             # Filter Description URLs

@@ -219,28 +219,43 @@ class StateRecorder:
     def files_are_diffrent(file1: File, file2: File) -> bool:
         # Returns True if these files differ from each other
 
+        # Debug cookie_mod files
+        if file1.content_type == 'cookie_mod' or file2.content_type == 'cookie_mod':
+            url_diff = file1.content_fileurl != file2.content_fileurl
+            time_diff = file1.content_timemodified != file2.content_timemodified
+            size_diff = file1.content_filesize != file2.content_filesize
+            logging.debug(f'[files_are_different] cookie_mod comparison:')
+            logging.debug(f'  file1: url={file1.content_fileurl[:80]}..., time={file1.content_timemodified}, size={file1.content_filesize}')
+            logging.debug(f'  file2: url={file2.content_fileurl[:80]}..., time={file2.content_timemodified}, size={file2.content_filesize}')
+            logging.debug(f'  url_diff={url_diff}, time_diff={time_diff}, size_diff={size_diff}')
+
         # Not sure if this would be a good idea
         #  or file1.module_name != file2.module_name)
         if file1.content_filesize != file2.content_filesize or (
             file1.content_fileurl != file2.content_fileurl and file1.content_timemodified != file2.content_timemodified
         ):
-            return True
-        if (
+            result = True
+        elif (
             file1.content_type in ('description', 'html')
             and file1.content_type == file2.content_type
             and (file1.hash != file2.hash or file1.content_timemodified != file2.content_timemodified)
         ):
-            return True
-
-        if (
+            result = True
+        elif (
             file1.content_type == 'description-url'
             and file1.content_type == file2.content_type
             and file1.content_fileurl != file2.content_fileurl
             # One consideration: or file1.section_name != file2.section_name)
             # But useless if description-links in the course must be unique anyway
         ):
-            return True
-        return False
+            result = True
+        else:
+            result = False
+
+        if file1.content_type == 'cookie_mod' or file2.content_type == 'cookie_mod':
+            logging.debug(f'  Result: files_are_different={result}')
+
+        return result
 
     @staticmethod
     def files_are_moveable(file1: File, file2: File) -> bool:
@@ -458,7 +473,17 @@ class StateRecorder:
                 # skip the next checks!
                 continue
 
+            # Debug: Count kalvidres in current course
+            current_kalvidres = [f for f in current_course.files if f.module_modname == 'cookie_mod-kalvidres']
+            if len(current_kalvidres) > 0:
+                logging.info(f'🔍 [get_new_files] Course "{current_course.fullname}" has {len(current_kalvidres)} kalvidres in current_course.files')
+                stored_kalvidres = [f for f in same_course_in_stored.files if f.module_modname == 'cookie_mod-kalvidres']
+                logging.info(f'🔍 [get_new_files] Same course has {len(stored_kalvidres)} kalvidres in stored files')
+
             changed_course = Course(current_course.id, current_course.fullname)
+            kalvidres_matched_count = 0
+            kalvidres_new_count = 0
+
             for current_file in current_course.files:
                 matching_file = None
 
@@ -468,11 +493,22 @@ class StateRecorder:
                     was_moved = self.file_was_moved(current_file, stored_file)
                     if has_same_path or was_moved:
                         matching_file = current_file
+                        # Debug: Log if kalvidres file matched
+                        if current_file.module_modname == 'cookie_mod-kalvidres':
+                            kalvidres_matched_count += 1
+                            logging.debug(f'❌ [get_new_files] Kalvidres "{current_file.content_filename}" matched with stored file')
+                            logging.debug(f'   Current: module_id={current_file.module_id}, filename={current_file.content_filename}, filepath={current_file.content_filepath}')
+                            logging.debug(f'   Stored:  module_id={stored_file.module_id}, filename={stored_file.content_filename}, filepath={stored_file.content_filepath}, modname={stored_file.module_modname}')
                         break
 
                 if matching_file is None:
                     # current_file is a new file
+                    if current_file.module_modname == 'cookie_mod-kalvidres':
+                        kalvidres_new_count += 1
                     changed_course.files.append(current_file)
+
+            if kalvidres_matched_count > 0 or kalvidres_new_count > 0:
+                logging.info(f'📊 [get_new_files] Kalvidres results: {kalvidres_new_count} new, {kalvidres_matched_count} matched (not new)')
 
             if len(changed_course.files) > 0:
                 matched_changed_course = None

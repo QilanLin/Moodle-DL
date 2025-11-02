@@ -50,6 +50,11 @@ class ResultBuilder:
 
         files += self._get_files_not_on_main_page(fetched_mods)
 
+        import logging
+        kalvidres_total = len([f for f in files if f.module_modname == 'cookie_mod-kalvidres'])
+        if kalvidres_total > 0:
+            logging.info(f'🌐 get_files_in_sections() returning {kalvidres_total} Kaltura videos total')
+
         return files
 
     def _get_files_in_modules(self, section_modules: List, fetched_mods: Dict[str, Dict], **location) -> List[File]:
@@ -62,6 +67,7 @@ class ResultBuilder:
             section_name: str,
         @return: A list of files of the section.
         """
+        import logging
         files = []
         for module in section_modules:
             location['module_id'] = module.get('id', 0)
@@ -108,6 +114,18 @@ class ResultBuilder:
                         location['module_modname'],
                         module_url,
                     )
+
+        total_files_count = len(files)
+        kalvidres_in_section = 0
+        for f in files:
+            if hasattr(f, 'module_modname') and f.module_modname == 'cookie_mod-kalvidres':
+                kalvidres_in_section += 1
+                logging.debug(f'Found kalvidres file: {f.content_filename}')
+
+        if total_files_count > 0:
+            logging.debug(f'_get_files_in_modules() returning {total_files_count} files total, {kalvidres_in_section} kalvidres')
+        if kalvidres_in_section > 0:
+            logging.info(f'🔄 _get_files_in_modules() returning {kalvidres_in_section} Kaltura videos in section')
 
         return files
 
@@ -294,19 +312,24 @@ class ResultBuilder:
             module_id: str,
             module_name: str,
             module_modname: str,
+            content_timemodified: int (optional, defaults to 0)
         """
-        return [
-            File(
-                **location,
-                content_filepath='/',
-                content_filename=location['module_name'],
-                content_fileurl=module_url,
-                content_filesize=0,
-                content_timemodified=0,
-                content_type='cookie_mod',
-                content_isexternalfile=True,
-            )
-        ]
+        import logging
+        # Extract timemodified from location if provided, otherwise use 0
+        content_timemodified = location.pop('content_timemodified', 0)
+
+        file_obj = File(
+            **location,
+            content_filepath='/',
+            content_filename=location['module_name'],
+            content_fileurl=module_url,
+            content_filesize=0,
+            content_timemodified=content_timemodified,
+            content_type='cookie_mod',
+            content_isexternalfile=True,
+        )
+        logging.debug(f'Created cookie_mod file: modname={file_obj.module_modname}, filename={file_obj.content_filename}, time={content_timemodified}, url={module_url[:80]}...')
+        return [file_obj]
 
     def _handle_files(self, module_contents: List, **location) -> List[File]:
         """
@@ -319,7 +342,9 @@ class ResultBuilder:
             module_name: str,
             module_modname: str,
         """
+        import logging
         files = []
+        kalvidres_count = 0
         for content in module_contents:
             content_type = content.get('type', '')
             content_filename = content.get('filename', '')
@@ -328,6 +353,27 @@ class ResultBuilder:
 
             content_description = content.get('description', '')
             content_html = content.get('html', '')
+
+            # Handle embedded Kaltura videos from book chapters
+            # Keep module_modname as 'book' so videos are saved inside the book folder
+            if content_type == 'kalvidres_embedded':
+                logging.info(f'🎥 Processing embedded Kaltura video: {content_filename}')
+                # Create File entry keeping book module context for proper path
+                # Path will be: section_name/module_name/content_filepath/content_filename
+                file_obj = File(
+                    **location,
+                    content_filepath='/',  # Put videos at root of book folder
+                    content_filename=content_filename,  # Video name
+                    content_fileurl=content_fileurl,  # Kalvidres URL
+                    content_filesize=0,
+                    content_timemodified=content.get('timemodified', 0),
+                    content_type='cookie_mod',  # Mark as cookie_mod for download handling
+                    content_isexternalfile=True,
+                )
+                files.append(file_obj)
+                kalvidres_count += 1
+                logging.info(f'   Created book-embedded kalvidres file: {content_filename}')
+                continue  # Skip normal file processing for this
 
             if content_fileurl == '' and location['module_modname'].startswith(('url', 'index_mod', 'cookie_mod')):
                 continue
@@ -373,6 +419,10 @@ class ResultBuilder:
                 )
 
             files.append(new_file)
+
+        if kalvidres_count > 0:
+            logging.info(f'📤 _handle_files() returning {kalvidres_count} Kaltura videos for module "{location.get("module_name", "?")}"')
+
         return files
 
     def _handle_description(

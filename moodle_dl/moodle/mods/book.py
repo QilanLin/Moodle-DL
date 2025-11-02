@@ -1,5 +1,7 @@
 import html
 import json
+import re
+import time
 import urllib.parse
 from typing import Dict, List
 
@@ -47,7 +49,51 @@ class BookMod(MoodleMod):
 
             book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
             if len(book_contents) > 1:
-                book_files += book_contents[1:]
+                # Process book chapters: extract embedded videos and add chapters
+                for chapter_content in book_contents[1:]:
+                    book_files.append(chapter_content)
+
+                    # Extract Kaltura videos from chapter HTML
+                    # Note: The 'content' field only contains the chapter title, not the HTML
+                    # We need to download the actual HTML from the fileurl
+                    chapter_fileurl = chapter_content.get('fileurl', '')
+                    chapter_title = chapter_content.get('content', 'chapter')
+
+                    if chapter_fileurl:
+                        try:
+                            import logging
+                            logging.debug(f'📖 Attempting to fetch chapter HTML from: {chapter_fileurl[:100]}...')
+
+                            # Download the chapter HTML content
+                            chapter_html = await self._fetch_chapter_html(chapter_fileurl)
+
+                            if chapter_html:
+                                logging.debug(f'✅ Fetched chapter HTML ({len(chapter_html)} bytes)')
+
+                                # Extract Kaltura videos from the HTML
+                                kaltura_videos = self._extract_kaltura_videos_from_html(
+                                    chapter_html,
+                                    chapter_title,
+                                    course_id,
+                                    module_id
+                                )
+
+                                if kaltura_videos:
+                                    logging.info(f'🎬 Extracted {len(kaltura_videos)} Kaltura video(s) from chapter: {chapter_title}')
+                                    logging.debug(f'Video entries: {[v.get("filename") for v in kaltura_videos]}')
+                                    book_files.extend(kaltura_videos)
+                                    logging.debug(f'Total book_files now: {len(book_files)}')
+                                else:
+                                    logging.debug(f'No Kaltura videos found in chapter: {chapter_title}')
+                            else:
+                                logging.debug(f'❌ Failed to fetch chapter HTML (empty response)')
+                        except Exception as e:
+                            # If fetching fails, just skip video extraction for this chapter
+                            # The chapter HTML file itself will still be downloaded normally
+                            import logging
+                            logging.warning(f'⚠️  Failed to fetch chapter HTML for video extraction: {e}')
+                            import traceback
+                            logging.debug(f'Traceback: {traceback.format_exc()}')
 
             if len(book_contents) > 0:
                 # Generate Table of Contents
@@ -133,6 +179,12 @@ class BookMod(MoodleMod):
                 }
             )
 
+            import logging
+            logging.info(f'📚 Book "{book_name}" has {len(book_files)} files total')
+            video_count = len([f for f in book_files if f.get('type') == 'kalvidres_embedded'])
+            if video_count > 0:
+                logging.info(f'   Including {video_count} embedded Kaltura videos')
+
             self.add_module(
                 result,
                 course_id,
@@ -198,3 +250,102 @@ class BookMod(MoodleMod):
             if subitems:
                 chapters.extend(self._get_flat_toc_list(subitems))
         return chapters
+
+    async def _fetch_chapter_html(self, fileurl: str) -> str:
+        """
+        Fetch the HTML content of a book chapter from its fileurl.
+
+        The fileurl is a Moodle webservice URL that requires authentication (token).
+        This method downloads the HTML content so we can extract embedded Kaltura videos.
+
+        @param fileurl: The webservice URL to the chapter HTML file
+        @return: The HTML content as a string, or empty string if fetch fails
+        """
+        try:
+            # The fileurl already contains the full URL to the file
+            # We need to add the token parameter for authentication
+            import aiohttp
+
+            # Add token to URL
+            separator = '&' if '?' in fileurl else '?'
+            authenticated_url = f"{fileurl}{separator}token={self.client.token}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(authenticated_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+                    if response.status == 200:
+                        # Read as text with proper encoding
+                        html_content = await response.text(encoding='utf-8')
+                        return html_content
+                    else:
+                        return ''
+        except Exception:
+            return ''
+
+    def _extract_kaltura_videos_from_html(
+        self, chapter_html: str, chapter_name: str, course_id: int, module_id: int
+    ) -> List[Dict]:
+        """
+        Extract Kaltura video iframes from book chapter HTML and create file entries for them.
+
+        This allows embedded Kaltura videos (internal videos) to be downloaded.
+        YouTube and other external public videos are preserved as-is in the HTML.
+
+        @param chapter_html: The HTML content of the book chapter
+        @param chapter_name: The name of the chapter (for naming extracted videos)
+        @param course_id: The course ID
+        @param module_id: The module ID
+        @return: List of file dictionaries for Kaltura videos
+        """
+        video_files = []
+
+        # Pattern to match Kaltura iframe with lti_launch.php
+        # Example: src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?...&source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_er5gtb0g%2F..."
+        kaltura_pattern = r'<iframe[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"'
+
+        matches = re.findall(kaltura_pattern, chapter_html, re.IGNORECASE)
+
+        for idx, iframe_src in enumerate(matches, 1):
+            # Unescape HTML entities
+            iframe_src = html.unescape(iframe_src)
+
+            # Extract the source parameter which contains the actual Kaltura URL
+            source_match = re.search(r'[?&]source=([^&]+)', iframe_src)
+            if not source_match:
+                continue
+
+            # Decode the URL-encoded source parameter
+            kaltura_source = urllib.parse.unquote(source_match.group(1))
+
+            # Extract entry ID from the Kaltura URL
+            # Example: https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_er5gtb0g/...
+            entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+            if not entry_id_match:
+                continue
+
+            entry_id = entry_id_match.group(1)
+
+            # Construct the Kaltura video module URL (similar to standalone kalvidres modules)
+            # We use the lti_launch.php URL as the module URL for cookie_mod processing
+            video_url = iframe_src
+
+            # Generate a descriptive filename
+            if len(matches) == 1:
+                video_name = f"{chapter_name} - Video"
+            else:
+                video_name = f"{chapter_name} - Video {idx}"
+
+            # Create a file entry for this Kaltura video
+            # Mark it as 'kalvidres_embedded' so it can be processed by the kalvidres downloader
+            # Use current timestamp to ensure proper change detection (different videos will have different URLs and timestamps)
+            video_files.append({
+                'filename': video_name,
+                'filepath': '/',
+                'fileurl': video_url,
+                'filesize': 0,
+                'timemodified': int(time.time()),
+                'type': 'kalvidres_embedded',  # Special type for embedded Kaltura videos
+                'mimetype': 'video/mp4',
+                'entry_id': entry_id,  # Store entry ID for reference
+            })
+
+        return video_files
