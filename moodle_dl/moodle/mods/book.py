@@ -1,13 +1,16 @@
 import html
 import json
+import logging
+import os
 import re
 import time
 import urllib.parse
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools as PT
 
 
 class BookMod(MoodleMod):
@@ -38,68 +41,76 @@ class BookMod(MoodleMod):
             module_id = book.get('coursemodule', 0)
             book_name = book.get('name', 'unnamed book')
 
-            # Create a copy to avoid modifying the original dict
-            book_files = self.get_introfiles(book, 'book_file', copy=True)
+            logging.info(f'📚 Processing book: "{book_name}" (module_id={module_id})')
 
-            book_intro = book.get('intro', '')
-            intro_file = self.create_intro_file(book_intro)
-            if intro_file:
-                intro_file['filename'] = 'Book intro'
-                book_files.append(intro_file)
+            # Initialize book files list
+            book_files = []
 
-            book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
-            if len(book_contents) > 1:
-                # Process book chapters: extract embedded videos and add chapters
-                for chapter_content in book_contents[1:]:
-                    book_files.append(chapter_content)
+            # Try to fetch print book HTML
+            print_book_html, print_book_url = await self._fetch_print_book_html(module_id)
 
-                    # Extract Kaltura videos from chapter HTML
-                    # Note: The 'content' field only contains the chapter title, not the HTML
-                    # We need to download the actual HTML from the fileurl
-                    chapter_fileurl = chapter_content.get('fileurl', '')
-                    chapter_title = chapter_content.get('content', 'chapter')
+            if print_book_html:
+                # Success! We have the print book HTML
+                # Extract Kaltura videos from the print book
+                video_list = self._extract_kaltura_videos_from_print_book(print_book_html, book_name)
 
-                    if chapter_fileurl:
-                        try:
-                            import logging
-                            logging.debug(f'📖 Attempting to fetch chapter HTML from: {chapter_fileurl[:100]}...')
+                # Create video file entries for download
+                for video_info in video_list:
+                    video_entry = {
+                        'filename': video_info['video_filename'],
+                        'filepath': f'/{book_name}_files/',  # Save videos in _files subfolder
+                        'fileurl': video_info['lti_launch_url'],
+                        'filesize': 0,
+                        'timemodified': int(time.time()),
+                        'type': 'kalvidres_embedded',
+                        'mimetype': 'video/mp4',
+                        'entry_id': video_info['entry_id'],
+                    }
+                    book_files.append(video_entry)
 
-                            # Download the chapter HTML content
-                            chapter_html = await self._fetch_chapter_html(chapter_fileurl)
+                # Replace iframes with video tags
+                modified_html = self._replace_kaltura_iframes_with_video_tags(print_book_html, video_list)
 
-                            if chapter_html:
-                                logging.debug(f'✅ Fetched chapter HTML ({len(chapter_html)} bytes)')
+                # Create the print book HTML file entry
+                html_filename = f"{book_name}.html"
+                book_files.append({
+                    'filename': html_filename,
+                    'filepath': '/',
+                    'timemodified': book.get('timemodified', int(time.time())),
+                    'html': modified_html,
+                    'type': 'html',
+                    'no_search_for_urls': True,  # Don't try to download embedded resources automatically
+                    'filesize': len(modified_html),
+                })
 
-                                # Extract Kaltura videos from the HTML
-                                kaltura_videos = self._extract_kaltura_videos_from_html(
-                                    chapter_html,
-                                    chapter_title,
-                                    course_id,
-                                    module_id
-                                )
+                logging.info(f'✅ Created print book HTML: {html_filename} with {len(video_list)} embedded videos')
 
-                                if kaltura_videos:
-                                    logging.info(f'🎬 Extracted {len(kaltura_videos)} Kaltura video(s) from chapter: {chapter_title}')
-                                    logging.debug(f'Video entries: {[v.get("filename") for v in kaltura_videos]}')
-                                    book_files.extend(kaltura_videos)
-                                    logging.debug(f'Total book_files now: {len(book_files)}')
-                                else:
-                                    logging.debug(f'No Kaltura videos found in chapter: {chapter_title}')
-                            else:
-                                logging.debug(f'❌ Failed to fetch chapter HTML (empty response)')
-                        except Exception as e:
-                            # If fetching fails, just skip video extraction for this chapter
-                            # The chapter HTML file itself will still be downloaded normally
-                            import logging
-                            logging.warning(f'⚠️  Failed to fetch chapter HTML for video extraction: {e}')
-                            import traceback
-                            logging.debug(f'Traceback: {traceback.format_exc()}')
+            else:
+                # Fallback: Use old chapter-based approach if print book fails
+                logging.warning(f'⚠️  Could not fetch print book HTML for "{book_name}", falling back to chapter-based download')
 
-            if len(book_contents) > 0:
-                # Generate Table of Contents
-                book_toc = json.loads(book_contents[0].get('content', ''))
+                # Keep the old implementation as fallback
+                book_files = self.get_introfiles(book, 'book_file', copy=True)
 
-                toc_html = '''
+                book_intro = book.get('intro', '')
+                intro_file = self.create_intro_file(book_intro)
+                if intro_file:
+                    intro_file['filename'] = 'Book intro'
+                    book_files.append(intro_file)
+
+            # If we successfully fetched print book HTML, skip fallback chapter processing
+            if not print_book_html:
+                # Fallback: Download chapter files individually
+                book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+                if len(book_contents) > 1:
+                    for chapter_content in book_contents[1:]:
+                        book_files.append(chapter_content)
+
+                if len(book_contents) > 0:
+                    # Generate Table of Contents
+                    book_toc = json.loads(book_contents[0].get('content', ''))
+
+                    toc_html = '''
 <!DOCTYPE html>
 <html>
     <head>
@@ -125,61 +136,62 @@ class BookMod(MoodleMod):
     </head>
     <body>
         '''
-                toc_html += self.create_ordered_index(book_toc)
-                toc_html += '''
+                    toc_html += self.create_ordered_index(book_toc)
+                    toc_html += '''
     </body>
 </html>
-                '''
+                    '''
+
+                    book_files.append(
+                        {
+                            'filename': 'Table of Contents',
+                            'filepath': '/',
+                            'timemodified': book.get('timemodified', 0),
+                            'html': toc_html,
+                            'type': 'html',
+                            'no_search_for_urls': True,
+                            'filesize': len(toc_html),
+                        }
+                    )
+
+            # Create metadata file only for fallback mode
+            if not print_book_html:
+                book_contents_for_meta = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+                book_toc = json.loads(book_contents_for_meta[0].get('content', '[]')) if len(book_contents_for_meta) > 0 else []
+
+                metadata = {
+                    'book_id': book.get('id', 0),
+                    'course_id': course_id,
+                    'name': book_name,
+                    'intro': book.get('intro', ''),
+                    'configuration': {
+                        'numbering': self._get_numbering_name(book.get('numbering', 0)),
+                        'numbering_value': book.get('numbering', 0),
+                        'navstyle': self._get_navstyle_name(book.get('navstyle', 0)),
+                        'navstyle_value': book.get('navstyle', 0),
+                        'customtitles': book.get('customtitles', 0),
+                        'revision': book.get('revision', 0),
+                    },
+                    'timestamps': {
+                        'time_created': book.get('timecreated', 0),
+                        'time_modified': book.get('timemodified', 0),
+                    },
+                    'statistics': {
+                        'total_chapters': len(self._get_flat_toc_list(book_toc)) if book_toc else 0,
+                        'has_intro_files': len(book.get('introfiles', [])) > 0,
+                    },
+                }
 
                 book_files.append(
                     {
-                        'filename': 'Table of Contents',
+                        'filename': 'metadata.json',
                         'filepath': '/',
                         'timemodified': book.get('timemodified', 0),
-                        'html': toc_html,
-                        'type': 'html',
-                        'no_search_for_urls': True,
-                        'filesize': len(toc_html),
+                        'content': json.dumps(metadata, indent=2, ensure_ascii=False),
+                        'type': 'content',
                     }
                 )
 
-            # Create metadata file with book configuration
-            book_toc = json.loads(book_contents[0].get('content', '[]')) if len(book_contents) > 0 else []
-
-            metadata = {
-                'book_id': book.get('id', 0),
-                'course_id': course_id,
-                'name': book_name,
-                'intro': book.get('intro', ''),
-                'configuration': {
-                    'numbering': self._get_numbering_name(book.get('numbering', 0)),
-                    'numbering_value': book.get('numbering', 0),
-                    'navstyle': self._get_navstyle_name(book.get('navstyle', 0)),
-                    'navstyle_value': book.get('navstyle', 0),
-                    'customtitles': book.get('customtitles', 0),
-                    'revision': book.get('revision', 0),
-                },
-                'timestamps': {
-                    'time_created': book.get('timecreated', 0),
-                    'time_modified': book.get('timemodified', 0),
-                },
-                'statistics': {
-                    'total_chapters': len(self._get_flat_toc_list(book_toc)) if book_toc else 0,
-                    'has_intro_files': len(book.get('introfiles', [])) > 0,
-                },
-            }
-
-            book_files.append(
-                {
-                    'filename': 'metadata.json',
-                    'filepath': '/',
-                    'timemodified': book.get('timemodified', 0),
-                    'content': json.dumps(metadata, indent=2, ensure_ascii=False),
-                    'type': 'content',
-                }
-            )
-
-            import logging
             logging.info(f'📚 Book "{book_name}" has {len(book_files)} files total')
             video_count = len([f for f in book_files if f.get('type') == 'kalvidres_embedded'])
             if video_count > 0:
@@ -349,3 +361,170 @@ class BookMod(MoodleMod):
             })
 
         return video_files
+
+    async def _fetch_print_book_html(self, module_id: int) -> Tuple[str, str]:
+        """
+        Fetch the complete print book HTML from Moodle's print book tool.
+
+        This downloads the single-page HTML version of the entire book,
+        which includes all chapters, TOC, and embedded content in one file.
+
+        @param module_id: The course module ID of the book
+        @return: Tuple of (HTML content as string, base URL for resolving relative links)
+        """
+        try:
+            import aiohttp
+
+            # Construct print book URL
+            # Format: https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id={module_id}
+            print_book_url = f"{self.client.moodle_url.url_base}/mod/book/tool/print/index.php?id={module_id}"
+
+            logging.info(f'📖 Fetching print book HTML from: {print_book_url}')
+
+            # Get cookies path
+            cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
+
+            if not os.path.exists(cookies_path):
+                logging.warning(f'⚠️  Cookies file not found at {cookies_path}, print book download may fail')
+                return '', ''
+
+            # Load Moodle cookies
+            import http.cookiejar
+            from moodle_dl.utils import convert_to_aiohttp_cookie_jar
+
+            mozilla_cookie_jar = http.cookiejar.MozillaCookieJar(cookies_path)
+            mozilla_cookie_jar.load(ignore_discard=True, ignore_expires=True)
+
+            # Debug: count cookies
+            cookie_count = len(mozilla_cookie_jar)
+            logging.debug(f'Loaded {cookie_count} cookies from {cookies_path}')
+
+            # Convert to aiohttp cookie jar
+            cookie_jar = convert_to_aiohttp_cookie_jar(mozilla_cookie_jar)
+
+            # Create session with cookies
+            async with aiohttp.ClientSession(cookie_jar=cookie_jar) as session:
+                async with session.get(print_book_url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                    if response.status == 200:
+                        html_content = await response.text(encoding='utf-8')
+
+                        # Debug: check if we got actual book content or login page
+                        is_login_page = 'Sign in to your account' in html_content or 'Microsoft' in html_content[:500]
+                        if is_login_page:
+                            logging.warning(f'⚠️  Received login page instead of print book content (cookies may have expired or insufficient permissions)')
+                            logging.debug(f'HTML start: {html_content[:300]}...')
+                            return '', ''
+
+                        logging.info(f'✅ Successfully fetched print book HTML ({len(html_content)} bytes)')
+                        return html_content, print_book_url
+                    else:
+                        logging.error(f'❌ Failed to fetch print book HTML: HTTP {response.status}')
+                        return '', ''
+
+        except Exception as e:
+            logging.error(f'❌ Exception while fetching print book HTML: {e}')
+            import traceback
+            logging.debug(f'Traceback: {traceback.format_exc()}')
+            return '', ''
+
+    def _extract_kaltura_videos_from_print_book(self, html_content: str, book_name: str) -> List[Dict]:
+        """
+        Extract all Kaltura video iframes from the print book HTML.
+
+        @param html_content: The complete print book HTML
+        @param book_name: Name of the book (for video naming)
+        @return: List of video info dictionaries containing iframe_src, entry_id, video_name, etc.
+        """
+        video_list = []
+
+        # Pattern to match Kaltura iframe with lti_launch.php
+        kaltura_pattern = r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"[^>]*>'
+
+        matches = re.findall(kaltura_pattern, html_content, re.IGNORECASE | re.DOTALL)
+
+        logging.info(f'🎬 Found {len(matches)} Kaltura video(s) in print book')
+
+        for idx, iframe_src in enumerate(matches, 1):
+            # Unescape HTML entities
+            iframe_src_unescaped = html.unescape(iframe_src)
+
+            # Extract the source parameter which contains the actual Kaltura URL
+            source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
+            if not source_match:
+                logging.warning(f'⚠️  Could not extract source parameter from iframe {idx}')
+                continue
+
+            # Decode the URL-encoded source parameter
+            kaltura_source = urllib.parse.unquote(source_match.group(1))
+
+            # Extract entry ID from the Kaltura URL
+            entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+            if not entry_id_match:
+                logging.warning(f'⚠️  Could not extract entry ID from Kaltura source {idx}')
+                continue
+
+            entry_id = entry_id_match.group(1)
+
+            # Generate video filename
+            video_name = f"{book_name} - Video {idx:02d}" if len(matches) > 1 else f"{book_name} - Video"
+            video_filename = f"{video_name} ({entry_id}).mp4"
+
+            video_info = {
+                'iframe_src': iframe_src,  # Original iframe src (may contain HTML entities)
+                'iframe_src_unescaped': iframe_src_unescaped,  # Unescaped version
+                'entry_id': entry_id,
+                'video_name': video_name,
+                'video_filename': video_filename,
+                'lti_launch_url': iframe_src_unescaped,  # URL for yt-dlp
+                'relative_path': f"{book_name}_files/{video_filename}",  # Path relative to HTML file
+            }
+
+            video_list.append(video_info)
+            logging.debug(f'   Video {idx}: {video_name} (entry_id: {entry_id})')
+
+        return video_list
+
+    def _replace_kaltura_iframes_with_video_tags(self, html_content: str, video_list: List[Dict]) -> str:
+        """
+        Replace Kaltura iframe tags with HTML5 video tags pointing to local video files.
+
+        @param html_content: The print book HTML content
+        @param video_list: List of video info dictionaries from _extract_kaltura_videos_from_print_book
+        @return: Modified HTML content with video tags instead of iframes
+        """
+        modified_html = html_content
+
+        for video_info in video_list:
+            iframe_src = video_info['iframe_src']
+            relative_path = video_info['relative_path']
+            video_name = video_info['video_name']
+
+            # Create HTML5 video tag to replace the iframe
+            # Keep width and height for consistency
+            video_tag = f'''<div class="kaltura-video-container" style="max-width: 608px; margin: 20px auto;">
+    <video controls style="width: 100%; max-width: 608px; height: auto;" preload="metadata">
+        <source src="{relative_path}" type="video/mp4">
+        <p>Your browser does not support HTML5 video. <a href="{relative_path}">Download the video</a> instead.</p>
+    </video>
+    <p style="text-align: center; font-size: 0.9em; color: #666; margin-top: 10px;">{video_name}</p>
+</div>'''
+
+            # Replace the entire iframe tag with the video tag
+            # We need to match the complete iframe tag, not just the src
+            iframe_pattern = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*>.*?</iframe>'
+
+            # Try with closing tag
+            if re.search(iframe_pattern, modified_html, re.DOTALL):
+                modified_html = re.sub(iframe_pattern, video_tag, modified_html, flags=re.DOTALL)
+                logging.debug(f'✅ Replaced iframe with video tag for: {video_name}')
+            else:
+                # Try self-closing tag
+                iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
+                if re.search(iframe_pattern_selfclose, modified_html):
+                    modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
+                    logging.debug(f'✅ Replaced self-closing iframe with video tag for: {video_name}')
+                else:
+                    logging.warning(f'⚠️  Could not find iframe tag to replace for: {video_name}')
+
+        logging.info(f'✅ Replaced {len(video_list)} Kaltura iframe(s) with HTML5 video tags')
+        return modified_html
