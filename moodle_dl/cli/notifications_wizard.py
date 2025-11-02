@@ -1,6 +1,7 @@
 from getpass import getpass
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.logging import Log
 from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
 from moodle_dl.notifications.mail.mail_formater import create_full_welcome_mail
 from moodle_dl.notifications.mail.mail_shooter import MailShooter
@@ -20,24 +21,84 @@ class NotificationsWizard:
         self.opts = opts
 
     def interactively_configure_all_services(self) -> None:
-        services = [
-            getattr(self, func)
-            for func in dir(self)
-            if callable(getattr(self, func))
-            and func.startswith("interactively_configure_")
-            and func != "interactively_configure_all_services"
-        ]
-        for service in services:
-            service()
+        """Guides the user through notification service selection and configuration."""
 
-    def interactively_configure_mail(self) -> None:
+        # 定义所有可用的通知服务
+        services = [
+            ('mail', '邮件通知 (Mail)', 'interactively_configure_mail'),
+            ('telegram', 'Telegram 通知', 'interactively_configure_telegram'),
+            ('discord', 'Discord 通知', 'interactively_configure_discord'),
+            ('ntfy', 'ntfy 通知', 'interactively_configure_ntfy'),
+            ('xmpp', 'XMPP 通知', 'interactively_configure_xmpp'),
+            ('sentry_dsn', 'Sentry 错误报告', 'interactively_configure_sentry'),
+        ]
+
+        # 获取当前已配置的服务
+        current_selections = []
+        for i, (config_key, name, method_name) in enumerate(services):
+            if self.config.get_property(config_key) is not None:
+                current_selections.append(i)
+
+        # 创建选项列表
+        choices = []
+        for config_key, name, method_name in services:
+            desc = self._get_service_description(config_key)
+            choices.append(f'{name}\t{desc}')
+
+        # 显示多选界面
+        Log.blue('请选择要配置的通知服务：')
+        Log.info('[使用↑↓键移动，空格键勾选/取消，回车键确认]')
+        print('')
+
+        selected_indices = Cutie.select_multiple(
+            options=choices,
+            ticked_indices=current_selections,
+            deselected_unticked_prefix='\033[1m[ ]\033[0m ',
+            deselected_ticked_prefix='\033[1m[\033[32m✅\033[0;1m]\033[0m ',
+            selected_unticked_prefix='\033[32;1m{ }\033[0m ',
+            selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
+        )
+
+        print('')
+
+        # 配置选中的服务，移除未选中的服务
+        for i, (config_key, name, method_name) in enumerate(services):
+            if i in selected_indices:
+                # 配置此服务
+                method = getattr(self, method_name)
+                method(skip_prompt=True)  # 跳过 y/N 提示，因为已经在多选界面选择了
+            else:
+                # 移除此服务的配置
+                self.config.remove_property(config_key)
+
+        if selected_indices:
+            Log.success(f'已配置 {len(selected_indices)} 个通知服务')
+        else:
+            Log.info('未配置任何通知服务')
+
+    def _get_service_description(self, service_key: str) -> str:
+        """Get description for each notification service."""
+        descriptions = {
+            'mail': '通过 SMTP 发送电子邮件通知，支持错误报告',
+            'telegram': '通过 Telegram Bot 发送即时消息通知',
+            'discord': '通过 Discord Webhook 发送消息到 Discord 频道',
+            'ntfy': '通过 ntfy.sh 服务发送推送通知到手机/桌面',
+            'xmpp': '通过 XMPP (Jabber) 协议发送即时消息',
+            'sentry_dsn': '通过 Sentry 服务进行错误跟踪和日志记录',
+        }
+        return descriptions.get(service_key, '')
+
+    def interactively_configure_mail(self, skip_prompt: bool = False) -> None:
         "Guides the user through the configuration of the mail notification."
 
-        do_mail = Cutie.prompt_yes_or_no('你想要激活邮件通知吗？')
+        if not skip_prompt:
+            do_mail = Cutie.prompt_yes_or_no('你想要激活邮件通知吗？')
 
-        if not do_mail:
-            self.config.remove_property('mail')
-        else:
+            if not do_mail:
+                self.config.remove_property('mail')
+                return
+
+        if True:  # 保持原缩进结构
             print('[以下输入不会被验证！]')
 
             config_valid = False
@@ -85,14 +146,17 @@ class NotificationsWizard:
 
                 self.config.set_property('mail', mail_cfg)
 
-    def interactively_configure_telegram(self) -> None:
+    def interactively_configure_telegram(self, skip_prompt: bool = False) -> None:
         "Guides the user through the configuration of the telegram notification."
 
-        do_telegram = Cutie.prompt_yes_or_no('你想要激活 Telegram 通知吗？')
+        if not skip_prompt:
+            do_telegram = Cutie.prompt_yes_or_no('你想要激活 Telegram 通知吗？')
 
-        if not do_telegram:
-            self.config.remove_property('telegram')
-        else:
+            if not do_telegram:
+                self.config.remove_property('telegram')
+                return
+
+        if True:  # 保持原缩进结构
             print('[以下输入不会被验证！]')
             print(
                 '打开以下链接获取设置 Telegram 通知的帮助：'
@@ -134,14 +198,17 @@ class NotificationsWizard:
 
                 self.config.set_property('telegram', telegram_cfg)
 
-    def interactively_configure_discord(self) -> None:
+    def interactively_configure_discord(self, skip_prompt: bool = False) -> None:
         "Guides the user through the configuration of the discord notification."
 
-        do_discord = Cutie.prompt_yes_or_no('你想要激活 Discord 通知吗？')
+        if not skip_prompt:
+            do_discord = Cutie.prompt_yes_or_no('你想要激活 Discord 通知吗？')
 
-        if not do_discord:
-            self.config.remove_property('discord')
-        else:
+            if not do_discord:
+                self.config.remove_property('discord')
+                return
+
+        if True:  # 保持原缩进结构
             print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
@@ -171,14 +238,17 @@ class NotificationsWizard:
 
                 self.config.set_property('discord', discord_cfg)
 
-    def interactively_configure_ntfy(self) -> None:
+    def interactively_configure_ntfy(self, skip_prompt: bool = False) -> None:
         "Guides the user through the configuration of the ntfy notification."
 
-        do_ntfy = Cutie.prompt_yes_or_no('你想要激活 ntfy 通知吗？')
+        if not skip_prompt:
+            do_ntfy = Cutie.prompt_yes_or_no('你想要激活 ntfy 通知吗？')
 
-        if not do_ntfy:
-            self.config.remove_property('ntfy')
-        else:
+            if not do_ntfy:
+                self.config.remove_property('ntfy')
+                return
+
+        if True:  # 保持原缩进结构
             print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
@@ -212,14 +282,17 @@ class NotificationsWizard:
 
                 self.config.set_property('ntfy', ntfy_cfg)
 
-    def interactively_configure_xmpp(self) -> None:
+    def interactively_configure_xmpp(self, skip_prompt: bool = False) -> None:
         "Guides the user through the configuration of the xmpp notification."
 
-        do_xmpp = Cutie.prompt_yes_or_no('你想要激活 XMPP 通知吗？')
+        if not skip_prompt:
+            do_xmpp = Cutie.prompt_yes_or_no('你想要激活 XMPP 通知吗？')
 
-        if not do_xmpp:
-            self.config.remove_property('xmpp')
-        else:
+            if not do_xmpp:
+                self.config.remove_property('xmpp')
+                return
+
+        if True:  # 保持原缩进结构
             print('[以下输入不会被验证！]')
             config_valid = False
             while not config_valid:
@@ -261,3 +334,23 @@ class NotificationsWizard:
                 }
 
                 self.config.set_property('xmpp', xmpp_cfg)
+
+    def interactively_configure_sentry(self, skip_prompt: bool = False) -> None:
+        "Guides the user through the configuration of Sentry error reporting."
+
+        if not skip_prompt:
+            do_sentry = Cutie.prompt_yes_or_no('你想要配置通过 Sentry 进行错误报告吗？')
+
+            if not do_sentry:
+                self.config.remove_property('sentry_dsn')
+                return
+
+        if True:  # 保持原缩进结构
+            print('[以下输入不会被验证！]')
+            sentry_dsn = input('请输入你的 Sentry DSN:   ')
+
+            if sentry_dsn:
+                self.config.set_property('sentry_dsn', sentry_dsn)
+                Log.success('Sentry DSN 已保存')
+            else:
+                Log.warning('未提供 Sentry DSN，已跳过配置')

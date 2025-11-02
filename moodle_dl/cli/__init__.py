@@ -21,11 +21,6 @@ def init_config(config: ConfigHelper, opts: MoodleDlOpts):
 
     NotificationsWizard(config, opts).interactively_configure_all_services()
 
-    do_sentry = Cutie.prompt_yes_or_no('你想要配置通过 Sentry 进行错误报告吗？')
-    if do_sentry:
-        sentry_dsn = input('请输入你的 Sentry DSN:   ')
-        config.set_property('sentry_dsn', sentry_dsn)
-
     MoodleWizard(config, opts).interactively_acquire_token()
 
     Log.success('配置已完成并保存！')
