@@ -114,9 +114,18 @@ class UrlMod(MoodleMod):
                 self.create_metadata_file(metadata, timemodified=url_mod.get('timemodified', 0))
             )
 
-            # Note: The actual URL shortcut files (.url, .webloc, .desktop) are already
-            # created by the existing system through core_course_get_contents.
-            # We just add the metadata here for completeness.
+            # Get module from core_contents to access URL files
+            # URL modules in core_course_get_contents contain the actual file URL in contents
+            module_contents = self.get_module_in_core_contents(course_id, module_id, core_contents)
+            if module_contents:
+                # Add URL file contents (the actual external files to download)
+                for content in module_contents.get('contents', []):
+                    # URL modules have type='url' in their contents
+                    # These should be downloaded if download_urls is enabled
+                    filename = content.get('filename', '')
+                    if filename and content.get('type') == 'url':
+                        # Add the URL file for download
+                        url_files.append(content)
 
             self.add_module(
                 result,
