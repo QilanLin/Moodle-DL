@@ -639,10 +639,14 @@ class Task:
         @param ignore_attributes: If the file attributes should be ignored.
         """
         if self.file.content_type == 'description' and not ignore_attributes:
-            self.file.saved_to = str(Path(self.destination) / (self.filename + '.md'))
+            # 🔧 避免双重.md扩展名
+            filename = self.filename if self.filename.endswith('.md') else (self.filename + '.md')
+            self.file.saved_to = str(Path(self.destination) / filename)
 
         elif self.file.content_type == 'html' and not ignore_attributes:
-            self.file.saved_to = str(Path(self.destination) / (self.filename + '.html'))
+            # 🔧 避免双重.html扩展名
+            filename = self.filename if self.filename.endswith('.html') else (self.filename + '.html')
+            self.file.saved_to = str(Path(self.destination) / filename)
 
         elif force_file_extension is not None:
             self.file.saved_to = str(Path(self.destination) / (self.filename + f'.{force_file_extension}'))
