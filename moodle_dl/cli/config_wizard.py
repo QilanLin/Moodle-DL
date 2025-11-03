@@ -643,10 +643,8 @@ class ConfigWizard:
 
     def _select_should_download_also_with_cookie(self):
         """
-        Ask the user whether files for which a cookie is required should be downloaded.
+        自动启用 cookie 下载功能，并引导用户从浏览器导出 cookies 和 API token。
         """
-        download_also_with_cookie = self.config.get_download_also_with_cookie()
-
         self.section_seperator()
         Log.info(
             '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
@@ -654,36 +652,48 @@ class ConfigWizard:
             + '所以你需要浏览器 cookie 来下载这些插件文件。'
         )
 
-        Log.debug(
-            'Moodle 浏览器 cookie（MoodleSession）会使用你的私有令牌自动生成，并存储在 `Cookies.txt` 文件中。'
-            + '对于 SSO 登录（如 Microsoft、Google、Okta 等），你还需要手动从浏览器导出额外的 SSO 认证 cookies。'
-        )
+        print('')
+        Log.success('✅ Cookie 下载功能已自动启用')
 
-        if self.config.get_privatetoken() is None:
-            Log.error(
-                '当前配置中没有存储私有令牌。'
-                + '使用 moodle-dl --new-token 获取 Moodle Token（SSO 登录需加上 --sso）'
-            )
+        # 直接设置为 True，不再询问
+        self.config.set_property('download_also_with_cookie', True)
 
+        # 快速检查是否已有完整的cookies文件
+        from moodle_dl.utils import PathTools as PT
+        moodle_url = self.config.get_moodle_URL()
+        if moodle_url is None:
+            Log.error('错误：未找到 Moodle URL 配置，无法检查 cookies')
+            return
+
+        cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
+        cookies_exist = os.path.exists(cookies_path)
+
+        if cookies_exist:
+            has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_url.domain)
+            if has_sso_cookies:
+                # 如果已有完整cookies，只显示简短确认
+                Log.info(f'✅ 检测到完整的 Cookies.txt 文件，将用于下载受保护的内容')
+                print('')
+                return  # 直接返回，不显示冗长的导出流程
+
+        # 只有在没有cookies或cookies不完整时，才进入完整的导出流程
+        print('')
+        Log.info('现在将从浏览器导出 cookies（用于下载受保护的内容）')
         print('')
 
-        download_also_with_cookie = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想要下载需要 cookie 的文件吗？'),
-            default_is_yes=download_also_with_cookie,
-        )
+        # 引导导出浏览器 cookies 和 API token
+        self._export_browser_cookies_and_token()
 
-        self.config.set_property('download_also_with_cookie', download_also_with_cookie)
-
-        # 如果用户选择 Yes，引导导出浏览器 cookies
-        if download_also_with_cookie:
-            self._export_browser_cookies_if_needed()
-
-    def _export_browser_cookies_if_needed(self):
+    def _export_browser_cookies_and_token(self):
         """
-        引导用户导出浏览器 cookies（包含 SSO 提供商的认证 cookies）
+        引导用户从浏览器导出 cookies 和 API token（一步完成）
+        对于 SSO 登录，会同时导出所有必需的认证 cookies 和自动获取 API token
         """
         print('')
-        Log.warning('⚠️  对于 SSO 登录（如 Microsoft、Google、Okta 等），需要从浏览器导出额外的 cookies。')
+        Log.info('💡 提示：')
+        Log.info('   • 将从浏览器自动导出 cookies（包含 SSO 认证信息）')
+        Log.info('   • 同时自动获取 Moodle API token')
+        Log.info('   • 无需手动打开开发者工具！')
         print('')
 
         # 获取 Moodle URL 和输出路径
@@ -704,7 +714,13 @@ class ConfigWizard:
             has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_domain)
 
             if has_sso_cookies:
-                Log.info(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）: {cookies_path}')
+                # 如果cookies文件已存在且包含SSO cookies，说明在前面的token获取步骤中已经导出过
+                # 直接使用现有cookies，不再重复导出
+                Log.success(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）')
+                Log.info(f'   路径: {cookies_path}')
+                Log.info('   将使用现有cookies，无需重新导出')
+                print('')
+                return  # 直接返回，不再重复导出
             else:
                 Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies: {cookies_path}')
                 Log.info('   建议重新导出以获取完整的浏览器 cookies。')
@@ -835,16 +851,31 @@ class ConfigWizard:
                 if success:
                     # 验证 cookies
                     success = export_module.test_cookies(moodle_domain, cookies_path)
+
+                    # 自动获取API token
+                    if success:
+                        print('')
+                        Log.info('正在自动获取Moodle API token...')
+                        token, privatetoken = export_module.extract_api_token_with_cookies(moodle_domain, cookies_path)
+                        if token and privatetoken:
+                            Log.success('✅ 已成功获取并保存API token!')
+                        else:
+                            Log.warning('⚠️  API token获取失败，你可以稍后手动运行: moodle-dl --new-token --sso')
             else:
                 # 用户选择自动检测
                 success = export_module.export_cookies_interactive(
                     domain=moodle_domain,
                     output_file=cookies_path,
-                    ask_browser=False  # 已经在这里选择了
+                    ask_browser=False,  # 已经在这里选择了
+                    auto_get_token=True  # 自动获取API token，不再询问
                 )
 
             if success:
                 Log.success('✅ 浏览器 cookies 导出成功！')
+                # Save the selected browser to config for future auto-refresh
+                if selected_browser:
+                    self.config.set_property('preferred_browser', selected_browser)
+                    Log.info(f'✅ 已保存浏览器选择（{selected_browser}），将用于自动刷新cookies')
             else:
                 Log.error('❌ 浏览器 cookies 导出失败')
                 Log.warning('你可以稍后手动导出 cookies：')

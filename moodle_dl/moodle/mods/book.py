@@ -47,7 +47,7 @@ class BookMod(MoodleMod):
             book_files = []
 
             # Try to fetch print book HTML
-            print_book_html, print_book_url = await self._fetch_print_book_html(module_id)
+            print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
 
             if print_book_html:
                 # Success! We have the print book HTML
@@ -362,24 +362,114 @@ class BookMod(MoodleMod):
 
         return video_files
 
-    async def _fetch_print_book_html(self, module_id: int) -> Tuple[str, str]:
-        """
-        Fetch the complete print book HTML from Moodle's print book tool.
+    # Note: _convert_netscape_cookies_to_playwright() has been removed.
+    # Use the global function from cookie_manager instead:
+    # from moodle_dl.cookie_manager import convert_netscape_cookies_to_playwright
 
-        This downloads the single-page HTML version of the entire book,
-        which includes all chapters, TOC, and embedded content in one file.
+    async def _handle_expired_cookies_and_retry(self, module_id: int, print_book_url: str) -> Tuple[str, str]:
+        """
+        Handle expired cookies by attempting to auto-refresh and retry.
+
+        使用全局CookieManager来刷新cookies，遵循DRY原则。
 
         @param module_id: The course module ID of the book
+        @param print_book_url: The print book URL that failed
+        @return: Tuple of (HTML content, URL) if retry succeeds, or ('', '') if fails
+        """
+        from moodle_dl.utils import Log
+        from moodle_dl.cookie_manager import create_cookie_manager_from_client, convert_netscape_cookies_to_playwright
+
+        try:
+            # 使用全局CookieManager刷新cookies
+            cookie_manager = create_cookie_manager_from_client(self.client, self.config)
+
+            if not cookie_manager.refresh_cookies(auto_get_token=False):
+                # Refresh failed, instructions already shown by CookieManager
+                return '', ''
+
+            # Retry the download with fresh cookies
+            from playwright.async_api import async_playwright
+
+            playwright_cookies = convert_netscape_cookies_to_playwright(cookie_manager.cookies_path)
+
+            if not playwright_cookies:
+                Log.warning('⚠️  转换cookies失败')
+                return '', ''
+
+            async with async_playwright() as p:
+                browser = await p.firefox.launch(headless=True)
+                context = await browser.new_context(
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='en-GB',
+                    timezone_id='Europe/London',
+                    accept_downloads=False,
+                    ignore_https_errors=False,
+                )
+                await context.add_cookies(playwright_cookies)
+                page = await context.new_page()
+
+                try:
+                    response = await page.goto(print_book_url, wait_until='networkidle', timeout=60000)
+
+                    if not response:
+                        await browser.close()
+                        return '', ''
+
+                    current_url = page.url
+                    html_content = await page.content()
+
+                    # Check again if we're redirected (cookies still invalid)
+                    from moodle_dl.cookie_manager import CookieManager
+                    if CookieManager.is_cookie_expired_response(current_url, html_content):
+                        Log.warning('⚠️  重试后仍被重定向，cookies可能需要手动刷新')
+                        Log.info('   请确保你在浏览器中已登录Moodle，然后运行: moodle-dl --config')
+                        await browser.close()
+                        return '', ''
+
+                    # Check if we got book content
+                    if 'book_chapter' in html_content or 'book p-4' in html_content:
+                        Log.success('✅ 重试成功！已获取print book内容')
+                        await browser.close()
+                        return html_content, print_book_url
+                    else:
+                        Log.warning('⚠️  重试后仍未获取到book内容')
+                        await browser.close()
+                        return '', ''
+
+                except Exception as retry_error:
+                    logging.error(f'❌ 重试时出错: {retry_error}')
+                    await browser.close()
+                    return '', ''
+
+        except Exception as e:
+            logging.error(f'❌ 自动刷新cookies时出错: {e}')
+            Log.warning('⚠️  请手动重新导出cookies: moodle-dl --config （选择步骤7）')
+            return '', ''
+
+    async def _fetch_print_book_html(self, module_id: int, course_id: int) -> Tuple[str, str]:
+        """
+        Fetch the complete print book HTML from Moodle's print book tool using Playwright.
+
+        This uses a headless browser to download the single-page HTML version of the entire book,
+        which includes all chapters, TOC, and embedded content in one file.
+
+        Uses Playwright instead of simple HTTP requests because print book tool requires
+        full browser session with SSO cookies.
+
+        @param module_id: The course module ID of the book
+        @param course_id: The course ID (used to initialize session)
         @return: Tuple of (HTML content as string, base URL for resolving relative links)
         """
         try:
-            import aiohttp
+            from playwright.async_api import async_playwright
 
             # Construct print book URL
             # Format: https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id={module_id}
-            print_book_url = f"{self.client.moodle_url.url_base}/mod/book/tool/print/index.php?id={module_id}"
+            url_base = self.client.moodle_url.url_base.rstrip('/')
+            print_book_url = f"{url_base}/mod/book/tool/print/index.php?id={module_id}"
 
-            logging.info(f'📖 Fetching print book HTML from: {print_book_url}')
+            logging.info(f'📖 Fetching print book HTML using headless browser from: {print_book_url}')
 
             # Get cookies path
             cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
@@ -388,41 +478,201 @@ class BookMod(MoodleMod):
                 logging.warning(f'⚠️  Cookies file not found at {cookies_path}, print book download may fail')
                 return '', ''
 
-            # Load Moodle cookies
-            import http.cookiejar
-            from moodle_dl.utils import convert_to_aiohttp_cookie_jar
+            # Convert cookies from Netscape format to Playwright format (use global function)
+            from moodle_dl.cookie_manager import convert_netscape_cookies_to_playwright
+            playwright_cookies = convert_netscape_cookies_to_playwright(cookies_path)
 
-            mozilla_cookie_jar = http.cookiejar.MozillaCookieJar(cookies_path)
-            mozilla_cookie_jar.load(ignore_discard=True, ignore_expires=True)
+            if not playwright_cookies:
+                logging.warning(f'⚠️  No cookies loaded, print book download may fail')
+                return '', ''
 
-            # Debug: count cookies
-            cookie_count = len(mozilla_cookie_jar)
-            logging.debug(f'Loaded {cookie_count} cookies from {cookies_path}')
+            # Use Playwright to fetch the page with cookies
+            async with async_playwright() as p:
+                # Launch headless browser
+                browser = await p.firefox.launch(headless=True)
 
-            # Convert to aiohttp cookie jar
-            cookie_jar = convert_to_aiohttp_cookie_jar(mozilla_cookie_jar)
+                # Create context with cookies and realistic browser settings
+                context = await browser.new_context(
+                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='en-GB',
+                    timezone_id='Europe/London',
+                    accept_downloads=False,
+                    ignore_https_errors=False,
+                )
 
-            # Create session with cookies
-            async with aiohttp.ClientSession(cookie_jar=cookie_jar) as session:
-                async with session.get(print_book_url, timeout=aiohttp.ClientTimeout(total=60)) as response:
-                    if response.status == 200:
-                        html_content = await response.text(encoding='utf-8')
+                # 🔍 DEBUG: 查看要添加的cookies
+                moodle_sessions = [c for c in playwright_cookies if c['name'] == 'MoodleSession']
+                logging.debug(f'🔍 准备添加 {len(playwright_cookies)} 个cookies')
+                logging.debug(f'🔍 其中MoodleSession cookies: {len(moodle_sessions)} 个')
+                for ms_cookie in moodle_sessions:
+                    logging.debug(f'🔍 MoodleSession完整信息:')
+                    logging.debug(f'   name={ms_cookie["name"]}')
+                    logging.debug(f'   value={ms_cookie["value"][:20]}...')
+                    logging.debug(f'   domain={ms_cookie["domain"]}')
+                    logging.debug(f'   path={ms_cookie["path"]}')
+                    logging.debug(f'   httpOnly={ms_cookie["httpOnly"]}')
+                    logging.debug(f'   secure={ms_cookie["secure"]}')
+                    logging.debug(f'   sameSite={ms_cookie["sameSite"]}')
+                    logging.debug(f'   expires={ms_cookie["expires"]}')
 
-                        # Debug: check if we got actual book content or login page
-                        is_login_page = 'Sign in to your account' in html_content or 'Microsoft' in html_content[:500]
-                        if is_login_page:
-                            logging.warning(f'⚠️  Received login page instead of print book content (cookies may have expired or insufficient permissions)')
-                            logging.debug(f'HTML start: {html_content[:300]}...')
-                            return '', ''
+                await context.add_cookies(playwright_cookies)
 
-                        logging.info(f'✅ Successfully fetched print book HTML ({len(html_content)} bytes)')
-                        return html_content, print_book_url
-                    else:
-                        logging.error(f'❌ Failed to fetch print book HTML: HTTP {response.status}')
+                # 🔍 DEBUG: 验证cookies是否被正确添加
+                added_cookies = await context.cookies()
+                added_sessions = [c for c in added_cookies if c['name'] == 'MoodleSession']
+                logging.debug(f'🔍 实际添加了 {len(added_cookies)} 个cookies')
+                logging.debug(f'🔍 其中MoodleSession cookies: {len(added_sessions)} 个')
+
+                # Create page and navigate
+                page = await context.new_page()
+
+                # 🔍 DEBUG: 监听所有HTTP请求，查看实际发送的cookies
+                # 用一个标志来只记录第一个keats请求的详细cookies
+                first_request_logged = [False]
+
+                async def log_request(request):
+                    if 'keats.kcl.ac.uk' in request.url:
+                        headers = await request.all_headers()
+                        cookie_header = headers.get('cookie', '')
+                        has_moodle_session = 'MoodleSession' in cookie_header
+
+                        # 只详细记录第一个请求
+                        if not first_request_logged[0]:
+                            logging.debug(f'🔍 第一个HTTP请求: {request.url[:100]}')
+                            logging.debug(f'🔍 Cookie header长度: {len(cookie_header)} 字符')
+                            logging.debug(f'🔍 Cookie header有MoodleSession: {has_moodle_session}')
+                            if cookie_header:
+                                logging.debug(f'🔍 Cookie header完整内容: {cookie_header[:500]}')
+                            else:
+                                logging.debug(f'🔍 ❌ Cookie header为空！')
+                            first_request_logged[0] = True
+
+                        if has_moodle_session:
+                            # 显示MoodleSession部分
+                            for part in cookie_header.split('; '):
+                                if 'MoodleSession' in part:
+                                    logging.debug(f'🔍 Cookie值: {part}')
+
+                page.on('request', log_request)
+
+                try:
+                    # 🔧 先访问课程主页来初始化session
+                    # 这可以确保cookies被正确激活并且session状态正确
+                    course_url = f"https://{self.client.moodle_url.domain}/course/view.php?id={course_id}"
+                    logging.debug(f'🔧 首先访问课程主页来初始化session: {course_url}')
+                    init_response = await page.goto(course_url, wait_until='networkidle', timeout=60000)
+                    if init_response:
+                        logging.debug(f'✅ 课程主页访问成功: {page.url}')
+
+                        # 🔍 DEBUG: 保存HTML用于调试
+                        init_html = await page.content()
+                        debug_path = f'/tmp/playwright_course_page_{course_id}.html'
+                        with open(debug_path, 'w', encoding='utf-8') as f:
+                            f.write(init_html)
+                        logging.debug(f'📝 已保存课程页面HTML到: {debug_path}')
+                        logging.debug(f'📝 HTML长度: {len(init_html)} 字符')
+                        logging.debug(f'📝 标题: {await page.title()}')
+
+                        await page.wait_for_timeout(1000)  # 等待1秒让session稳定
+
+                    # Navigate to print book page
+                    logging.debug(f'🔧 现在访问Print Book页面: {print_book_url}')
+                    response = await page.goto(print_book_url, wait_until='networkidle', timeout=60000)
+
+                    if not response:
+                        logging.error(f'❌ No response from print book URL')
+                        await browser.close()
                         return '', ''
 
+                    # Check if we got redirected to login page
+                    current_url = page.url
+                    if 'login' in current_url.lower() or 'microsoft' in current_url.lower():
+                        logging.warning(f'⚠️  Redirected to login page: {current_url}')
+                        logging.warning(f'⚠️  Cookies may have expired, please run: moodle-dl --init --sso')
+                        await browser.close()
+                        return '', ''
+
+                    # Get the HTML content
+                    html_content = await page.content()
+
+                    # Check if we got actual book content or login page
+                    is_login_page = 'Sign in to your account' in html_content or 'Microsoft' in html_content[:500]
+                    if is_login_page:
+                        logging.warning(f'⚠️  Received login page instead of print book content')
+                        logging.warning(f'⚠️  Cookies may have expired, please run: moodle-dl --init --sso')
+                        await browser.close()
+                        return '', ''
+
+                    # Check if cookies expired (use global CookieManager detection)
+                    from moodle_dl.cookie_manager import CookieManager
+
+                    # 🔍 DEBUG: 记录详细信息用于调试cookie过期检测
+                    logging.debug(f'🔍 Cookie检测 - 当前URL: {current_url}')
+                    logging.debug(f'🔍 Cookie检测 - HTML长度: {len(html_content)} 字符')
+                    logging.debug(f'🔍 Cookie检测 - HTML开头500字符: {html_content[:500]}')
+
+                    # 检查URL中的过期特征
+                    url_has_enrol = 'enrol/index.php' in current_url.lower()
+                    url_has_login = '/login/' in current_url.lower()
+                    url_has_auth = '/auth/' in current_url.lower()
+                    logging.debug(f'🔍 URL检测 - enrol: {url_has_enrol}, login: {url_has_login}, auth: {url_has_auth}')
+
+                    # 检查内容中的过期特征
+                    content_lower = html_content.lower()
+                    has_guest_user = 'guest user' in content_lower
+                    has_not_logged_in = 'not logged in' in content_lower
+                    has_login_required = 'login required' in content_lower
+                    has_auth_required = 'authentication required' in content_lower
+                    has_session_expired = 'session expired' in content_lower
+                    logging.debug(f'🔍 内容检测 - guest user: {has_guest_user}, not logged in: {has_not_logged_in}')
+                    logging.debug(f'🔍 内容检测 - login required: {has_login_required}, auth required: {has_auth_required}, session expired: {has_session_expired}')
+
+                    # 特殊处理：重定向到enrol页面通常意味着没有权限，而不是cookies过期
+                    if 'enrol/index.php' in current_url.lower():
+                        logging.warning(f'⚠️  无法访问Print Book：被重定向到课程注册页面')
+                        logging.warning(f'⚠️  可能原因：')
+                        logging.warning(f'     1. 课程已结束，Print Book功能被禁用')
+                        logging.warning(f'     2. 你的账号没有访问Print Book的权限')
+                        logging.warning(f'     3. Print Book工具在此课程中未启用')
+                        logging.info(f'ℹ️  将使用章节下载模式作为替代方案')
+                        await browser.close()
+                        return '', ''
+
+                    if CookieManager.is_cookie_expired_response(current_url, html_content):
+                        logging.warning(f'⚠️  Cookies已过期 - 尝试自动刷新')
+                        logging.warning(f'⚠️  触发原因: URL包含过期标记或内容包含过期关键词')
+                        await browser.close()
+                        # Try to auto-refresh cookies using global mechanism
+                        return await self._handle_expired_cookies_and_retry(module_id, print_book_url)
+
+                    # Check if we got the actual book content
+                    if 'book_chapter' not in html_content and 'book p-4' not in html_content:
+                        logging.warning(f'⚠️  Page content does not appear to be a book (no book_chapter class found)')
+                        logging.debug(f'HTML start: {html_content[:500]}...')
+                        logging.debug(f'Current URL after load: {current_url}')
+                        # Save HTML for debugging
+                        debug_path = f'/tmp/playwright_debug_{module_id}.html'
+                        try:
+                            with open(debug_path, 'w', encoding='utf-8') as f:
+                                f.write(html_content)
+                            logging.debug(f'Saved debug HTML to: {debug_path}')
+                        except Exception as e:
+                            logging.debug(f'Could not save debug HTML: {e}')
+                        await browser.close()
+                        return '', ''
+
+                    logging.info(f'✅ Successfully fetched print book HTML ({len(html_content)} bytes)')
+                    await browser.close()
+                    return html_content, print_book_url
+
+                except Exception as page_error:
+                    logging.error(f'❌ Error while loading page: {page_error}')
+                    await browser.close()
+                    return '', ''
+
         except Exception as e:
-            logging.error(f'❌ Exception while fetching print book HTML: {e}')
+            logging.error(f'❌ Exception while fetching print book HTML with Playwright: {e}')
             import traceback
             logging.debug(f'Traceback: {traceback.format_exc()}')
             return '', ''

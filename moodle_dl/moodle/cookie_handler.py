@@ -6,6 +6,7 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.request_helper import RequestHelper, RequestRejectedError
 from moodle_dl.types import MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
+from moodle_dl.exceptions import MoodleAPIError
 
 
 class CookieHandler:
@@ -33,8 +34,10 @@ class CookieHandler:
         try:
             autologin_key_result = self.client.post('tool_mobile_get_autologin_key', extra_data)
             return autologin_key_result
-        except RequestRejectedError as e:
-            logging.debug("Cookie lockout: %s", e)
+        except (RequestRejectedError, MoodleAPIError) as e:
+            # 某些Moodle实例（如KCL）限制此API仅限移动应用访问
+            # 在这种情况下，我们返回None，让cookie管理使用其他方法
+            logging.debug("无法获取autologin key (可能此Moodle实例限制了API访问): %s", e)
             return None
 
     def test_cookies(self) -> bool:
