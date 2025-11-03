@@ -29,6 +29,21 @@ class ConfigWizard:
             self.core_handler.version = version
         return user_id, version
 
+    @staticmethod
+    def get_config_steps_count() -> int:
+        """
+        返回配置向导的步骤数量
+        """
+        # 配置步骤菜单 - 与 interactively_acquire_config 中的步骤定义保持一致
+        steps = [
+            ('选择要下载的课程', None),
+            ('设置课程选项', None),
+            ('配置要下载的模块类型', None),
+            ('配置课程描述下载', None),
+            ('配置描述中的链接下载', None),
+        ]
+        return len(steps)
+
     def interactively_acquire_config(self):
         """
         Guides the user through the process of configuring the downloader
@@ -50,9 +65,11 @@ class ConfigWizard:
             ('配置要下载的模块类型', self._select_modules_to_download),
             ('配置课程描述下载', self._select_should_download_descriptions),
             ('配置描述中的链接下载', self._select_should_download_links_in_descriptions),
-            ('配置外部链接文件下载', self._select_should_download_linked_files),
-            ('配置需要 Cookie 的文件下载', self._select_should_download_also_with_cookie),
         ]
+
+        # 自动启用以下功能（不再需要用户单独配置）
+        self.config.set_property('download_also_with_cookie', True)  # Cookie下载
+        self.config.set_property('download_linked_files', True)      # 外部链接文件下载（ffmpeg是必需依赖）
 
         current_step = 0
 
@@ -467,55 +484,55 @@ class ConfigWizard:
         modules = [
             # 评估与作业模块
             ('download_submissions', '作业提交 (Submissions)',
-             'Submissions（提交）是你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。'),
+             '你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。'),
             ('download_quizzes', '测验 (Quizzes)',
              '测验是学生必须完成的在线考试，会被评分。包含题目、答案和成绩。只有正在进行或已完成的测验会被下载。'),
             ('download_lessons', '课程 (Lessons)',
-             'Lessons（课程）是一种自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。'),
+             '自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。'),
             ('download_workshops', '研讨会 (Workshops)',
-             'Workshops（研讨会）按照同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
+             '按同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
 
             # 内容与资源模块
             ('download_books', '书籍 (Books)',
-             'Books（书籍）是页面的集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
+             '页面集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
             ('download_scorms', 'SCORM包 (SCORM)',
-             'SCORM 是电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
+             '电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
             ('download_h5pactivities', 'H5P活动 (H5P Activities)',
-             'H5P 是现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
+             '现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
             ('download_imscps', 'IMS内容包 (IMS Content Package)',
-             'IMS CP 是IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
+             'IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
             ('download_urls', 'URL链接 (URLs)',
-             'URL 模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
+             '模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
             ('download_labels', '标签 (Labels)',
-             'Labels（标签）是课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
+             '课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
 
             # 协作与交流模块
             ('download_forums', '论坛 (Forums)',
              '论坛是学生和老师讨论交流的地方。包含讨论帖、回复、附件和评分信息。'),
             ('download_wikis', '维基 (Wikis)',
-             'Wikis（维基）是协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。'),
+             '协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。'),
             ('download_glossaries', '词汇表 (Glossaries)',
-             'Glossaries（词汇表）用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。'),
+             '用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。'),
             ('download_databases', '数据库 (Databases)',
              '数据库模块允许结构化数据收集和展示。包含数据库结构定义(schema)、所有条目数据、附件和元数据。学生通常可以添加和编辑条目。'),
             ('download_chats', '聊天 (Chats)',
-             'Chat（聊天）模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。'),
+             '模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。'),
 
             # 调查与反馈模块
             ('download_feedbacks', '反馈 (Feedbacks)',
-             'Feedbacks（反馈）是自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。'),
+             '自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。'),
             ('download_surveys', '调查 (Surveys)',
-             'Surveys（调查）是预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。'),
+             '预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。'),
             ('download_choices', '投票/选择 (Choices)',
-             'Choice（投票）是简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。'),
+             '简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。'),
 
             # 其他模块
             ('download_calendars', '日历 (Calendar)',
              '日历包含课程的所有事件和截止日期。每个事件导出为HTML文件，包含详细的事件信息、时间和附件。'),
             ('download_bigbluebuttonbns', 'BigBlueButton会议 (BigBlueButton)',
-             'BigBlueButton 是在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
+             '在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
             ('download_qbanks', '题库 (Question Banks)',
-             'Question Banks（题库）包含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
+             '含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
         ]
 
         # 获取当前配置

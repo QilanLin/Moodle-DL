@@ -72,7 +72,8 @@ class BookMod(MoodleMod):
                 modified_html = self._replace_kaltura_iframes_with_video_tags(print_book_html, video_list)
 
                 # Create the print book HTML file entry
-                html_filename = f"{book_name}.html"
+                # 🔧 避免双重.html扩展名：如果book_name已经以.html结尾就不再添加
+                html_filename = book_name if book_name.endswith('.html') else f"{book_name}.html"
                 book_files.append({
                     'filename': html_filename,
                     'filepath': '/',

@@ -54,7 +54,8 @@ def init_config(config: ConfigHelper, opts: MoodleDlOpts):
     do_config = True
     if do_config:
         print('')
-        Log.info('开始额外配置向导（7个配置步骤）...')
+        steps_count = ConfigWizard.get_config_steps_count()
+        Log.info(f'开始额外配置向导（{steps_count}个配置步骤）...')
         ConfigWizard(config, opts).interactively_acquire_config()
     else:
         print('')
