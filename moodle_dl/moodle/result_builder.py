@@ -378,7 +378,7 @@ class ResultBuilder:
                 # Path will be: section_name/module_name/content_filepath/content_filename
                 file_obj = File(
                     **location,
-                    content_filepath='/',  # Put videos at root of book folder
+                    content_filepath=content_filepath,  # Use filepath from content (e.g., '/691947/')
                     content_filename=content_filename,  # Video name
                     content_fileurl=content_fileurl,  # Kalvidres URL
                     content_filesize=0,
@@ -388,7 +388,7 @@ class ResultBuilder:
                 )
                 files.append(file_obj)
                 kalvidres_count += 1
-                logging.info(f'   Created book-embedded kalvidres file: {content_filename}')
+                logging.info(f'   Created book-embedded kalvidres file: {content_filename} (path: {content_filepath})')
                 continue  # Skip normal file processing for this
 
             if content_fileurl == '' and location['module_modname'].startswith(('url', 'index_mod', 'cookie_mod')):

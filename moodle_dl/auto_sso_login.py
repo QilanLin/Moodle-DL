@@ -69,7 +69,7 @@ def extract_all_cookies_from_browser(
                     'path': cookie.path,
                     'expires': expires_value,
                     'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
-                    'secure': cookie.secure,
+                    'secure': bool(cookie.secure),  # 确保是布尔值，不是整数
                     'sameSite': cookie.get_nonstandard_attr('SameSite', 'Lax') or 'Lax',
                 }
                 all_cookies.append(cookie_dict)
@@ -131,7 +131,7 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
                 'path': cookie.path,
                 'expires': expires_value,
                 'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
-                'secure': cookie.secure,
+                'secure': bool(cookie.secure),  # 确保是布尔值，不是整数
                 'sameSite': cookie.get_nonstandard_attr('SameSite', 'Lax') or 'Lax',
             }
             all_cookies.append(cookie_dict)
