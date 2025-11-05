@@ -93,6 +93,9 @@ class BookMod(MoodleMod):
                     'filesize': len(toc_html),
                 })
 
+                # Track chapters by their ID for later video addition from Print Book
+                chapters_by_id = {}
+
                 # Process each chapter
                 chapter_count = 0
                 for chapter_content in book_contents[1:]:
@@ -109,8 +112,20 @@ class BookMod(MoodleMod):
                     logging.debug(f'   📄 Chapter content (from .get("content")): length={len(chapter_html)} chars')
                     logging.debug(f'   📄 Chapter content first 200 chars: {chapter_html[:200]}')
 
-                    # Extract chapter folder name from filename (e.g., "691961/index.html" -> "691961")
-                    chapter_folder = chapter_filename.split('/')[0] if '/' in chapter_filename else f'Chapter {chapter_count}'
+                    # Extract chapter folder name (chapter ID)
+                    # Try to extract from filename first (e.g., "691961/index.html" -> "691961")
+                    # If filename doesn't contain '/', extract from fileurl (e.g., ".../chapter/691961/index.html" -> "691961")
+                    if '/' in chapter_filename:
+                        chapter_folder = chapter_filename.split('/')[0]
+                    elif chapter_fileurl:
+                        # Extract chapter ID from fileurl: .../chapter/691961/index.html
+                        import re
+                        match = re.search(r'/chapter/(\d+)/', chapter_fileurl)
+                        chapter_folder = match.group(1) if match else f'Chapter {chapter_count}'
+                    else:
+                        chapter_folder = f'Chapter {chapter_count}'
+
+                    logging.debug(f'   📁 Chapter folder: {chapter_folder}')
 
                     # ✅ 如果有 fileurl，下载完整的章节 HTML（包含视频）
                     # Note: The 'content' field only contains the chapter title, not the HTML
@@ -136,7 +151,14 @@ class BookMod(MoodleMod):
                             chapter_count
                         )
 
-                        # Add videos to download list
+                        # Copy chapter_content to modify it
+                        chapter_content = chapter_content.copy()
+
+                        # Initialize 'contents' array if it doesn't exist
+                        if 'contents' not in chapter_content:
+                            chapter_content['contents'] = []
+
+                        # Add videos to chapter's contents array (so they're downloaded to chapter folder)
                         for video_info in chapter_videos:
                             video_entry = {
                                 'filename': video_info['video_filename'],
@@ -148,7 +170,7 @@ class BookMod(MoodleMod):
                                 'mimetype': 'video/mp4',
                                 'entry_id': video_info['entry_id'],
                             }
-                            book_files.append(video_entry)
+                            chapter_content['contents'].append(video_entry)
 
                             # Track for deduplication
                             relative_path = f"{chapter_folder}/{video_info['video_filename']}"
@@ -161,7 +183,6 @@ class BookMod(MoodleMod):
                         )
 
                         # Update chapter content with modified HTML
-                        chapter_content = chapter_content.copy()
                         chapter_content['content'] = modified_chapter_html
                     elif chapter_html != chapter_content.get('content', ''):
                         # 如果下载了新的HTML（即使没有视频），也要更新chapter_content
@@ -169,24 +190,79 @@ class BookMod(MoodleMod):
                         chapter_content = chapter_content.copy()
                         chapter_content['content'] = chapter_html
 
-                    # Add chapter file (HTML + attachments)
-                    book_files.append(chapter_content)
+                    # Save chapter reference - DO NOT add to book_files yet!
+                    # We'll add all chapters after Print Book processing
+                    chapters_by_id[chapter_folder] = chapter_content
 
                 logging.info(f'✅ Processed {chapter_count} chapters with {len(downloaded_videos)} embedded videos')
+            else:
+                # No Mobile API contents, initialize empty dict for Print Book only case
+                chapters_by_id = {}
 
             # 🎯 方案B：然后使用 Playwright 获取完整 Print Book
             logging.info('📖 Step 2: Fetching complete Print Book HTML with Playwright')
             print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
 
             if print_book_html:
-                # Extract videos from print book
+                # Step 2a: 提取章节ID-视频映射
+                chapter_video_mapping = self._extract_chapter_video_mapping_from_print_book(print_book_html)
+                video_to_chapter = self._build_video_to_chapter_mapping(chapter_video_mapping)
+
+                # Step 2b: 提取所有Print Book视频
                 print_book_videos = self._extract_kaltura_videos_from_print_book(print_book_html, book_name)
 
-                # Replace video iframes with links to already-downloaded chapter videos
+                # Step 2c: 检查未下载的视频，添加到章节的contents中
+                for video_info in print_book_videos:
+                    entry_id = video_info['entry_id']
+
+                    if entry_id not in downloaded_videos and entry_id in video_to_chapter:
+                        # 这个视频没有在Mobile API章节中下载，但知道属于哪个章节
+                        chapter_id = video_to_chapter[entry_id]
+
+                        # 检查这个章节是否在chapters_by_id中
+                        if chapter_id in chapters_by_id:
+                            # 计算这是该章节的第几个视频
+                            chapter_videos_list = [eid for eid, cid in video_to_chapter.items() if cid == chapter_id]
+                            video_idx = chapter_videos_list.index(entry_id) + 1
+
+                            # 生成文件名（与Mobile API逻辑一致）
+                            if len(chapter_videos_list) > 1:
+                                video_filename = f"Video {video_idx:02d} ({entry_id}).mp4"
+                            else:
+                                video_filename = f"Video ({entry_id}).mp4"
+
+                            # 添加到章节的contents数组中
+                            video_entry = {
+                                'filename': video_filename,
+                                'filepath': f'/{chapter_id}/',
+                                'fileurl': video_info['lti_launch_url'],
+                                'filesize': 0,
+                                'timemodified': int(time.time()),
+                                'type': 'kalvidres_embedded',
+                                'mimetype': 'video/mp4',
+                                'entry_id': entry_id,
+                            }
+
+                            # Initialize contents if it doesn't exist
+                            if 'contents' not in chapters_by_id[chapter_id]:
+                                chapters_by_id[chapter_id]['contents'] = []
+
+                            chapters_by_id[chapter_id]['contents'].append(video_entry)
+
+                            # 更新已下载映射
+                            chapter_video_path = f"{chapter_id}/{video_filename}"
+                            downloaded_videos[entry_id] = chapter_video_path
+
+                            logging.info(f'   ✅ Added Print Book video to chapter {chapter_id}: {video_filename}')
+                        else:
+                            logging.warning(f'   ⚠️  Chapter {chapter_id} not found for video {entry_id}')
+
+                # Step 2d: 替换Print Book中的视频链接
                 modified_print_book_html = self._replace_print_book_videos_with_chapter_links(
                     print_book_html,
                     print_book_videos,
-                    downloaded_videos
+                    downloaded_videos,
+                    video_to_chapter
                 )
 
                 # Create the print book HTML file entry
@@ -214,6 +290,11 @@ class BookMod(MoodleMod):
                     logging.info(f'📎 Found {new_videos} additional videos in print book')
             else:
                 logging.warning('⚠️  Could not fetch print book HTML, only chapter-based files available')
+
+            # Add all chapters to book_files (after Print Book processing is complete)
+            for chapter_id, chapter_data in chapters_by_id.items():
+                book_files.append(chapter_data)
+                logging.debug(f'   Added chapter {chapter_id} to book_files')
 
             logging.info(f'📚 Book "{book_name}" has {len(book_files)} files total')
             video_count = len([f for f in book_files if f.get('type') == 'kalvidres_embedded'])
@@ -837,8 +918,11 @@ class BookMod(MoodleMod):
 
             entry_id = entry_id_match.group(1)
 
-            # Generate video filename for this chapter
-            video_name = f"{chapter_folder} - Video {idx:02d}" if len(matches) > 1 else f"{chapter_folder} - Video"
+            # Generate video filename (简洁格式，不包含章节ID)
+            if len(matches) > 1:
+                video_name = f"Video {idx:02d}"
+            else:
+                video_name = "Video"
             video_filename = f"{video_name} ({entry_id}).mp4"
 
             video_info = {
@@ -857,30 +941,58 @@ class BookMod(MoodleMod):
         return video_list
 
     def _replace_print_book_videos_with_chapter_links(
-        self, print_book_html: str, print_book_videos: List[Dict], downloaded_videos: Dict[str, str]
+        self, print_book_html: str, print_book_videos: List[Dict], downloaded_videos: Dict[str, str],
+        video_to_chapter: Dict[str, str] = None
     ) -> str:
         """
-        Replace video iframes in print book with links to already-downloaded chapter videos.
+        Replace video iframes in print book with links to chapter videos.
 
         @param print_book_html: Complete print book HTML
         @param print_book_videos: Videos extracted from print book
         @param downloaded_videos: Dict mapping entry_id to relative path of downloaded video
+        @param video_to_chapter: Dict mapping entry_id to chapter_id (optional)
         @return: Modified print book HTML with video links to chapter files
         """
         modified_html = print_book_html
+        video_to_chapter = video_to_chapter or {}
 
         for video_info in print_book_videos:
             entry_id = video_info['entry_id']
             iframe_src = video_info['iframe_src']
 
-            # Check if this video was already downloaded in a chapter
+            # 优先使用已下载的视频路径
             if entry_id in downloaded_videos:
-                # Use the chapter video path
                 chapter_video_path = downloaded_videos[entry_id]
                 video_name = video_info['video_name']
+                logging.debug(f'   Using downloaded video: {chapter_video_path}')
 
-                # Create video tag pointing to chapter video
-                video_tag = f'''<div class="kaltura-video-container" style="max-width: 608px; margin: 20px auto;">
+            elif entry_id in video_to_chapter:
+                # 虽然没下载，但知道属于哪个章节，生成路径
+                chapter_id = video_to_chapter[entry_id]
+
+                # 计算这是该章节的第几个视频
+                chapter_videos_list = [eid for eid, cid in video_to_chapter.items() if cid == chapter_id]
+                video_idx = chapter_videos_list.index(entry_id) + 1
+
+                # 生成文件名（与Mobile API逻辑一致）
+                if len(chapter_videos_list) > 1:
+                    video_filename = f"Video {video_idx:02d} ({entry_id}).mp4"
+                    video_name = f"Video {video_idx:02d}"
+                else:
+                    video_filename = f"Video ({entry_id}).mp4"
+                    video_name = "Video"
+
+                chapter_video_path = f"{chapter_id}/{video_filename}"
+                logging.debug(f'   Generated path for unmapped video: {chapter_video_path}')
+            else:
+                # 无法确定章节，使用根目录路径
+                video_filename = f"Video ({entry_id}).mp4"
+                chapter_video_path = video_filename
+                video_name = "Video"
+                logging.warning(f'⚠️  Cannot determine chapter for video {entry_id}, using root path')
+
+            # 创建HTML5 video标签
+            video_tag = f'''<div class="kaltura-video-container" style="max-width: 608px; margin: 20px auto;">
     <video controls style="width: 100%; max-width: 608px; height: auto;" preload="metadata">
         <source src="{chapter_video_path}" type="video/mp4">
         <p>Your browser does not support HTML5 video. <a href="{chapter_video_path}">Download the video</a> instead.</p>
@@ -888,19 +1000,88 @@ class BookMod(MoodleMod):
     <p style="text-align: center; font-size: 0.9em; color: #666; margin-top: 10px;">{video_name}</p>
 </div>'''
 
-                # Replace iframe
-                iframe_pattern = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*>.*?</iframe>'
-                if re.search(iframe_pattern, modified_html, re.DOTALL):
-                    modified_html = re.sub(iframe_pattern, video_tag, modified_html, flags=re.DOTALL)
-                    logging.debug(f'✅ Linked print book video to chapter file: {chapter_video_path}')
-                else:
-                    # Try self-closing
-                    iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
-                    if re.search(iframe_pattern_selfclose, modified_html):
-                        modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
-                        logging.debug(f'✅ Linked print book video to chapter file: {chapter_video_path}')
+            # 替换iframe
+            iframe_pattern = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*>.*?</iframe>'
+            if re.search(iframe_pattern, modified_html, re.DOTALL):
+                modified_html = re.sub(iframe_pattern, video_tag, modified_html, flags=re.DOTALL)
+                logging.debug(f'✅ Replaced iframe with video: {chapter_video_path}')
             else:
-                logging.warning(f'⚠️  Video {entry_id} in print book not found in chapters, keeping iframe')
+                # Try self-closing iframe
+                iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
+                if re.search(iframe_pattern_selfclose, modified_html):
+                    modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
+                    logging.debug(f'✅ Replaced iframe with video: {chapter_video_path}')
 
-        logging.info(f'✅ Linked {len(downloaded_videos)} print book videos to chapter files')
+        logging.info(f'✅ Replaced {len(print_book_videos)} video iframe(s) in print book')
         return modified_html
+
+    def _extract_chapter_video_mapping_from_print_book(self, html_content: str) -> Dict[str, List[str]]:
+        """
+        从Print Book HTML提取章节ID与视频entry_id的映射
+
+        Print Book HTML结构示例：
+        <div class="book_chapter" id="ch691947">
+            <h2>2. Week Overview</h2>
+            <iframe src="...entryid/1_er5gtb0g..."></iframe>
+        </div>
+
+        @param html_content: Print Book完整HTML
+        @return: {chapter_id: [entry_id1, entry_id2, ...]}
+        """
+        chapter_video_mapping = {}
+
+        # 🔍 DEBUG: 保存Print Book HTML用于调试
+        import os
+        import tempfile
+        debug_file = os.path.join(tempfile.gettempdir(), 'print_book_debug.html')
+        try:
+            with open(debug_file, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            logging.debug(f'🔍 Saved Print Book HTML to: {debug_file}')
+        except:
+            pass
+
+        # 匹配每个章节div及其内容
+        # 注意：class可能是 "book_chapter pt-3" 等，需要匹配包含 book_chapter 的class
+        # 使用更宽松的匹配：找到包含 book_chapter 的div，提取ID，然后匹配到下一个 book_chapter div 或者文档结束
+        chapter_pattern = r'<div[^>]*class="[^"]*book_chapter[^"]*"[^>]*id="ch(\d+)"[^>]*>(.*?)(?=<div[^>]*class="[^"]*book_chapter|$)'
+
+        matches = list(re.finditer(chapter_pattern, html_content, re.DOTALL))
+        logging.debug(f'🔍 Found {len(matches)} chapter divs in Print Book HTML (pattern: class contains "book_chapter")')
+
+        for match in matches:
+            chapter_id = match.group(1)  # "691947"
+            chapter_html = match.group(2)
+
+            # 在这个章节的HTML中查找所有Kaltura视频entry_id
+            # 注意：URL可能被编码了（%2Fentryid%2F），需要先解码
+            import urllib.parse
+            chapter_html_decoded = urllib.parse.unquote(chapter_html)
+
+            video_pattern = r'/entryid/([^/"\s]+)'
+            video_entry_ids = re.findall(video_pattern, chapter_html_decoded)
+
+            if video_entry_ids:
+                chapter_video_mapping[chapter_id] = video_entry_ids
+                logging.debug(f'   Chapter {chapter_id}: found {len(video_entry_ids)} video(s)')
+            else:
+                logging.debug(f'   Chapter {chapter_id}: no videos found')
+
+        logging.info(f'📊 Extracted video mapping for {len(chapter_video_mapping)} chapters from Print Book')
+        return chapter_video_mapping
+
+    def _build_video_to_chapter_mapping(self, chapter_video_mapping: Dict[str, List[str]]) -> Dict[str, str]:
+        """
+        建立视频entry_id到章节ID的反向映射
+
+        @param chapter_video_mapping: {chapter_id: [entry_id1, entry_id2]}
+        @return: {entry_id: chapter_id}
+        """
+        video_to_chapter = {}
+
+        for chapter_id, entry_ids in chapter_video_mapping.items():
+            for entry_id in entry_ids:
+                video_to_chapter[entry_id] = chapter_id
+
+        logging.debug(f'   Built reverse mapping for {len(video_to_chapter)} videos')
+        return video_to_chapter
