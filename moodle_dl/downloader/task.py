@@ -401,9 +401,11 @@ class Task:
         if self.file.content_type == 'description-url':
             filename_template = '%(title).180B (%(id).32B).%(ext)s'
         else:
-            filename_template = (
-                PT.truncate_filename(self.filename, is_file=True, max_length=90) + ' - %(title).90B (%(id).32B).%(ext)s'
-            )
+            # For kalvidres and other videos, use the Moodle-provided filename directly
+            # This produces clean names like "fun 1 (21 mins).mp4" instead of "fun 1 (21 mins) - 08-fun1 (1_p3fpdw24).mp4"
+            # Remove extension from filename and let yt-dlp add it automatically
+            base_name = os.path.splitext(self.filename)[0]  # Remove .mp4 if present
+            filename_template = PT.truncate_filename(base_name, is_file=False, max_length=240) + '.%(ext)s'
         output_template = str(Path(self.destination) / filename_template)
 
         ydl_opts = {
