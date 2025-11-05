@@ -105,8 +105,24 @@ class ResultBuilder:
                 mod = fetched_mods.get(location['module_modname'], {}).get(location['module_id'], {})
                 mod['on_main_page'] = True
                 mod_files = mod.get('files', [])
+
+                # 🔍 DEBUG: Log book module file usage
+                if location['module_modname'] == 'book':
+                    logging.info(f'🔍 [ResultBuilder] Using files from book module for "{location["module_name"]}" (module_id={location["module_id"]})')
+                    logging.info(f'🔍 [ResultBuilder]   Found {len(mod_files)} files in fetched_mods')
+                    if location['module_id'] not in fetched_mods.get('book', {}):
+                        logging.warning(f'⚠️  Module ID {location["module_id"]} NOT in fetched_mods["book"]!')
+                        logging.warning(f'⚠️  Available module IDs: {list(fetched_mods.get("book", {}).keys())}')
+
                 files += self._handle_files(mod_files, **location)
             else:
+                # 🔍 DEBUG: Log if book module is not in fetched_mods
+                if location['module_modname'] == 'book':
+                    logging.warning(f'⚠️  [ResultBuilder] Book module "{location["module_name"]}" NOT in fetched_mods!')
+                    logging.warning(f'⚠️  [ResultBuilder]   module_id={location["module_id"]}, modname={location["module_modname"]}')
+                    logging.warning(f'⚠️  [ResultBuilder]   Available mods: {list(fetched_mods.keys())}')
+                    logging.warning(f'⚠️  [ResultBuilder]   module_contents count: {len(module_contents)}')
+
                 if location['module_modname'] not in ['label']:
                     logging.debug(
                         'Got unhandled module: name=%s mod=%s url=%s',

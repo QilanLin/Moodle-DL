@@ -26,21 +26,28 @@ class BookMod(MoodleMod):
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
 
+        logging.info('🔍 [DEBUG] BookMod.real_fetch_mod_entries() CALLED')
+
         result = {}
         if not self.config.get_download_books():
+            logging.info('🔍 [DEBUG] download_books is FALSE, returning empty result')
             return result
 
+        logging.info('🔍 [DEBUG] Calling mod_book_get_books_by_courses API...')
         books = (
             await self.client.async_post(
                 'mod_book_get_books_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
         ).get('books', [])
 
+        logging.info(f'🔍 [DEBUG] API returned {len(books)} books')
+
         for book in books:
             course_id = book.get('course', 0)
             module_id = book.get('coursemodule', 0)
             book_name = book.get('name', 'unnamed book')
 
+            logging.info(f'🔍 [DEBUG] Processing book: "{book_name}" (course_id={course_id}, module_id={module_id})')
             logging.info(f'📚 Processing book: "{book_name}" (module_id={module_id})')
 
             # Initialize book files list
@@ -95,8 +102,31 @@ class BookMod(MoodleMod):
                     chapter_html = chapter_content.get('content', '')
                     chapter_filename = chapter_content.get('filename', f'chapter_{chapter_count}')
 
+                    # 🔍 DEBUG: Log chapter data to understand Mobile API
+                    chapter_fileurl = chapter_content.get('fileurl', '')
+                    logging.debug(f'   📄 Chapter {chapter_count} filename: {chapter_filename}')
+                    logging.debug(f'   📄 Chapter fileurl: {chapter_fileurl[:100] if chapter_fileurl else "NONE"}')
+                    logging.debug(f'   📄 Chapter content (from .get("content")): length={len(chapter_html)} chars')
+                    logging.debug(f'   📄 Chapter content first 200 chars: {chapter_html[:200]}')
+
                     # Extract chapter folder name from filename (e.g., "691961/index.html" -> "691961")
                     chapter_folder = chapter_filename.split('/')[0] if '/' in chapter_filename else f'Chapter {chapter_count}'
+
+                    # ✅ 如果有 fileurl，下载完整的章节 HTML（包含视频）
+                    # Note: The 'content' field only contains the chapter title, not the HTML
+                    # We need to download the actual HTML from the fileurl
+                    if chapter_fileurl and chapter_filename.endswith('.html'):
+                        try:
+                            logging.debug(f'   🔽 Downloading chapter HTML from fileurl...')
+                            full_chapter_html = await self._fetch_chapter_html(chapter_fileurl)
+
+                            if full_chapter_html:
+                                logging.debug(f'   ✅ Downloaded {len(full_chapter_html)} chars of HTML')
+                                chapter_html = full_chapter_html  # 使用下载的完整HTML
+                            else:
+                                logging.debug(f'   ⚠️  Downloaded HTML is empty')
+                        except Exception as e:
+                            logging.warning(f'   ⚠️  Failed to download chapter HTML: {e}')
 
                     # Extract videos from chapter HTML
                     if chapter_html:
@@ -133,6 +163,11 @@ class BookMod(MoodleMod):
                         # Update chapter content with modified HTML
                         chapter_content = chapter_content.copy()
                         chapter_content['content'] = modified_chapter_html
+                    elif chapter_html != chapter_content.get('content', ''):
+                        # 如果下载了新的HTML（即使没有视频），也要更新chapter_content
+                        logging.debug(f'   📝 Updating chapter content with downloaded HTML')
+                        chapter_content = chapter_content.copy()
+                        chapter_content['content'] = chapter_html
 
                     # Add chapter file (HTML + attachments)
                     book_files.append(chapter_content)
@@ -185,16 +220,26 @@ class BookMod(MoodleMod):
             if video_count > 0:
                 logging.info(f'   Including {video_count} embedded Kaltura videos')
 
+            module_data = {
+                'id': book.get('id', 0),
+                'name': book_name,
+                'files': book_files,
+            }
+
+            logging.info(f'🔍 [DEBUG] Adding book to result: course_id={course_id}, module_id={module_id}, files_count={len(book_files)}')
+
             self.add_module(
                 result,
                 course_id,
                 module_id,
-                {
-                    'id': book.get('id', 0),
-                    'name': book_name,
-                    'files': book_files,
-                },
+                module_data,
             )
+
+        logging.info(f'🔍 [DEBUG] Returning result with {len(result)} courses')
+        for cid, modules in result.items():
+            logging.info(f'🔍 [DEBUG]   Course {cid}: {len(modules)} book modules')
+            for mid in modules.keys():
+                logging.info(f'🔍 [DEBUG]     Module ID: {mid}')
 
         return result
 
@@ -350,92 +395,12 @@ class BookMod(MoodleMod):
 
         return video_files
 
-    # Note: _convert_netscape_cookies_to_playwright() has been removed.
-    # Use the global function from cookie_manager instead:
-    # from moodle_dl.cookie_manager import convert_netscape_cookies_to_playwright
+    # Note: Cookies auto-refresh logic is now integrated directly into _fetch_print_book_html()
+    # using the retry_count parameter. This follows DRY principle by reusing CookieManager.
 
-    async def _handle_expired_cookies_and_retry(self, module_id: int, print_book_url: str) -> Tuple[str, str]:
-        """
-        Handle expired cookies by attempting to auto-refresh and retry.
-
-        使用全局CookieManager来刷新cookies，遵循DRY原则。
-
-        @param module_id: The course module ID of the book
-        @param print_book_url: The print book URL that failed
-        @return: Tuple of (HTML content, URL) if retry succeeds, or ('', '') if fails
-        """
-        from moodle_dl.utils import Log
-        from moodle_dl.cookie_manager import create_cookie_manager_from_client, convert_netscape_cookies_to_playwright
-
-        try:
-            # 使用全局CookieManager刷新cookies
-            cookie_manager = create_cookie_manager_from_client(self.client, self.config)
-
-            if not cookie_manager.refresh_cookies(auto_get_token=False):
-                # Refresh failed, instructions already shown by CookieManager
-                return '', ''
-
-            # Retry the download with fresh cookies
-            from playwright.async_api import async_playwright
-
-            playwright_cookies = convert_netscape_cookies_to_playwright(cookie_manager.cookies_path)
-
-            if not playwright_cookies:
-                Log.warning('⚠️  转换cookies失败')
-                return '', ''
-
-            async with async_playwright() as p:
-                browser = await p.firefox.launch(headless=True)
-                context = await browser.new_context(
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='en-GB',
-                    timezone_id='Europe/London',
-                    accept_downloads=False,
-                    ignore_https_errors=False,
-                )
-                await context.add_cookies(playwright_cookies)
-                page = await context.new_page()
-
-                try:
-                    response = await page.goto(print_book_url, wait_until='networkidle', timeout=60000)
-
-                    if not response:
-                        await browser.close()
-                        return '', ''
-
-                    current_url = page.url
-                    html_content = await page.content()
-
-                    # Check again if we're redirected (cookies still invalid)
-                    from moodle_dl.cookie_manager import CookieManager
-                    if CookieManager.is_cookie_expired_response(current_url, html_content):
-                        Log.warning('⚠️  重试后仍被重定向，cookies可能需要手动刷新')
-                        Log.info('   请确保你在浏览器中已登录Moodle，然后运行: moodle-dl --config')
-                        await browser.close()
-                        return '', ''
-
-                    # Check if we got book content
-                    if 'book_chapter' in html_content or 'book p-4' in html_content:
-                        Log.success('✅ 重试成功！已获取print book内容')
-                        await browser.close()
-                        return html_content, print_book_url
-                    else:
-                        Log.warning('⚠️  重试后仍未获取到book内容')
-                        await browser.close()
-                        return '', ''
-
-                except Exception as retry_error:
-                    logging.error(f'❌ 重试时出错: {retry_error}')
-                    await browser.close()
-                    return '', ''
-
-        except Exception as e:
-            logging.error(f'❌ 自动刷新cookies时出错: {e}')
-            Log.warning('⚠️  请手动重新导出cookies: moodle-dl --config （选择步骤7）')
-            return '', ''
-
-    async def _fetch_print_book_html(self, module_id: int, course_id: int) -> Tuple[str, str]:
+    async def _fetch_print_book_html(
+        self, module_id: int, course_id: int, retry_count: int = 0
+    ) -> Tuple[str, str]:
         """
         Fetch the complete print book HTML from Moodle's print book tool using Playwright.
 
@@ -445,8 +410,13 @@ class BookMod(MoodleMod):
         Uses Playwright instead of simple HTTP requests because print book tool requires
         full browser session with SSO cookies.
 
+        自动刷新机制：
+        - 如果检测到 cookies 过期（timeout 或重定向到登录页），会自动刷新 cookies
+        - 然后重试一次（最多重试1次）
+
         @param module_id: The course module ID of the book
         @param course_id: The course ID (used to initialize session)
+        @param retry_count: Internal parameter for retry logic (0 = first attempt, 1 = retry)
         @return: Tuple of (HTML content as string, base URL for resolving relative links)
         """
         try:
@@ -528,22 +498,22 @@ class BookMod(MoodleMod):
                         cookie_header = headers.get('cookie', '')
                         has_moodle_session = 'MoodleSession' in cookie_header
 
-                        # 只详细记录第一个请求
+                        # 只详细记录第一个请求（包括 MoodleSession 值）
                         if not first_request_logged[0]:
                             logging.debug(f'🔍 第一个HTTP请求: {request.url[:100]}')
                             logging.debug(f'🔍 Cookie header长度: {len(cookie_header)} 字符')
                             logging.debug(f'🔍 Cookie header有MoodleSession: {has_moodle_session}')
                             if cookie_header:
                                 logging.debug(f'🔍 Cookie header完整内容: {cookie_header[:500]}')
+
+                                # 显示MoodleSession的值
+                                if has_moodle_session:
+                                    for part in cookie_header.split('; '):
+                                        if 'MoodleSession' in part:
+                                            logging.debug(f'🔍 Cookie值: {part}')
                             else:
                                 logging.debug(f'🔍 ❌ Cookie header为空！')
                             first_request_logged[0] = True
-
-                        if has_moodle_session:
-                            # 显示MoodleSession部分
-                            for part in cookie_header.split('; '):
-                                if 'MoodleSession' in part:
-                                    logging.debug(f'🔍 Cookie值: {part}')
 
                 page.on('request', log_request)
 
@@ -552,7 +522,9 @@ class BookMod(MoodleMod):
                     # 这可以确保cookies被正确激活并且session状态正确
                     course_url = f"https://{self.client.moodle_url.domain}/course/view.php?id={course_id}"
                     logging.debug(f'🔧 首先访问课程主页来初始化session: {course_url}')
-                    init_response = await page.goto(course_url, wait_until='networkidle', timeout=60000)
+                    # 使用 domcontentloaded 而不是 load - 只等DOM加载，不等所有资源
+                    # 这样可以避免被第三方tracking scripts阻塞
+                    init_response = await page.goto(course_url, wait_until='domcontentloaded', timeout=60000)
                     if init_response:
                         logging.debug(f'✅ 课程主页访问成功: {page.url}')
 
@@ -569,7 +541,8 @@ class BookMod(MoodleMod):
 
                     # Navigate to print book page
                     logging.debug(f'🔧 现在访问Print Book页面: {print_book_url}')
-                    response = await page.goto(print_book_url, wait_until='networkidle', timeout=60000)
+                    # 使用 domcontentloaded - 只等DOM加载，避免第三方资源阻塞
+                    response = await page.goto(print_book_url, wait_until='domcontentloaded', timeout=60000)
 
                     if not response:
                         logging.error(f'❌ No response from print book URL')
@@ -619,23 +592,46 @@ class BookMod(MoodleMod):
                     logging.debug(f'🔍 内容检测 - guest user: {has_guest_user}, not logged in: {has_not_logged_in}')
                     logging.debug(f'🔍 内容检测 - login required: {has_login_required}, auth required: {has_auth_required}, session expired: {has_session_expired}')
 
-                    # 特殊处理：重定向到enrol页面通常意味着没有权限，而不是cookies过期
-                    if 'enrol/index.php' in current_url.lower():
-                        logging.warning(f'⚠️  无法访问Print Book：被重定向到课程注册页面')
-                        logging.warning(f'⚠️  可能原因：')
-                        logging.warning(f'     1. 课程已结束，Print Book功能被禁用')
-                        logging.warning(f'     2. 你的账号没有访问Print Book的权限')
-                        logging.warning(f'     3. Print Book工具在此课程中未启用')
-                        logging.info(f'ℹ️  将使用章节下载模式作为替代方案')
-                        await browser.close()
-                        return '', ''
-
+                    # 检测是否被重定向（cookies过期或权限问题）
                     if CookieManager.is_cookie_expired_response(current_url, html_content):
-                        logging.warning(f'⚠️  Cookies已过期 - 尝试自动刷新')
-                        logging.warning(f'⚠️  触发原因: URL包含过期标记或内容包含过期关键词')
+                        is_enrol_page = 'enrol/index.php' in current_url.lower()
+
+                        logging.warning(f'⚠️  检测到重定向到：{current_url}')
                         await browser.close()
-                        # Try to auto-refresh cookies using global mechanism
-                        return await self._handle_expired_cookies_and_retry(module_id, print_book_url)
+
+                        # 🔄 自动刷新 cookies 并重试（仅第一次失败时）
+                        if retry_count == 0:
+                            if is_enrol_page:
+                                logging.info('🔍 检测到重定向到enrol页面 - 可能是cookies过期或权限问题')
+                            else:
+                                logging.info('🔍 检测到重定向到登录页面 - cookies已过期')
+
+                            logging.info('🔄 尝试自动刷新cookies并重试...')
+
+                            # 使用 CookieManager 刷新 cookies（复用现有机制，符合DRY原则）
+                            from moodle_dl.cookie_manager import create_cookie_manager_from_client
+                            cookie_manager = create_cookie_manager_from_client(self.client, self.config)
+
+                            if cookie_manager.refresh_cookies(auto_get_token=False):
+                                logging.info('✅ Cookies刷新成功，正在重试Print Book下载...')
+                                # 递归调用自己，retry_count = 1 确保只重试一次
+                                return await self._fetch_print_book_html(module_id, course_id, retry_count=1)
+                            else:
+                                logging.warning('⚠️  自动刷新cookies失败，请手动操作')
+                                return '', ''
+                        else:
+                            # 重试后仍然失败 - 区分是权限问题还是cookies问题
+                            if is_enrol_page:
+                                logging.warning('⚠️  刷新cookies后仍被重定向到enrol页面')
+                                logging.warning('⚠️  这可能是真正的权限/课程访问问题：')
+                                logging.warning('     1. 课程已结束，Print Book功能被禁用')
+                                logging.warning('     2. 你的账号没有访问此课程的权限')
+                                logging.warning('     3. Print Book工具在此课程中未启用')
+                                logging.info('ℹ️  将使用章节下载模式作为替代方案')
+                            else:
+                                logging.error('❌ 刷新cookies后仍被重定向到登录页面')
+                                logging.info('💡 请确保在浏览器中已登录Moodle，然后重新导出cookies')
+                            return '', ''
 
                     # Check if we got the actual book content
                     if 'book_chapter' not in html_content and 'book p-4' not in html_content:
@@ -660,7 +656,44 @@ class BookMod(MoodleMod):
                 except Exception as page_error:
                     logging.error(f'❌ Error while loading page: {page_error}')
                     await browser.close()
-                    return '', ''
+
+                    # Check if this might be a timeout/expired cookies issue
+                    error_str = str(page_error).lower()
+                    is_timeout_error = 'timeout' in error_str
+
+                    # 🔄 自动刷新 cookies 并重试（仅第一次失败时）
+                    if is_timeout_error and retry_count == 0:
+                        logging.warning(f'⚠️  检测到超时 - cookies可能已过期')
+                        logging.info('🔄 尝试自动刷新cookies并重试...')
+
+                        # 使用 CookieManager 刷新 cookies（复用现有机制，符合DRY原则）
+                        from moodle_dl.cookie_manager import create_cookie_manager_from_client
+                        cookie_manager = create_cookie_manager_from_client(self.client, self.config)
+
+                        if cookie_manager.refresh_cookies(auto_get_token=False):
+                            logging.info('✅ Cookies刷新成功，正在重试Print Book下载...')
+
+                            # 递归调用自己，retry_count = 1 确保只重试一次
+                            return await self._fetch_print_book_html(module_id, course_id, retry_count=1)
+                        else:
+                            logging.warning('⚠️  自动刷新cookies失败')
+                            logging.info('')
+                            logging.info('🔧 请手动刷新cookies：')
+                            logging.info('   方法1: moodle-dl --init --sso')
+                            logging.info('   方法2: 在config.json中添加 "preferred_browser": "firefox"')
+                            logging.info('')
+                            return '', ''
+                    elif is_timeout_error and retry_count > 0:
+                        # 重试后仍然失败
+                        logging.error('❌ 刷新cookies后仍然超时，Print Book下载失败')
+                        logging.info('💡 可能的原因：')
+                        logging.info('   1. 浏览器cookies本身已过期（请重新登录Moodle）')
+                        logging.info('   2. Print Book页面加载确实很慢')
+                        logging.info('   3. 网络连接问题')
+                        return '', ''
+                    else:
+                        # 非超时错误，直接返回
+                        return '', ''
 
         except Exception as e:
             logging.error(f'❌ Exception while fetching print book HTML with Playwright: {e}')

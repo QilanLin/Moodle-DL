@@ -53,35 +53,111 @@ class CookieManager:
             Log.error(f'❌ 加载export_browser_cookies模块失败: {e}')
             return None
 
-    def refresh_cookies(self, auto_get_token: bool = False) -> bool:
+    def refresh_cookies(self, auto_get_token: bool = False, use_auto_sso: bool = True) -> bool:
         """
-        自动刷新cookies - 从浏览器重新导出
+        自动刷新cookies - 智能选择刷新方式
 
-        这是一个通用函数，可以被任何模块调用来刷新过期的cookies。
+        刷新策略：
+        1. 优先使用自动 SSO 登录（use_auto_sso=True时）
+           - 从浏览器读取 SSO cookies（Microsoft/Google等）
+           - 使用 Playwright 有头浏览器自动完成 SSO 登录
+           - 获取新的 MoodleSession cookie
+           - 完全自动化，无需用户干预
+
+        2. 回退到从浏览器导出（如果自动 SSO 失败）
+           - 直接读取浏览器 cookie 数据库
+           - 需要用户在浏览器中保持登录状态
 
         @param auto_get_token: 是否同时刷新API token (默认False，仅刷新cookies)
+        @param use_auto_sso: 是否使用自动 SSO 登录（默认True）
         @return: 成功返回True，失败返回False
         """
         Log.warning('🔄 检测到cookies已过期，尝试自动刷新...')
 
+        # 检查用户配置的首选浏览器
+        # 使用 get_property_or() 避免 KeyError
+        preferred_browser = self.config.get_property_or('preferred_browser', 'firefox')
+
+        # 1. 优先尝试自动 SSO 登录（完全自动化）
+        # 但需要检查是否已经在事件循环中（如在 Playwright 上下文中）
+        if use_auto_sso:
+            # 检测是否已经在事件循环中运行
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                # 已经在事件循环中（如 Playwright），使用 async 版本
+                Log.info('💡 检测到正在运行中的事件循环')
+                Log.info('🚀 使用异步 SSO 自动登录刷新cookies...')
+                Log.info('   （只要 SSO cookies 有效，无需手动操作）')
+
+                try:
+                    # 在已运行的事件循环中，需要使用 asyncio.create_task
+                    # 但由于当前函数不是 async，我们需要用线程池来运行
+                    import concurrent.futures
+                    from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+
+                    # 使用线程池在后台运行同步版本（它会创建新的事件循环）
+                    with concurrent.futures.ThreadPoolExecutor() as executor:
+                        future = executor.submit(
+                            auto_login_with_sso_sync,
+                            self.moodle_domain,
+                            self.cookies_path,
+                            preferred_browser,
+                            True  # headless
+                        )
+                        success = future.result()
+
+                    if success:
+                        Log.success('✅ SSO 自动登录成功！Cookies已刷新')
+                        return True
+                    else:
+                        Log.info('💡 SSO 登录失败，尝试从浏览器读取cookies...')
+
+                except Exception as e:
+                    Log.debug(f'SSO 登录出错: {e}')
+                    Log.info('💡 回退到从浏览器读取cookies...')
+
+            except RuntimeError:
+                # 没有运行中的事件循环，可以使用 SSO 自动登录
+                Log.info('🚀 尝试使用自动 SSO 登录刷新cookies...')
+                Log.info('   （只要 SSO cookies 有效，无需手动操作）')
+
+                try:
+                    from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+
+                    success = auto_login_with_sso_sync(
+                        moodle_domain=self.moodle_domain,
+                        cookies_path=self.cookies_path,
+                        preferred_browser=preferred_browser,
+                        headless=True  # 使用无头模式（后台运行）
+                    )
+
+                    if success:
+                        Log.success('✅ 自动 SSO 登录成功！Cookies已刷新')
+                        return True
+                    else:
+                        Log.info('💡 自动 SSO 登录失败，尝试从浏览器读取cookies...')
+
+                except Exception as e:
+                    Log.debug(f'自动 SSO 登录出错: {e}')
+                    Log.info('💡 回退到从浏览器读取cookies...')
+
+        # 2. 回退：从浏览器读取 cookies
         export_module = self._load_export_module()
         if not export_module:
             self._show_manual_refresh_instructions()
             return False
 
-        # 检查用户配置的首选浏览器
-        preferred_browser = self.config.get_property('preferred_browser')
-
         try:
             if preferred_browser:
-                Log.info(f'📤 正在从{preferred_browser}导出新的cookies...')
+                Log.info(f'📤 正在从{preferred_browser}导出cookies...')
                 success = export_module.export_cookies_from_browser(
                     domain=self.moodle_domain,
                     output_file=self.cookies_path,
-                    browser=preferred_browser
+                    browser_name=preferred_browser
                 )
             else:
-                Log.info('📤 正在从浏览器自动导出新的cookies...')
+                Log.info('📤 正在从浏览器自动导出cookies...')
                 Log.info('   💡 提示：在config.json中设置 "preferred_browser" 可加快导出速度')
                 success = export_module.export_cookies_interactive(
                     domain=self.moodle_domain,
@@ -205,6 +281,9 @@ def convert_netscape_cookies_to_playwright(cookies_path: str) -> list:
                 # MoodleSession必须是httpOnly cookie
                 is_http_only = True
 
+            # 🔧 确保secure字段是布尔值（Firefox可能返回0或1）
+            is_secure = bool(cookie.secure) if cookie.secure is not None else False
+
             playwright_cookie = {
                 'name': cookie.name,
                 'value': cookie.value,
@@ -212,7 +291,7 @@ def convert_netscape_cookies_to_playwright(cookies_path: str) -> list:
                 'path': cookie.path,
                 'expires': expires_value,
                 'httpOnly': is_http_only,
-                'secure': cookie.secure,
+                'secure': is_secure,
                 'sameSite': cookie.get_nonstandard_attr('SameSite', 'Lax') or 'Lax',
             }
             playwright_cookies.append(playwright_cookie)

@@ -87,10 +87,74 @@ def find_browser_cookie_path(browser_name: str) -> str:
     return None
 
 
+def _repair_firefox_cookies_db():
+    """
+    修复Firefox的cookies.sqlite数据库
+
+    如果主文件不存在或损坏，自动从.bak备份恢复
+    这解决了Firefox关闭后WAL文件无法合并的问题
+    """
+    import platform
+    import os
+
+    system = platform.system()
+
+    # 获取Firefox Profile路径
+    if system == 'Darwin':  # macOS
+        profile_base = os.path.expanduser('~/Library/Application Support/Firefox/Profiles')
+    elif system == 'Linux':
+        profile_base = os.path.expanduser('~/.mozilla/firefox')
+    elif system == 'Windows':
+        profile_base = os.path.join(os.getenv('APPDATA', ''), 'Mozilla', 'Firefox', 'Profiles')
+    else:
+        return False
+
+    if not os.path.exists(profile_base):
+        return False
+
+    # 找到default或default-release profile
+    for profile_dir in os.listdir(profile_base):
+        if 'default' not in profile_dir.lower():
+            continue
+
+        profile_path = os.path.join(profile_base, profile_dir)
+        cookies_main = os.path.join(profile_path, 'cookies.sqlite')
+        cookies_bak = os.path.join(profile_path, 'cookies.sqlite.bak')
+        cookies_wal = os.path.join(profile_path, 'cookies.sqlite-wal')
+
+        # 检查是否需要修复
+        main_exists = os.path.exists(cookies_main) and os.path.getsize(cookies_main) > 0
+        bak_exists = os.path.exists(cookies_bak) and os.path.getsize(cookies_bak) > 1024  # > 1KB
+
+        if not main_exists and bak_exists:
+            # 主文件不存在或为空，但有有效的备份
+            try:
+                import shutil
+                shutil.copy(cookies_bak, cookies_main)
+
+                # 清理WAL文件（可能为空或损坏）
+                if os.path.exists(cookies_wal):
+                    os.remove(cookies_wal)
+
+                return True
+            except Exception as e:
+                continue
+
+    return False
+
+
 def export_cookies_from_browser(domain: str, output_file: str, browser_name='chrome'):
     """从指定浏览器导出 cookies"""
 
     print(f"正在从 {browser_name} 导出 cookies...")
+
+    # Firefox特殊处理：尝试修复数据库
+    if browser_name.lower() == 'firefox':
+        try:
+            if _repair_firefox_cookies_db():
+                print(f"  ℹ️  已自动修复Firefox cookies数据库")
+        except Exception as e:
+            pass  # 静默处理，如果修复失败就继续用browser_cookie3的默认逻辑
 
     try:
         # 定义浏览器到 browser_cookie3 方法的映射
@@ -227,7 +291,31 @@ def export_cookies_from_browser(domain: str, output_file: str, browser_name='chr
         return True
 
     except Exception as e:
-        print(f"❌ 导出失败: {e}")
+        error_msg = str(e)
+        print(f"❌ 导出失败: {error_msg}")
+
+        # 针对Firefox特定错误提供详细的解决方案
+        if 'Failed to find Firefox cookie file' in error_msg or \
+           ('firefox' in browser_name.lower() and 'cookie' in error_msg.lower()):
+            print(f"\n💡 Firefox Cookie 导出失败的常见原因与解决方案：")
+            print(f"   1. Firefox 正在运行（最常见）")
+            print(f"      → 解决：关闭 Firefox 后重试")
+            print(f"         命令：killall Firefox && sleep 3")
+            print(f"   2. Firefox cookies.sqlite 数据库损坏")
+            print(f"      → Firefox 会自动创建 cookies.sqlite.bak 备份")
+            print(f"      → moodle-dl 现在可以自动从备份恢复")
+            print(f"      → 重新运行此命令应该可以成功")
+            print(f"   3. WAL 文件异常")
+            print(f"      → 关闭 Firefox 会清理 WAL 文件")
+            print(f"      → 或手动删除：rm ~/Library/Application\\ Support/Firefox/Profiles/*/cookies.sqlite-wal")
+            print(f"   4. Firefox 从未运行过或 Profile 损坏")
+            print(f"      → 至少运行一次 Firefox 并访问 {domain}")
+            print(f"\n⚠️  推荐步骤：")
+            print(f"   1. killall Firefox  # 关闭 Firefox")
+            print(f"   2. sleep 3          # 等待系统清理")
+            print(f"   3. moodle-dl        # 重新运行此命令")
+            print(f"\n   或者选择其他浏览器（Chrome/Edge/Safari）")
+
         return False
 
 def test_cookies(domain: str, cookies_file: str):
@@ -386,128 +474,9 @@ def save_playwright_cookies_to_netscape(playwright_cookies: list, output_file: s
         return False
 
 
-def auto_refresh_session_with_sso(domain: str, cookies_file: str, browser='firefox') -> bool:
-    """
-    利用现有SSO cookies自动刷新Moodle session
-
-    核心思路：
-    1. 从系统浏览器导出现有cookies（可能包含过期MoodleSession + 有效SSO cookies）
-    2. 使用Playwright加载这些cookies访问Moodle
-    3. 如果SSO cookies有效，Moodle会自动重定向到SSO→认证→返回，生成新的MoodleSession
-    4. 提取fresh cookies并保存
-
-    Args:
-        domain: Moodle域名
-        cookies_file: cookies文件路径（会被更新为fresh cookies）
-        browser: 浏览器名称（用于导出现有cookies）
-
-    Returns:
-        是否成功刷新
-    """
-    print("\n" + "="*80)
-    print("🔄 智能Cookie刷新")
-    print("="*80)
-    print("正在尝试利用现有SSO cookies自动刷新MoodleSession...")
-    print("(如果SSO cookies仍有效，可以无需手动登录即可刷新)")
-    print("="*80 + "\n")
-
-    try:
-        from playwright.sync_api import sync_playwright
-        import time
-
-        # 步骤1: 导出现有cookies（包括可能过期的MoodleSession + SSO cookies）
-        print("📤 步骤1: 导出现有cookies（包括SSO认证信息）...")
-        if not export_cookies_from_browser(domain, cookies_file, browser):
-            print("❌ 无法导出现有cookies")
-            return False
-
-        # 步骤2: 加载cookies到Playwright
-        print("\n🔄 步骤2: 使用Playwright自动刷新session...")
-        playwright_cookies = convert_netscape_to_playwright(cookies_file)
-
-        if not playwright_cookies:
-            print("❌ 无法加载cookies")
-            return False
-
-        print(f"   ✓ 已加载 {len(playwright_cookies)} 个cookies")
-
-        # 步骤3: 访问Moodle触发SSO自动认证
-        with sync_playwright() as p:
-            print("   ✓ 启动Firefox浏览器（headless模式）...")
-            browser_instance = p.firefox.launch(headless=True)
-            context = browser_instance.new_context()
-
-            # 加载cookies
-            context.add_cookies(playwright_cookies)
-
-            page = context.new_page()
-
-            try:
-                moodle_url = f'https://{domain}' if not domain.startswith('http') else domain
-
-                print(f"   ✓ 访问Moodle主页: {moodle_url}")
-                start_time = time.time()
-
-                # 访问Moodle，会自动触发SSO重定向（如果cookies有效）
-                page.goto(moodle_url, wait_until='networkidle', timeout=60000)
-
-                elapsed = time.time() - start_time
-                final_url = page.url
-
-                print(f"   ✓ 页面加载完成（耗时 {elapsed:.1f}秒）")
-                print(f"   ✓ 最终URL: {final_url}")
-
-                # 检查是否成功（不在login页面）
-                if 'login' in final_url.lower() and domain in final_url:
-                    # 仍然在Moodle的login页面 = SSO cookies也过期了
-                    print("\n❌ SSO cookies已过期，需要手动登录")
-                    print("   → Moodle要求重新认证")
-                    browser_instance.close()
-                    return False
-
-                # 成功！可能经过了SSO重定向，或者直接进入了Moodle
-                print("\n✅ SSO自动认证成功！")
-
-                # 步骤4: 提取fresh cookies
-                print("\n📥 步骤3: 提取fresh cookies...")
-                fresh_cookies = context.cookies()
-                print(f"   ✓ 提取到 {len(fresh_cookies)} 个cookies")
-
-                # 检查是否包含新的MoodleSession
-                moodle_sessions = [c for c in fresh_cookies if 'MoodleSession' in c['name']]
-                if moodle_sessions:
-                    print(f"   ✓ 包含 {len(moodle_sessions)} 个MoodleSession cookie")
-                    for ms in moodle_sessions:
-                        print(f"     - {ms['name']} (domain: {ms['domain']})")
-
-                # 步骤5: 保存fresh cookies
-                print("\n💾 步骤4: 保存fresh cookies...")
-                if save_playwright_cookies_to_netscape(fresh_cookies, cookies_file):
-                    print(f"   ✅ Fresh cookies已保存到: {cookies_file}")
-                    browser_instance.close()
-
-                    print("\n" + "="*80)
-                    print("✅ 自动刷新成功！无需手动登录")
-                    print("="*80 + "\n")
-                    return True
-                else:
-                    print("   ❌ 保存cookies失败")
-                    browser_instance.close()
-                    return False
-
-            except Exception as e:
-                print(f"\n❌ 访问Moodle时出错: {e}")
-                browser_instance.close()
-                return False
-
-    except ImportError:
-        print("❌ 需要安装Playwright: pip install playwright && playwright install firefox")
-        return False
-    except Exception as e:
-        print(f"❌ 自动刷新失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+# ⚠️ 已废弃: auto_refresh_session_with_sso()
+# 此函数已被 auto_sso_login.py 中的 auto_login_with_sso_sync() 取代
+# 为了符合 DRY 原则，不再维护重复的实现
 
 
 def extract_api_token_with_playwright(domain: str, cookies_file: str):
@@ -1050,22 +1019,60 @@ def export_cookies_interactive(domain: str = None, output_file: str = None, ask_
         print("=" * 80)
         return False
 
-    # 🔄 智能刷新：尝试使用SSO cookies自动刷新MoodleSession
-    # 这样即使导出的MoodleSession过期了，也能自动刷新
-    print("\n正在验证cookies并尝试智能刷新...")
-    refresh_success = auto_refresh_session_with_sso(domain, output_file, selected_browser)
+    # 🚀 使用完全自动化的 SSO 登录来刷新 cookies
+    # 只要 SSO cookies 有效，完全无需手动操作
+    print("\n🔄 正在使用自动 SSO 登录刷新 cookies...")
+    print("   （只要 Microsoft/Google 的 SSO cookies 有效，将完全自动化）")
 
-    if not refresh_success:
-        # 刷新失败，说明SSO cookies也过期了
-        print("\n" + "=" * 80)
-        print("⚠️  智能刷新失败 - SSO cookies已过期")
-        print("=" * 80)
-        print("\n你需要手动登录以刷新cookies：")
-        print(f"1. 在{selected_browser}浏览器中访问: https://{domain}")
-        print("2. 完成SSO登录（Microsoft/Google等）")
-        print("3. 登录成功后，重新运行此命令")
-        print("=" * 80)
-        return False
+    try:
+        # 导入自动 SSO 登录模块
+        # 注意：这个脚本可能从不同位置被调用，需要动态导入
+        import importlib.util
+        import sys
+
+        # 尝试直接导入（如果在 moodle-dl 环境中）
+        try:
+            from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+        except ImportError:
+            # 回退：尝试从文件路径加载
+            auto_sso_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'moodle_dl', 'auto_sso_login.py'
+            )
+            if os.path.exists(auto_sso_path):
+                spec = importlib.util.spec_from_file_location("auto_sso_login", auto_sso_path)
+                auto_sso_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(auto_sso_module)
+                auto_login_with_sso_sync = auto_sso_module.auto_login_with_sso_sync
+            else:
+                raise ImportError("Cannot find auto_sso_login module")
+
+        # 使用自动 SSO 登录刷新 cookies
+        refresh_success = auto_login_with_sso_sync(
+            moodle_domain=domain,
+            cookies_path=output_file,
+            preferred_browser=selected_browser,
+            headless=True  # 后台运行
+        )
+
+        if not refresh_success:
+            # 自动 SSO 登录失败 - 说明 SSO cookies 完全过期
+            print("\n" + "=" * 80)
+            print("⚠️  自动 SSO 登录失败 - SSO cookies 已完全过期")
+            print("=" * 80)
+            print("\n💡 解决方案：")
+            print(f"   在{selected_browser}浏览器中访问 {domain} 并完成 SSO 登录")
+            print(f"   登录后，SSO cookies 会自动保存到浏览器")
+            print(f"   然后重新运行此命令，将能够完全自动化")
+            print("\n📌 这是唯一需要手动操作的场景（SSO cookies 完全过期时）")
+            print("   之后的所有操作都将完全自动化，无需再次手动登录")
+            print("=" * 80)
+            return False
+
+    except Exception as e:
+        print(f"\n⚠️  自动 SSO 登录出错: {e}")
+        print("   回退到测试现有 cookies...")
+        refresh_success = False
 
     # 测试 cookies
     cookies_valid = test_cookies(domain, output_file)

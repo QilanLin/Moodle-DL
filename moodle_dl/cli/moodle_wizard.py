@@ -171,18 +171,18 @@ class MoodleWizard:
             moodle_token = self.opts.token
             moodle_privatetoken = None
         else:
-            # 首先尝试使用Playwright自动获取token
+            # 🚀 完全自动化的 token 获取流程（使用 SSO 自动登录）
             moodle_token = None
             moodle_privatetoken = None
 
             print('')
-            Log.info('💡 尝试自动获取API token...')
-            Log.info('   方法：从浏览器自动导出cookies + 使用Playwright获取token')
-            Log.info('   优势：无需手动打开开发者工具！')
+            Log.info('🚀 尝试完全自动获取 API token...')
+            Log.info('   策略：SSO 自动登录 + Playwright 自动获取 token')
+            Log.info('   优势：只要 SSO cookies 有效，完全无需手动操作！')
             print('')
 
             try:
-                # 动态导入 export_browser_cookies
+                # 动态导入必要模块
                 import importlib.util
                 import os
 
@@ -201,42 +201,107 @@ class MoodleWizard:
 
                     cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
 
-                    # 引导用户从浏览器导出cookies
-                    Log.info('第1步：从浏览器导出cookies（包含SSO认证信息）')
-                    success = export_module.export_cookies_interactive(
-                        domain=moodle_url.domain,
-                        output_file=cookies_path,
-                        ask_browser=True,
-                        auto_get_token=False,  # 不要在这一步就获取token，我们需要分步显示
+                    # 🔄 步骤0：先让用户选择浏览器（如果还没配置）
+                    preferred_browser = self.config.get_property_or('preferred_browser', None)
+
+                    if not preferred_browser:
+                        # 初次配置，需要询问用户选择浏览器
+                        from moodle_dl.utils import Cutie
+
+                        print('')
+                        Log.blue('请选择你使用的浏览器：')
+                        browser_choices = [
+                            'Firefox',
+                            'Chrome',
+                            'Edge',
+                            'Safari',
+                            'Brave',
+                            'Arc',
+                            'Zen Browser',
+                            'Waterfox',
+                        ]
+                        browser_choice = Cutie.select(browser_choices)
+
+                        browser_map = {
+                            0: 'firefox',
+                            1: 'chrome',
+                            2: 'edge',
+                            3: 'safari',
+                            4: 'brave',
+                            5: 'arc',
+                            6: 'zen',
+                            7: 'waterfox',
+                        }
+                        preferred_browser = browser_map[browser_choice]
+                        Log.info(f'✓ 已选择：{browser_choices[browser_choice]}')
+                        print('')
+
+                    # 🔄 步骤1：使用 SSO 自动登录获取/刷新 cookies
+                    Log.info('步骤1：使用 SSO 自动登录获取 cookies...')
+                    Log.info(f'   （从 {preferred_browser} 浏览器读取 SSO cookies，自动完成 Moodle 登录）')
+                    Log.info('   💡 原理：只要 Microsoft/Google 的 SSO cookies 有效，完全自动化，无需手动操作')
+                    print('')
+
+                    # 使用自动 SSO 登录
+                    from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+
+                    # 使用 Playwright 无头浏览器（后台运行，完全自动化）
+                    # 原理：完整迁移用户浏览器的所有 cookies 到 Playwright
+                    # 只要 SSO cookies 有效，Playwright 会自动完成整个 SSO 登录流程
+                    # 无需弹出窗口，无需用户旁观或手动操作
+                    sso_login_success = auto_login_with_sso_sync(
+                        moodle_domain=moodle_url.domain,
+                        cookies_path=cookies_path,
+                        preferred_browser=preferred_browser,
+                        headless=True,   # 使用无头模式（无GUI，后台运行，完全自动化）
+                        timeout=60000    # 60秒超时（足够 SSO 重定向完成）
                     )
 
-                    if success:
-                        Log.success('✅ Cookies导出成功！')
-                        print('')
-                        Log.info('第2步：使用Playwright自动获取API token...')
+                    # 保存首选浏览器到配置文件（无论成功还是失败都保存）
+                    self.config.set_property('preferred_browser', preferred_browser)
 
-                        # 使用Playwright自动获取token
-                        moodle_token, moodle_privatetoken = export_module.extract_api_token_with_playwright(
-                            moodle_url.domain, cookies_path
+                    if sso_login_success:
+                        Log.success('✅ SSO 自动登录成功！已获取新的 cookies')
+                        Log.info(f'✅ 已保存浏览器选择（{preferred_browser}），将用于自动刷新cookies')
+                    else:
+                        Log.warning('⚠️  SSO 自动登录失败，尝试从浏览器读取现有 cookies...')
+
+                        # 回退：从浏览器读取 cookies（使用用户已选择的浏览器）
+                        success = export_module.export_cookies_from_browser(
+                            domain=moodle_url.domain,
+                            output_file=cookies_path,
+                            browser_name=preferred_browser,
                         )
 
-                        if moodle_token and moodle_privatetoken:
-                            Log.success('✅ 成功自动获取API token！')
-                        else:
-                            Log.warning('⚠️  自动获取token失败（可能cookies已过期）')
-                            Log.info('   将使用手动方式获取token...')
+                        if not success:
+                            Log.warning('⚠️  从浏览器读取 cookies 也失败了')
+                            Log.info('   将使用手动方式获取 token...')
+                            raise Exception('Cookie acquisition failed')
+
+                    # 🔑 步骤2：使用 Playwright 自动获取 API token
+                    print('')
+                    Log.info('步骤2：使用 Playwright 自动获取 API token...')
+
+                    moodle_token, moodle_privatetoken = export_module.extract_api_token_with_playwright(
+                        moodle_url.domain, cookies_path
+                    )
+
+                    if moodle_token and moodle_privatetoken:
+                        Log.success('✅ 成功自动获取 API token！')
+                        Log.success('🎉 完全自动化完成，无需任何手动操作！')
                     else:
-                        Log.warning('⚠️  Cookies导出失败，将使用手动方式获取token...')
+                        Log.warning('⚠️  自动获取 token 失败')
+                        Log.info('   将使用手动方式获取 token...')
                 else:
-                    Log.warning('⚠️  未找到export_browser_cookies.py，将使用手动方式获取token...')
+                    Log.warning('⚠️  未找到 export_browser_cookies.py，将使用手动方式获取 token...')
 
             except ImportError as e:
                 Log.warning(f'⚠️  缺少依赖库: {e}')
-                Log.info('   提示：运行 `pip install browser-cookie3 playwright && playwright install chromium`')
-                Log.info('   现在将使用手动方式获取token...')
+                Log.info('   提示：运行 `pip install browser-cookie3 playwright && playwright install firefox`')
+                Log.info('   现在将使用手动方式获取 token...')
             except Exception as e:
-                Log.warning(f'⚠️  自动获取token出错: {e}')
-                Log.info('   将使用手动方式获取token...')
+                Log.warning(f'⚠️  自动获取 token 出错: {e}')
+                Log.info('   将使用手动方式获取 token...')
 
             # 如果自动获取失败，使用手动方式
             if moodle_token is None or moodle_privatetoken is None:
