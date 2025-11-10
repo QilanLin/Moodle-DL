@@ -78,6 +78,11 @@ class ResultBuilder:
             module_contents = module.get('contents', [])
             module_description = module.get('description', None)
 
+            # 🔍 DEBUG: Log all modules to see which branch books go through
+            if 'week 1' in location.get('module_name', '').lower() and 'software' in location.get('module_name', '').lower():
+                logging.info(f'🔵 [TRACE] Processing module: name="{location["module_name"]}", modname={location["module_modname"]}, id={location["module_id"]}')
+                logging.info(f'🔵 [TRACE]   module_description={module_description is not None}, module_contents={len(module_contents)}, module_url={module_url[:50] if module_url else "None"}')
+
             # handle not supported modules that results in an index.html special
             if location['module_modname'] in ['moodecvideo']:
                 location['module_modname'] = 'index_mod-' + location['module_modname']
@@ -102,6 +107,11 @@ class ResultBuilder:
 
             elif location['module_modname'] in fetched_mods:
                 # find mod module with same module_id
+                if location['module_modname'] == 'book':
+                    logging.info(f'🟢 [DEBUG] BOOK BRANCH HIT! module_id={location["module_id"]}, module_name={location["module_name"]}')
+                    logging.info(f'🟢 [DEBUG] fetched_mods.keys()={list(fetched_mods.keys())}')
+                    logging.info(f'🟢 [DEBUG] fetched_mods["book"].keys()={list(fetched_mods.get("book", {}).keys())}')
+
                 mod = fetched_mods.get(location['module_modname'], {}).get(location['module_id'], {})
                 mod['on_main_page'] = True
                 mod_files = mod.get('files', [])
@@ -153,9 +163,17 @@ class ResultBuilder:
     def _get_files_not_on_main_page(self, fetched_mods: Dict[str, Dict]) -> List[File]:
         """
         Iterates over all mods to find files (or content) that are not listed on the main page.
-        @param fetched_mods: Contains the fetched mods of the course
+        @param fetched_mods: Contains the fetched_mods of the course
         @return: A list of files of mod modules not on the main page.
         """
+        import logging
+
+        # 🔍 DEBUG: Log books processing
+        if 'book' in fetched_mods:
+            logging.info(f'🟡 [NOT_ON_MAIN_PAGE] Found {len(fetched_mods["book"])} book(s) in fetched_mods')
+            for module_id, module in list(fetched_mods["book"].items())[:3]:
+                logging.info(f'🟡 [NOT_ON_MAIN_PAGE]   Book {module_id}: name={module.get("name", "?")}, on_main_page={("on_main_page" in module)}, files_count={len(module.get("files", []))}')
+
         files = []
         for mod_name, mod_modules in fetched_mods.items():
             location = {
@@ -173,6 +191,10 @@ class ResultBuilder:
                         'module_modname': mod_name,
                     }
                 )
+
+                # 🔍 DEBUG: Log when book is processed here
+                if mod_name == 'book':
+                    logging.info(f'🟡 [NOT_ON_MAIN_PAGE] Processing book: "{location["module_name"]}" (id={location["module_id"]}), files_count={len(module.get("files", []))}')
 
                 # Handle not supported modules that results in an index.html special
                 if location['module_modname'] in ['page'] and self.version < 2017051500:
@@ -242,6 +264,12 @@ class ResultBuilder:
         urls += list(set(re.findall(r'data=[\'"]?([^\'" >]+)', content_html)))
         urls = list(set(urls))
 
+        logging.debug(f'   🔎 _find_all_urls() found {len(urls)} raw URLs in HTML (length={len(content_html)})')
+        if 'kaltura' in content_html.lower():
+            logging.debug(f'   🎬 HTML contains "kaltura" - checking if Kaltura URLs are in extracted URLs')
+            kaltura_urls = [u for u in urls if 'kaltura' in u.lower()]
+            logging.debug(f'   🎬 Found {len(kaltura_urls)} Kaltura URLs: {kaltura_urls[:2] if kaltura_urls else "None"}')
+
         result = []
         original_module_modname = location['module_modname']
 
@@ -283,6 +311,24 @@ class ResultBuilder:
             elif url_parts.hostname == self.moodle_domain:
                 location['module_modname'] = 'cookie_mod-description-' + original_module_modname
 
+            # Special handling for Kaltura LTI launch URLs
+            # These are embedded Kaltura videos accessed via LTI (Learning Tools Interoperability)
+            # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
+            kaltura_converted = False
+            if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
+                # Extract entry_id from the source parameter
+                # URL format: ...source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2F...%2Fentryid%2F1_uwhesokp%2F...
+                entry_id_match = re.search(r'entryid[/%]([^/%&]+)', url)
+                if entry_id_match:
+                    entry_id = entry_id_match.group(1)
+                    # Convert to kalvidres URL format (same as standalone kalvidres modules)
+                    # This allows the video to be downloaded using the existing kalvidres handler
+                    url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+                    location['module_modname'] = 'cookie_mod-kalvidres'
+                    kaltura_converted = True
+                    logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
+
+            # Determine filename based on URL type
             if url.startswith('data:'):
                 # Schema: data:[<mime type>][;charset=<Charset>][;base64],<Data>
                 embedded_data = url.split(',', 1)[1]
@@ -300,6 +346,9 @@ class ResultBuilder:
                 short_data_hash = m.hexdigest()
 
                 fist_guess_filename = f'embedded_{media_type} ({short_data_hash}){file_extension_guess}'
+            elif kaltura_converted:
+                # Use entry_id for Kaltura videos
+                fist_guess_filename = f'Kaltura Video {entry_id}'
             else:
                 fist_guess_filename = url
                 if len(fist_guess_filename) > 254:
@@ -359,6 +408,14 @@ class ResultBuilder:
             module_modname: str,
         """
         import logging
+
+        # Debug: Log what we're processing
+        if location.get('module_modname') == 'book':
+            logging.debug(f'📚 _handle_files() for book: module_name={location.get("module_name")}, contents_count={len(module_contents)}')
+            for i, content in enumerate(module_contents):
+                logging.debug(f'   Content[{i}]: type={content.get("type")}, filename={content.get("filename", "?")},'
+                             f' has_html={("html" in content)}, html_len={len(content.get("html", ""))}')
+
         files = []
         kalvidres_count = 0
         for content in module_contents:
@@ -426,13 +483,22 @@ class ResultBuilder:
                 new_file.content = content.get('content', '')
 
             if content_type in ['description', 'html'] and not content.get('no_search_for_urls', False):
-                files += self._find_all_urls(
+                logging.debug(
+                    f'🔍 URL extraction for {content_type}: filename={content_filename}, '
+                    f'html_length={len(content_html)}, module={location.get("module_modname", "?")}'
+                )
+                extracted_files = self._find_all_urls(
                     content_html,
                     no_search_for_moodle_urls=content.get('no_search_for_moodle_urls', False),
                     filter_urls_containing=content.get('filter_urls_during_search_containing', []),
                     **location,
                     content_filepath=content_filepath,
                 )
+                if extracted_files:
+                    logging.debug(f'   ✅ Extracted {len(extracted_files)} URLs from {content_filename}')
+                    for extracted_file in extracted_files[:3]:  # Log first 3 URLs
+                        logging.debug(f'      - {extracted_file.content_fileurl[:80]}...')
+                files += extracted_files
 
             files.append(new_file)
 

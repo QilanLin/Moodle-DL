@@ -1,0 +1,241 @@
+================================================================================
+MOODLE-DL EMBEDDED KALTURA 视频处理完整分析 - 执行总结
+================================================================================
+
+关键发现:
+=========
+
+1. 三层处理架构
+   ├─ 第1层: 检测 (BookMod + ResultBuilder)
+   │   └─ 通过正则识别 /filter/kaltura/lti_launch.php 
+   ├─ 第2层: 转换 (ResultBuilder + Task)
+   │   └─ LTI Launch URL → browseandembed URL → Kaltura iframe URL
+   └─ 第3层: 下载 (DownloadTask + yt-dlp extractors)
+       └─ 通过 KalturaIE 和 KalvidresEmbeddedIE 下载
+
+2. 三种视频检测方式
+   ├─ 方式1: Book 章节内 (book.py: 335-385)
+   │   入口: Mobile API fileurl → 完整 chapter HTML
+   │   处理: 正则匹配 iframe → 提取 entry_id → 创建 kalvidres_embedded File
+   ├─ 方式2: ResultBuilder (result_builder.py: 314-331)
+   │   入口: HTML 中的所有 src 属性
+   │   处理: 检测 lti_launch.php → 快速转换 → cookie_mod-kalvidres File
+   └─ 方式3: Print Book (book.py: 693-979)
+       入口: Playwright 获取的完整 HTML
+       处理: 章节-视频映射 → 保留目录结构 → 本地文件链接
+
+3. 四阶段 URL 转换
+   Phase 1: https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source=...
+       ↓ (提取 source 参数, URL 解码)
+   Phase 2: https://kaf.keats.kcl.ac.uk/browseandembed/...entryid/1_xxxxx/...
+       ↓ (请求页面，提取 partnerId 和 uiconf_id)
+   Phase 3: https://cdnapisec.kaltura.com/p/2368101/.../embedIframeJs/...
+       ↓ (yt-dlp 解析，获取播放源)
+   Phase 4: https://cdnapisec.kaltura.com/.../a.mp4 (或 .m3u8)
+
+
+关键代码位置:
+=============
+
+| 功能区域 | 文件 | 行数 | 简述 |
+|---------|------|------|------|
+| **Book 模块** | book.py | 25-233 | 双API方案(Mobile+Playwright) |
+| | book.py | 288-316 | 章节HTML获取(token认证) |
+| | book.py | 318-385 | 嵌入视频检测(kalvidres_embedded) |
+| | book.py | 390-691 | Print Book(Playwright+自动cookies刷新) |
+| | book.py | 693-979 | 视频映射与链接化 |
+| **URL处理** | result_builder.py | 314-331 | LTI检测与快速转换 |
+| | result_builder.py | 242-370 | URL提取全流程 |
+| | result_builder.py | 432-450 | kalvidres_embedded处理 |
+| **下载处理** | task.py | 1094-1121 | cookie_mod-kalvidres下载 |
+| | task.py | 766-851 | 文本提取(activity-description) |
+| | task.py | 853-960 | Kaltura iframe URL构造 |
+| **提取器** | kalvidres_embedded.py | 11-63 | yt-dlp集成(embedded) |
+| | kalvidres_lti.py | 12-63 | yt-dlp集成(LTI完整) |
+| | __init__.py | 18 | 自动发现与注册 |
+
+
+流程示例 (Print Book → 本地视频):
+==================================
+
+1. Book模块获取:
+   BookMod.real_fetch_mod_entries()
+   → 调用 core_course_get_contents (Mobile API)
+   → 获得章节 fileurl
+   → _fetch_chapter_html() (aiohttp + token)
+   → 返回完整 HTML (含 iframe)
+
+2. 视频检测:
+   _extract_kaltura_videos_from_html()
+   → 正则: r'<iframe[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"'
+   → 提取 entry_id: r'/entryid/([^/]+)'
+   → 创建 File(type='kalvidres_embedded')
+
+3. 或者 Print Book 方式:
+   _fetch_print_book_html()
+   → Playwright firefox 浏览器
+   → 自动 cookies 刷新 (检测重定向)
+   → 返回完整 Print Book HTML
+
+4. URL 转换 (ResultBuilder):
+   _find_all_urls()
+   → 检测: /filter/kaltura/lti_launch.php
+   → 提取: entryid/([^/%&]+)
+   → 转换: https://domain/browseandembed/index/media/entryid/{entry_id}
+   → 创建: File(module_modname='cookie_mod-kalvidres')
+
+5. 视频下载 (DownloadTask):
+   if module_modname == 'cookie_mod-kalvidres':
+     extract_kalvidres_text() → 保存 _notes.md
+     extract_kalvidres_video_url()
+       ├─ GET browseandembed URL
+       ├─ 提取 partnerId (正则: partnerId[=:](\d+))
+       ├─ 提取 uiconf_id (正则: /playerSkin/(\d+))
+       └─ 构造: https://cdnapisec.kaltura.com/p/{partner_id}/.../embedIframeJs/...
+     external_download_url() → yt-dlp
+
+6. yt-dlp 处理:
+   KalvidresEmbeddedIE (custom extractor)
+   → 返回: kaltura:partner_id:entry_id
+   → KalturaIE (yt-dlp built-in)
+   → 提取 m3u8/mp4
+   → wget/curl 下载
+
+7. 本地文件链接 (Print Book HTML):
+   _replace_kaltura_iframes_with_video_tags()
+   → 正则替换 iframe
+   → <source src="691947/Video (1_xxxxx).mp4">
+   → HTML5 video 标签
+
+
+核心数据结构:
+=============
+
+LTI Launch URL:
+  https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?
+    source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2F
+           index%2Fmedia%2Fentryid%2F1_er5gtb0g%2F...
+    nonce=...&...
+
+Browse & Embed URL (decoded from source):
+  https://kaf.keats.kcl.ac.uk/browseandembed/index/media/
+    entryid/1_er5gtb0g/playerSkin/123456/...
+
+Kaltura iframe URL (constructed):
+  https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/
+    uiconf_id/123456/partner_id/2368101
+    ?iframeembed=true&entry_id=1_er5gtb0g
+
+Kaltura response (JSON, 见 kaltura_response_8.json):
+  {
+    "id": "1_smw4vcpg",
+    "name": "01-intro",
+    "duration": 1567,
+    "sources": [
+      { "format": "applehttp", "url": "...a.m3u8" },  # HLS
+      { "format": "url", "url": "...a.mp4" },         # MP4
+      { "format": "mpegdash", "url": "...manifest.mpd" }  # DASH
+    ]
+  }
+
+
+关键配置与调试:
+===============
+
+config.json:
+  {
+    "download_books": true,              // 启用book模块
+    "download_also_with_cookie": true,   // 启用cookie_mod
+    "preferred_browser": "firefox",      // Playwright浏览器
+    "skip_cert_verify": false            // SSL验证
+  }
+
+调试命令:
+  moodle-dl --verbose --log-to-file
+  grep -i kaltura ~/.moodle-dl/MoodleDL.log
+  tail -f ~/.moodle-dl/MoodleDL.log | grep -i "video\|kaltura"
+
+常见问题:
+  问题1: Print Book 下载失败
+    原因: Cookies 过期
+    解决: moodle-dl --init --sso
+
+  问题2: 视频无法下载
+    原因: Kaltura CDN 不可达 或 entry_id 提取失败
+    解决: 检查网络; 验证正则模式
+
+  问题3: 本地文件路径错误
+    原因: 章节-视频映射混乱
+    解决: 检查 _extract_chapter_video_mapping_from_print_book()
+
+
+关键正则模式表:
+===============
+
+检测 LTI:
+  /filter/kaltura/lti_launch\.php
+
+提取 entry_id:
+  entryid[/%]([^/%&]+)
+
+提取 partnerId:
+  partnerId[=:](\d+)
+
+提取 uiconf_id:
+  /playerSkin/(\d+)
+
+匹配 iframe:
+  <iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"
+
+匹配章节:
+  <div[^>]*class="[^"]*book_chapter[^"]*"[^>]*id="ch(\d+)"
+
+
+文件下载后的本地结构:
+====================
+
+~/.moodle-dl/
+  courses/
+    COMP101 (课程名)/
+      Books/
+        Book Name/                      # Book 模块文件夹
+          Table of Contents.html        # TOC
+          691941/                       # 章节 ID
+            index.html
+            Video (1_xxxxx).mp4
+          691947/                       # 另一个章节
+            index.html
+            Video 01 (1_yyyyy).mp4
+            Video 02 (1_zzzzz).mp4
+          Book Name.html                # Print Book (全部合并)
+
+
+性能优化点:
+===========
+
+1. Mobile API 限制:
+   - 只返回章节元数据
+   - 需要额外 HTTP 请求获取完整 HTML
+   - Print Book 相对更快(单个浏览器请求)
+
+2. Cookies 管理:
+   - MoodleSession 自动刷新(API)
+   - SSO cookies 需手动导出
+   - Print Book 失败时自动重试
+
+3. 下载优化:
+   - 并发受限(config: download_parallel=1)
+   - Kaltura 提取延迟到下载时(获取最新CDN)
+   - 文本与视频分离(notes.md)
+
+
+已知限制:
+=========
+
+1. Kaltura 提取器依赖 yt-dlp 内置 KalturaIE
+2. Print Book 需要完整浏览器会话 (Playwright)
+3. 某些 CDN 域名可能变化(使用 browseandembed 页面检测)
+4. Cookies 过期需手动刷新(虽然有自动重试机制)
+5. 章节-视频映射基于 HTML class 和 ID (可能版本不兼容)
+
+================================================================================
