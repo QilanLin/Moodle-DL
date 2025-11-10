@@ -431,10 +431,12 @@ class ResultBuilder:
             # Keep module_modname as 'book' so videos are saved inside the book folder
             if content_type == 'kalvidres_embedded':
                 logging.info(f'🎥 Processing embedded Kaltura video: {content_filename}')
-                # Create File entry keeping book module context for proper path
+                # Create File entry, override module_modname to trigger yt-dlp in task.py
                 # Path will be: section_name/module_name/content_filepath/content_filename
+                # 需要创建一个修改后的 location 副本，覆盖 module_modname
+                video_location = {**location, 'module_modname': 'cookie_mod-kalvidres'}
                 file_obj = File(
-                    **location,
+                    **video_location,
                     content_filepath=content_filepath,  # Use filepath from content (e.g., '/691947/')
                     content_filename=content_filename,  # Video name
                     content_fileurl=content_fileurl,  # Kalvidres URL
@@ -501,6 +503,26 @@ class ResultBuilder:
                 files += extracted_files
 
             files.append(new_file)
+
+            # 🆕 处理嵌套的 contents 数组（支持层级化的文件结构）
+            # 这使得 feature/print-book 分支中 chapter_content['contents'] 中的视频能被正确处理
+            nested_contents = content.get('contents', [])
+            if nested_contents:
+                logging.debug(f'🔄 Processing nested contents in "{content_filename}": {len(nested_contents)} items')
+
+                # 递归处理嵌套内容，保持相同的 location 上下文（module_id, section_id 等）
+                nested_files = self._handle_files(nested_contents, **location)
+                files += nested_files
+
+                # 统计嵌套内容中的 Kaltura 视频
+                # 注意：nested_file.module_modname 仍然是 'book'，不是 'kalvidres'
+                # 所以我们检查 content_type 和 fileurl 来识别视频
+                for nested_file in nested_files:
+                    if nested_file.content_type == 'cookie_mod' and \
+                       ('kalvidres' in nested_file.content_fileurl or 'helixmedia' in nested_file.content_fileurl):
+                        kalvidres_count += 1
+
+                logging.debug(f'   ✅ Added {len(nested_files)} nested files from "{content_filename}"')
 
         if kalvidres_count > 0:
             logging.info(f'📤 _handle_files() returning {kalvidres_count} Kaltura videos for module "{location.get("module_name", "?")}"')

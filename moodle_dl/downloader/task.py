@@ -99,6 +99,14 @@ class Task:
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath
             )
+
+        # 🆕 Special handling for embedded videos (kalvidres, helixmedia, etc.)
+        # These are embedded in book/page/etc modules and should be saved in the module folder
+        if file.module_modname in ('cookie_mod-kalvidres', 'cookie_mod-helixmedia'):
+            return PT.path_of_file_in_module(
+                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
+            )
+
         return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
 
     def add_token_to_url(self, url: str) -> str:

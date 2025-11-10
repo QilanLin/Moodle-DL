@@ -120,59 +120,92 @@ class BookMod(MoodleMod):
                 # 🆕 改进：使用章节标题而不是数字ID
                 chapters_by_id = {}  # {chapter_id: {title, folder_name, content, videos, ...}}
 
-                # Process each chapter
+                # 🆕 Step 1: Group all content by chapter_id
+                # Mobile API returns separate content objects for HTML + attachments
+                contents_by_chapter = {}  # {chapter_id: [content1, content2, ...]}
+                for content in book_contents[1:]:
+                    # Extract chapter ID from filename or fileurl
+                    filename = content.get('filename', '')
+                    fileurl = content.get('fileurl', '')
+
+                    if '/' in filename:
+                        chapter_id = filename.split('/')[0]
+                    elif fileurl:
+                        match = re.search(r'/chapter/(\d+)/', fileurl)
+                        chapter_id = match.group(1) if match else None
+                    else:
+                        chapter_id = None
+
+                    if chapter_id:
+                        if chapter_id not in contents_by_chapter:
+                            contents_by_chapter[chapter_id] = []
+                        contents_by_chapter[chapter_id].append(content)
+
+                # 🆕 Step 2: Process each chapter (sorted by ID for consistent ordering)
                 chapter_count = 0
-                for chapter_content in book_contents[1:]:
+                for chapter_id in sorted(contents_by_chapter.keys()):
+                    chapter_contents_list = contents_by_chapter[chapter_id]
                     chapter_count += 1
 
-                    # Extract chapter HTML content
-                    chapter_html = chapter_content.get('content', '')
-                    chapter_filename = chapter_content.get('filename', f'chapter_{chapter_count}')
+                    logging.debug(f'   📁 Processing chapter {chapter_id}: {len(chapter_contents_list)} file(s)')
 
-                    # 🔍 DEBUG: Log chapter data to understand Mobile API
-                    chapter_fileurl = chapter_content.get('fileurl', '')
-                    logging.debug(f'   📄 Chapter {chapter_count} filename: {chapter_filename}')
-                    logging.debug(f'   📄 Chapter fileurl: {chapter_fileurl[:100] if chapter_fileurl else "NONE"}')
+                    # Find the HTML file (index.html) - this is the main chapter content
+                    chapter_html_content = None
+                    chapter_attachments = []
 
-                    # Extract chapter ID
-                    if '/' in chapter_filename:
-                        chapter_id = chapter_filename.split('/')[0]
-                    elif chapter_fileurl:
-                        match = re.search(r'/chapter/(\d+)/', chapter_fileurl)
-                        chapter_id = match.group(1) if match else f'ch{chapter_count}'
-                    else:
-                        chapter_id = f'ch{chapter_count}'
+                    for content in chapter_contents_list:
+                        filename = content.get('filename', '')
+                        if filename.endswith('index.html') or filename == 'index.html':
+                            chapter_html_content = content
+                            logging.debug(f'      Found HTML: {filename}')
+                        else:
+                            chapter_attachments.append(content)
+                            logging.debug(f'      Found attachment: {filename}')
+
+                    if not chapter_html_content:
+                        logging.warning(f'   ⚠️ Chapter {chapter_id} has no index.html, skipping')
+                        continue
 
                     # 🆕 从TOC获取章节标题，用于创建文件夹名
                     chapter_title = self._get_chapter_title_from_toc(chapter_id, book_toc)
                     # 格式化文件夹名：添加序号并清理路径 (is_file=False 表示这是文件夹)
                     chapter_folder_name = PT.to_valid_name(f'{chapter_count:02d} - {chapter_title}', is_file=False)
-                    logging.info(f'   📁 Chapter folder name: {chapter_folder_name} (ID: {chapter_id})')
+                    logging.info(f'   📁 Chapter {chapter_count}: {chapter_folder_name} ({len(chapter_attachments)} attachment(s))')
 
-                    # Copy chapter_content to modify it (deep copy to avoid shared references)
-                    chapter_content = copy.deepcopy(chapter_content)
+                    # Copy chapter_html_content to modify it
+                    chapter_content = copy.deepcopy(chapter_html_content)
 
                     # 修改type为'html'，这样result_builder会自动提取URL
                     chapter_content['type'] = 'html'
                     # 设置filepath为章节文件夹
                     chapter_content['filepath'] = f'/{chapter_folder_name}/'
 
-                    # ⚠️ CRITICAL: 需要先下载完整的HTML内容
-                    if chapter_filename == 'index.html' and chapter_fileurl:
-                        logging.debug(f'   🔽 Fetching chapter HTML from: {chapter_fileurl[:80]}...')
+                    # ⚠️ CRITICAL: 下载完整的HTML内容（包含视频）
+                    chapter_fileurl = chapter_content.get('fileurl', '')
+                    if chapter_fileurl:
+                        logging.debug(f'      🔽 Fetching HTML from: {chapter_fileurl[:80]}...')
                         fetched_html = await self._fetch_chapter_html(chapter_fileurl)
                         if fetched_html:
                             chapter_content['html'] = fetched_html
-                            logging.debug(f'   ✅ Fetched {len(fetched_html)} chars of HTML')
+                            logging.debug(f'      ✅ Fetched {len(fetched_html)} chars')
                         else:
                             chapter_content['html'] = chapter_content.get('content', '')
-                            logging.warning(f'   ⚠️ Failed to fetch HTML, using Mobile API content')
+                            logging.warning(f'      ⚠️ Failed to fetch HTML')
                     else:
                         chapter_content['html'] = chapter_content.get('content', '')
 
-                    # Initialize 'contents' array for additional files
+                    # Initialize 'contents' array for additional files (videos + attachments)
                     if 'contents' not in chapter_content:
                         chapter_content['contents'] = []
+
+                    # 🆕 Add attachments (PPT, PDF, etc.) to contents array
+                    for attachment in chapter_attachments:
+                        # Copy attachment and update filepath to chapter folder
+                        attachment_copy = copy.deepcopy(attachment)
+                        attachment_copy['filepath'] = f'/{chapter_folder_name}/'
+                        # Keep the original type from Mobile API (usually 'file')
+                        chapter_content['contents'].append(attachment_copy)
+                        logging.debug(f'      📎 Added attachment: {attachment.get("filename", "unknown")}')
 
                     # 🆕 提取该章节中的Kaltura视频并转换URL
                     chapter_html_content = chapter_content.get('html', '')
@@ -186,13 +219,14 @@ class BookMod(MoodleMod):
                             # 转换URL到标准格式
                             converted_url, entry_id = self._convert_kaltura_url_to_kalvidres(iframe_src)
                             if entry_id:
-                                # 为视频生成文件名
+                                # 为视频生成文件名（包含章节名和 entry_id）
+                                # 格式：{章节名} - Video ({entry_id}).mp4
+                                # 如果有多个视频：{章节名} - Video 01 ({entry_id}).mp4
                                 if len(matches) == 1:
-                                    video_filename = 'Video.mp4'
-                                    video_name = 'Video'
+                                    video_name = f'{chapter_title} - Video'
                                 else:
-                                    video_filename = f'Video {idx:02d}.mp4'
-                                    video_name = f'Video {idx:02d}'
+                                    video_name = f'{chapter_title} - Video {idx:02d}'
+                                video_filename = f'{video_name} ({entry_id}).mp4'
 
                                 # 添加到contents数组，这样result_builder会处理
                                 chapter_content['contents'].append({
@@ -1089,31 +1123,34 @@ class BookMod(MoodleMod):
 
     def _convert_kaltura_url_to_kalvidres(self, url: str) -> Tuple[str, str]:
         """
-        将Kaltura LTI launch URL转换为标准的kalvidres URL格式。
+        从 Kaltura LTI launch URL 中提取 entry_id。
+        不转换 URL，让 task.py 的 extract_kalvidres_video_url 处理完整流程。
 
-        这采用与result_builder.py相同的逻辑来处理嵌入式Kaltura视频。
+        task.py 的 extract_kalvidres_video_url 需要原始的 LTI launch URL 或包含
+        lti_launch.php iframe 的页面 URL，因为它需要通过完整的 LTI launch 流程来
+        获取正确的认证和参数。
 
-        @param url: 原始URL，格式如 /filter/kaltura/lti_launch.php?...source=...entryid/...
-        @return: Tuple of (converted_url, entry_id) 或 (原始url, '') 如果转换失败
+        @param url: 原始 LTI launch URL
+        @return: Tuple of (原始 URL, entry_id) 或 (原始url, '') 如果提取失败
         """
         # 检测Kaltura URL
         if '/filter/kaltura/lti_launch.php' not in url:
             return url, ''
 
-        # 从URL中提取entry_id
-        # URL格式: ...source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2F...%2Fentryid%2F1_xxxxx%2F...
-        entry_id_match = re.search(r'entryid[/%]([^/%&]+)', url)
-        if not entry_id_match:
-            return url, ''
+        # URL 解码并提取 entry_id（仅用于文件命名）
+        # URL 可能包含 %2F (/) 等编码字符
+        decoded_url = urllib.parse.unquote(url)
+        entry_id_match = re.search(r'entryid[/%]([^/%&]+)', decoded_url)
+        entry_id = entry_id_match.group(1) if entry_id_match else ''
 
-        entry_id = entry_id_match.group(1)
+        if entry_id:
+            logging.debug(f'✅ Extracted entry_id from Kaltura URL: {entry_id}')
+        else:
+            logging.warning(f'⚠️  Cannot extract entry_id from URL: {decoded_url[:100]}')
 
-        # 转换为kalvidres格式（与result_builder.py一致）
-        moodle_domain = self.client.moodle_url.domain
-        converted_url = f'https://{moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
-
-        logging.debug(f'✅ Converted Kaltura URL to kalvidres: entry_id={entry_id}')
-        return converted_url, entry_id
+        # ✅ 返回原始 LTI launch URL，不转换
+        # 这与 book6 分支的方法一致，让 task.py 处理完整的下载流程
+        return url, entry_id
 
     def _create_linked_print_book_html(
         self, print_book_html: str, chapter_mapping: Dict[str, Dict]
@@ -1148,8 +1185,10 @@ class BookMod(MoodleMod):
         for match in matches:
             iframe_src = match.group(1)
 
-            # 从iframe_src中提取entry_id
-            entry_id_match = re.search(r'entryid[/%]([^/%&]+)', iframe_src)
+            # URL 解码后再提取 entry_id（修复 %2F 编码问题）
+            # 例如：entryid%2F1_xxx → entryid/1_xxx
+            decoded_src = urllib.parse.unquote(iframe_src)
+            entry_id_match = re.search(r'entryid[/%]([^/%&]+)', decoded_src)
             if not entry_id_match:
                 continue
 
