@@ -79,19 +79,19 @@ class BookMod(MoodleMod):
             # Initialize book files list
             book_files = []
 
-            # 🎯 方案B：分离会话管理 - 先获取 Print Book，再处理章节
-            # Step 1: 使用 Playwright + cookies 获取 Print Book（独立的认证方式）
-            logging.info('📖 Step 1: Fetching Print Book HTML with Playwright (独立会话)')
+            # 🎯 方案B：分离会话管理 - 先处理章节（必须的），再获取Print Book（可选的）
+            # Step 1: 使用 Mobile API + aiohttp + token 获取章节内容（必须的，独立的认证方式）
+            logging.info('📖 Step 1: Processing chapters from Mobile API (core_contents) [REQUIRED]')
+            book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+
+            # Step 2: 使用 Playwright + cookies 获取 Print Book（可选的，独立的认证方式）
+            logging.info('📖 Step 2: Fetching Print Book HTML with Playwright (独立会话) [OPTIONAL]')
             print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
 
             if print_book_html:
                 logging.info(f'✅ Print Book fetched successfully: {len(print_book_html)} chars')
             else:
                 logging.warning('⚠️  Print Book fetch failed, will use chapter-based content only')
-
-            # Step 2: 使用 Mobile API + aiohttp + token 获取章节内容（完全独立的认证方式）
-            logging.info('📖 Step 2: Processing chapters from Mobile API (core_contents)')
-            book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
 
             if len(book_contents) > 0:
                 # First content is TOC
@@ -130,7 +130,7 @@ class BookMod(MoodleMod):
                 # 🆕 改进：使用章节标题而不是数字ID
                 chapters_by_id = {}  # {chapter_id: {title, folder_name, content, videos, ...}}
 
-                # 🆕 Step 1: Group all content by chapter_id
+                # 🆕 Step 1.1: Group all content by chapter_id
                 # Mobile API returns separate content objects for HTML + attachments
                 contents_by_chapter = {}  # {chapter_id: [content1, content2, ...]}
                 for content in book_contents[1:]:
@@ -151,7 +151,7 @@ class BookMod(MoodleMod):
                             contents_by_chapter[chapter_id] = []
                         contents_by_chapter[chapter_id].append(content)
 
-                # 🆕 Step 2: Process each chapter (sorted by ID for consistent ordering)
+                # 🆕 Step 1.2: Process each chapter (sorted by ID for consistent ordering)
                 chapter_count = 0
                 for chapter_id in sorted(contents_by_chapter.keys()):
                     chapter_contents_list = contents_by_chapter[chapter_id]
@@ -274,10 +274,10 @@ class BookMod(MoodleMod):
                 # No Mobile API contents
                 chapters_by_id = {}
 
-            # Step 3: 现在章节内容已处理，使用 Print Book（已在 Step 1 中获取）
+            # Step 3: 组合结果 - 章节内容已在 Step 1 中处理，Print Book 已在 Step 2 中获取
             # 🆕 改进：使用章节映射链接Print Book中的视频到本地文件
             if print_book_html and chapters_by_id:
-                logging.info('📖 Step 3: Processing Print Book with chapter mappings')
+                logging.info('📖 Step 3: Combining results - Processing Print Book with chapter mappings')
 
                 # 为新helper方法准备章节映射格式
                 chapter_mapping_for_print_book = {}
@@ -308,7 +308,7 @@ class BookMod(MoodleMod):
 
                 logging.info(f'✅ Created complete print book HTML with linked videos: {html_filename}')
             elif print_book_html:
-                logging.info('📖 Step 3: Processing Print Book without chapter mappings')
+                logging.info('📖 Step 3: Combining results - Processing Print Book without chapter mappings')
                 # Print Book exists but no chapters, add as-is
                 html_filename = book_name if book_name.endswith('.html') else f"{book_name}.html"
                 book_files.append({
@@ -322,7 +322,8 @@ class BookMod(MoodleMod):
                 })
                 logging.info(f'✅ Added print book HTML (without chapter mapping): {html_filename}')
             else:
-                logging.warning('⚠️  Could not fetch print book HTML, only chapter-based files available')
+                logging.info('📖 Step 3: Print Book not available, using chapter-based files only')
+                logging.warning('⚠️  Could not fetch print book HTML (Step 2 failed), only chapter-based files available')
 
             # Add all chapters to book_files (after Print Book processing is complete)
             for chapter_id, chapter_info in chapters_by_id.items():
