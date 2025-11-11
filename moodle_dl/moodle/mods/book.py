@@ -79,8 +79,18 @@ class BookMod(MoodleMod):
             # Initialize book files list
             book_files = []
 
-            # 🎯 方案A：先使用 Mobile API 获取章节分离数据
-            logging.info('📖 Step 1: Processing chapters from Mobile API (core_contents)')
+            # 🎯 方案B：分离会话管理 - 先获取 Print Book，再处理章节
+            # Step 1: 使用 Playwright + cookies 获取 Print Book（独立的认证方式）
+            logging.info('📖 Step 1: Fetching Print Book HTML with Playwright (独立会话)')
+            print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
+
+            if print_book_html:
+                logging.info(f'✅ Print Book fetched successfully: {len(print_book_html)} chars')
+            else:
+                logging.warning('⚠️  Print Book fetch failed, will use chapter-based content only')
+
+            # Step 2: 使用 Mobile API + aiohttp + token 获取章节内容（完全独立的认证方式）
+            logging.info('📖 Step 2: Processing chapters from Mobile API (core_contents)')
             book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
 
             if len(book_contents) > 0:
@@ -264,13 +274,10 @@ class BookMod(MoodleMod):
                 # No Mobile API contents
                 chapters_by_id = {}
 
-            # 🎯 方案B：然后使用 Playwright 获取完整 Print Book
-            logging.info('📖 Step 2: Fetching complete Print Book HTML with Playwright')
-            print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
-
-            if print_book_html:
-                # 🆕 改进：使用章节映射链接Print Book中的视频到本地文件
-                # 而不是嵌入完整的iframe或重新下载视频
+            # Step 3: 现在章节内容已处理，使用 Print Book（已在 Step 1 中获取）
+            # 🆕 改进：使用章节映射链接Print Book中的视频到本地文件
+            if print_book_html and chapters_by_id:
+                logging.info('📖 Step 3: Processing Print Book with chapter mappings')
 
                 # 为新helper方法准备章节映射格式
                 chapter_mapping_for_print_book = {}
@@ -300,6 +307,20 @@ class BookMod(MoodleMod):
                 })
 
                 logging.info(f'✅ Created complete print book HTML with linked videos: {html_filename}')
+            elif print_book_html:
+                logging.info('📖 Step 3: Processing Print Book without chapter mappings')
+                # Print Book exists but no chapters, add as-is
+                html_filename = book_name if book_name.endswith('.html') else f"{book_name}.html"
+                book_files.append({
+                    'filename': html_filename,
+                    'filepath': '/',
+                    'timemodified': book.get('timemodified', int(time.time())),
+                    'html': print_book_html,
+                    'type': 'html',
+                    'no_search_for_urls': True,
+                    'filesize': len(print_book_html),
+                })
+                logging.info(f'✅ Added print book HTML (without chapter mapping): {html_filename}')
             else:
                 logging.warning('⚠️  Could not fetch print book HTML, only chapter-based files available')
 
