@@ -18,46 +18,54 @@
 ### 新执行流程
 
 ```
-┌─────────────────────────────────────────┐
-│ Step 1: 获取 Print Book                   │
-│ ├─ 使用 Playwright（独立浏览器进程）      │
-│ ├─ 加载 cookies（SSO 认证）              │
-│ └─ 返回 print_book_html                 │
-└─────────────┬───────────────────────────┘
-              │
-┌─────────────▼───────────────────────────┐
-│ Step 2: 处理章节内容                      │
-│ ├─ 使用 Mobile API（core_contents）     │
+┌──────────────────────────────────────────┐
+│ Step 1: 处理章节内容 [REQUIRED]          │
+│ ├─ 使用 Mobile API（core_contents）      │
 │ ├─ 用 aiohttp 下载章节 HTML（token 认证）│
 │ ├─ 提取 Kaltura 视频                     │
 │ └─ 填充 chapters_by_id                   │
-└─────────────┬───────────────────────────┘
-              │
-┌─────────────▼───────────────────────────┐
-│ Step 3: 组合 Print Book 和章节映射       │
+│                                          │
+│ ⭐️ 这是必须的，无论如何都要完成          │
+└──────────────┬───────────────────────────┘
+               │ (完成后)
+┌──────────────▼───────────────────────────┐
+│ Step 2: 获取 Print Book [OPTIONAL]       │
+│ ├─ 使用 Playwright（独立浏览器进程）     │
+│ ├─ 加载 cookies（SSO 认证）              │
+│ └─ 返回 print_book_html                 │
+│                                          │
+│ ⭐️ 这是可选的，失败也不影响主要内容      │
+└──────────────┬───────────────────────────┘
+               │ (都完成后)
+┌──────────────▼───────────────────────────┐
+│ Step 3: 组合结果                         │
 │ ├─ 如果 print_book_html 存在且有章节     │
 │ │  └─ 使用 _create_linked_print_book_html │
 │ ├─ 如果只有 print_book_html              │
 │ │  └─ 直接添加（无映射）                  │
-│ └─ 添加所有章节文件                      │
-└─────────────────────────────────────────┘
+│ ├─ 章节数据不可用？                      │
+│ │  └─ 仅使用 Print Book（如果有的话）   │
+│ └─ 添加所有 book_files                   │
+└──────────────────────────────────────────┘
 ```
 
 ### 关键改动
 
-#### 1. 执行顺序调整（book.py:82-93）
+#### 1. 执行顺序调整（book.py:82-94）
 
-**之前（旧）**：先处理章节，再获取 Print Book
-**现在（新）**：先获取 Print Book，再处理章节
+**关键决定**：先处理**必须的**章节内容，再尝试**可选的** Print Book
+
+**之前**（原始版本）：先 Print Book，再章节（可能互相影响）
+**现在**（方案B）：先章节（必须），再 Print Book（可选）
 
 ```python
-# Step 1: 使用 Playwright + cookies 获取 Print Book（独立的认证方式）
-logging.info('📖 Step 1: Fetching Print Book HTML with Playwright (独立会话)')
-print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
-
-# Step 2: 使用 Mobile API + aiohttp + token 获取章节内容（完全独立的认证方式）
-logging.info('📖 Step 2: Processing chapters from Mobile API (core_contents)')
+# Step 1: 使用 Mobile API + aiohttp + token 获取章节内容（必须的，独立的认证方式）
+logging.info('📖 Step 1: Processing chapters from Mobile API (core_contents) [REQUIRED]')
 book_contents = self.get_module_in_core_contents(course_id, module_id, core_contents).get('contents', [])
+
+# Step 2: 使用 Playwright + cookies 获取 Print Book（可选的，独立的认证方式）
+logging.info('📖 Step 2: Fetching Print Book HTML with Playwright (独立会话) [OPTIONAL]')
+print_book_html, print_book_url = await self._fetch_print_book_html(module_id, course_id)
 ```
 
 #### 2. 处理逻辑简化（book.py:277-325）
@@ -80,29 +88,32 @@ else:
 
 ### 认证方式隔离
 
-| 阶段 | 工具 | 认证方式 | 状态影响 |
-|------|------|--------|---------|
-| Step 1 | Playwright | cookies (SSO) | 独立浏览器进程 |
-| Step 2 | aiohttp | token (Mobile API) | 独立 HTTP 会话 |
-| Step 3 | Python | 内存操作 | 无网络请求 |
+| 阶段 | 优先级 | 工具 | 认证方式 | 状态影响 |
+|------|--------|------|--------|---------|
+| Step 1 | 🔴 必须 | aiohttp | token (Mobile API) | 独立 HTTP 会话 |
+| Step 2 | 🟡 可选 | Playwright | cookies (SSO) | 独立浏览器进程 |
+| Step 3 | - | Python | 内存操作 | 无网络请求 |
 
 ### 好处
 
 ✅ **完全隔离**
-- Playwright 和 aiohttp 使用完全独立的会话
+- aiohttp（token）和 Playwright（cookies）使用完全独立的会话
 - 互不干扰、互不污染
 
-✅ **独立失败处理**
-- Print Book 失败不影响章节下载
-- 章节下载失败不影响 Print Book
+✅ **清晰的优先级**
+- 🔴 必须的内容（章节）先完成
+- 🟡 可选的内容（Print Book）失败不影响主要下载
+- 确保用户至少能获得核心内容
 
 ✅ **更好的诊断**
-- 清晰的日志顺序：Print Book → 章节 → 组合
+- 清晰的日志顺序：章节 → Print Book → 组合
 - 可以独立排查每个步骤
+- Step 1 失败是严重问题，Step 2 失败是次要问题
 
 ✅ **兼容性**
 - 适用于不同权限配置的 Moodle 实例
-- 即使 Print Book 权限不足，章节内容仍可完整下载
+- 即使 Print Book 权限不足（Step 2 失败），章节内容仍可完整下载（Step 1 成功）
+- "锦上添花" 理念：有 Print Book 更好，没有也无关紧要
 
 ## 实现细节
 
@@ -117,31 +128,55 @@ else:
 
 ## 预期结果
 
-### 最佳情况（两者都成功）
+### 最佳情况（Step 1 ✅ + Step 2 ✅）
 ```
-✅ Print Book HTML：完整的单页版本（有视频链接）
-✅ 章节内容：
-   ├─ 章节 HTML
-   ├─ 附件（PPT、PDF）
-   └─ Kaltura 视频
+🔴 Step 1 成功：
+   ✅ 章节 HTML
+   ✅ 附件（PPT、PDF）
+   ✅ Kaltura 视频
+
+🟡 Step 2 成功：
+   ✅ Print Book HTML（有视频链接）
+
+📊 最终结果：完整的章节内容 + 单页合并版本
 ```
 
-### 降级情况1（Print Book 失败）
+### 降级情况1：Step 1 ✅ + Step 2 ❌
 ```
-❌ Print Book HTML：无法获取
-✅ 章节内容：完全可用（无 Print Book 映射）
+🔴 Step 1 成功：
+   ✅ 章节 HTML
+   ✅ 附件（PPT、PDF）
+   ✅ Kaltura 视频
+
+🟡 Step 2 失败：
+   ❌ Print Book HTML 无法获取
+
+📊 最终结果：完整的章节内容（这是我们需要的最低要求）
+            ⭐️ 用户仍然能获得所有学习内容
 ```
 
-### 降级情况2（章节失败）
+### 降级情况2：Step 1 ❌ + Step 2 ✅（极罕见）
 ```
-✅ Print Book HTML：可用（可能包含嵌入式内容链接）
-❌ 章节内容：无法获取
+🔴 Step 1 失败：
+   ❌ 章节内容无法获取
+
+🟡 Step 2 成功：
+   ✅ Print Book HTML
+
+📊 最终结果：仅有 Print Book（但没有单个章节）
+            ⚠️ 不太理想，但至少有一些内容
 ```
 
-### 降级情况3（两者都失败）
+### 降级情况3：Step 1 ❌ + Step 2 ❌（完全失败）
 ```
-❌ Print Book HTML：无法获取
-❌ 章节内容：无法获取
+🔴 Step 1 失败：
+   ❌ 章节内容无法获取
+
+🟡 Step 2 失败：
+   ❌ Print Book HTML 无法获取
+
+📊 最终结果：无法下载任何内容
+            ❌ 这意味着有严重的权限或连接问题
 ```
 
 ## 测试清单
