@@ -87,10 +87,74 @@ def find_browser_cookie_path(browser_name: str) -> str:
     return None
 
 
+def _repair_firefox_cookies_db():
+    """
+    修复Firefox的cookies.sqlite数据库
+
+    如果主文件不存在或损坏，自动从.bak备份恢复
+    这解决了Firefox关闭后WAL文件无法合并的问题
+    """
+    import platform
+    import os
+
+    system = platform.system()
+
+    # 获取Firefox Profile路径
+    if system == 'Darwin':  # macOS
+        profile_base = os.path.expanduser('~/Library/Application Support/Firefox/Profiles')
+    elif system == 'Linux':
+        profile_base = os.path.expanduser('~/.mozilla/firefox')
+    elif system == 'Windows':
+        profile_base = os.path.join(os.getenv('APPDATA', ''), 'Mozilla', 'Firefox', 'Profiles')
+    else:
+        return False
+
+    if not os.path.exists(profile_base):
+        return False
+
+    # 找到default或default-release profile
+    for profile_dir in os.listdir(profile_base):
+        if 'default' not in profile_dir.lower():
+            continue
+
+        profile_path = os.path.join(profile_base, profile_dir)
+        cookies_main = os.path.join(profile_path, 'cookies.sqlite')
+        cookies_bak = os.path.join(profile_path, 'cookies.sqlite.bak')
+        cookies_wal = os.path.join(profile_path, 'cookies.sqlite-wal')
+
+        # 检查是否需要修复
+        main_exists = os.path.exists(cookies_main) and os.path.getsize(cookies_main) > 0
+        bak_exists = os.path.exists(cookies_bak) and os.path.getsize(cookies_bak) > 1024  # > 1KB
+
+        if not main_exists and bak_exists:
+            # 主文件不存在或为空，但有有效的备份
+            try:
+                import shutil
+                shutil.copy(cookies_bak, cookies_main)
+
+                # 清理WAL文件（可能为空或损坏）
+                if os.path.exists(cookies_wal):
+                    os.remove(cookies_wal)
+
+                return True
+            except Exception as e:
+                continue
+
+    return False
+
+
 def export_cookies_from_browser(domain: str, output_file: str, browser_name='chrome'):
     """从指定浏览器导出 cookies"""
 
     print(f"正在从 {browser_name} 导出 cookies...")
+
+    # Firefox特殊处理：尝试修复数据库
+    if browser_name.lower() == 'firefox':
+        try:
+            if _repair_firefox_cookies_db():
+                print(f"  ℹ️  已自动修复Firefox cookies数据库")
+        except Exception as e:
+            pass  # 静默处理，如果修复失败就继续用browser_cookie3的默认逻辑
 
     try:
         # 定义浏览器到 browser_cookie3 方法的映射
@@ -227,7 +291,31 @@ def export_cookies_from_browser(domain: str, output_file: str, browser_name='chr
         return True
 
     except Exception as e:
-        print(f"❌ 导出失败: {e}")
+        error_msg = str(e)
+        print(f"❌ 导出失败: {error_msg}")
+
+        # 针对Firefox特定错误提供详细的解决方案
+        if 'Failed to find Firefox cookie file' in error_msg or \
+           ('firefox' in browser_name.lower() and 'cookie' in error_msg.lower()):
+            print(f"\n💡 Firefox Cookie 导出失败的常见原因与解决方案：")
+            print(f"   1. Firefox 正在运行（最常见）")
+            print(f"      → 解决：关闭 Firefox 后重试")
+            print(f"         命令：killall Firefox && sleep 3")
+            print(f"   2. Firefox cookies.sqlite 数据库损坏")
+            print(f"      → Firefox 会自动创建 cookies.sqlite.bak 备份")
+            print(f"      → moodle-dl 现在可以自动从备份恢复")
+            print(f"      → 重新运行此命令应该可以成功")
+            print(f"   3. WAL 文件异常")
+            print(f"      → 关闭 Firefox 会清理 WAL 文件")
+            print(f"      → 或手动删除：rm ~/Library/Application\\ Support/Firefox/Profiles/*/cookies.sqlite-wal")
+            print(f"   4. Firefox 从未运行过或 Profile 损坏")
+            print(f"      → 至少运行一次 Firefox 并访问 {domain}")
+            print(f"\n⚠️  推荐步骤：")
+            print(f"   1. killall Firefox  # 关闭 Firefox")
+            print(f"   2. sleep 3          # 等待系统清理")
+            print(f"   3. moodle-dl        # 重新运行此命令")
+            print(f"\n   或者选择其他浏览器（Chrome/Edge/Safari）")
+
         return False
 
 def test_cookies(domain: str, cookies_file: str):
@@ -300,7 +388,479 @@ def test_cookies(domain: str, cookies_file: str):
         print(f"⚠️  测试失败: {e}")
         return False
 
-def export_cookies_interactive(domain: str = None, output_file: str = None, ask_browser: bool = True):
+
+def convert_netscape_to_playwright(cookies_file: str) -> list:
+    """
+    将Netscape格式的cookies转换为Playwright格式
+
+    Args:
+        cookies_file: Netscape格式cookies文件路径
+
+    Returns:
+        Playwright格式的cookies列表
+    """
+    try:
+        import http.cookiejar
+
+        cookie_jar = http.cookiejar.MozillaCookieJar(cookies_file)
+        cookie_jar.load(ignore_discard=True, ignore_expires=True)
+
+        playwright_cookies = []
+        for cookie in cookie_jar:
+            # 处理expires字段
+            expires_value = -1
+            if cookie.expires is not None and cookie.expires > 0:
+                if cookie.expires > 10000000000:
+                    expires_value = int(cookie.expires / 1000)
+                else:
+                    expires_value = int(cookie.expires)
+
+            playwright_cookie = {
+                'name': cookie.name,
+                'value': cookie.value,
+                'domain': cookie.domain,
+                'path': cookie.path,
+                'expires': expires_value,
+                'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
+                'secure': cookie.secure,
+            }
+
+            same_site = cookie.get_nonstandard_attr('SameSite', 'Lax')
+            if same_site:
+                playwright_cookie['sameSite'] = same_site
+
+            playwright_cookies.append(playwright_cookie)
+
+        return playwright_cookies
+    except Exception as e:
+        print(f"❌ 转换cookies失败: {e}")
+        return []
+
+
+def save_playwright_cookies_to_netscape(playwright_cookies: list, output_file: str) -> bool:
+    """
+    将Playwright格式的cookies保存为Netscape格式
+
+    Args:
+        playwright_cookies: Playwright格式的cookies列表
+        output_file: 输出文件路径
+
+    Returns:
+        是否保存成功
+    """
+    try:
+        with open(output_file, 'w') as f:
+            # 写入文件头
+            f.write('# Netscape HTTP Cookie File\n')
+            f.write('# This file is generated by moodle-dl.  Do not edit.\n\n')
+
+            for cookie in playwright_cookies:
+                domain = cookie.get('domain', '')
+                flag = 'TRUE' if domain.startswith('.') else 'FALSE'
+                path = cookie.get('path', '/')
+                secure = 'TRUE' if cookie.get('secure', False) else 'FALSE'
+                expires = cookie.get('expires', 0)
+                # 处理expires：Playwright用-1表示session cookie
+                if expires == -1:
+                    expires = 0
+                name = cookie.get('name', '')
+                value = cookie.get('value', '')
+
+                f.write(f'{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n')
+
+        return True
+    except Exception as e:
+        print(f"❌ 保存cookies失败: {e}")
+        return False
+
+
+# ⚠️ 已废弃: auto_refresh_session_with_sso()
+# 此函数已被 auto_sso_login.py 中的 auto_login_with_sso_sync() 取代
+# 为了符合 DRY 原则，不再维护重复的实现
+
+
+def extract_api_token_with_playwright(domain: str, cookies_file: str):
+    """
+    使用Playwright + cookies自动获取Moodle API token
+
+    这个方法使用无头浏览器访问token获取URL，能够正确处理SSO重定向
+    并捕获最终的moodledl://token=...重定向。
+
+    Args:
+        domain: Moodle域名
+        cookies_file: cookies文件路径
+
+    Returns:
+        tuple: (token, privatetoken) 如果成功，否则 (None, None)
+    """
+    print("\n正在使用Playwright自动获取API token...")
+
+    try:
+        from playwright.async_api import async_playwright
+        import asyncio
+        import http.cookiejar
+        import re
+        import base64
+
+        # 转换cookies到Playwright格式
+        print("  → 加载cookies...")
+        cookie_jar = http.cookiejar.MozillaCookieJar(cookies_file)
+        cookie_jar.load(ignore_discard=True, ignore_expires=True)
+
+        playwright_cookies = []
+        for cookie in cookie_jar:
+            # 处理expires字段（毫秒转秒）
+            expires_value = -1
+            if cookie.expires is not None and cookie.expires > 0:
+                if cookie.expires > 10000000000:
+                    expires_value = int(cookie.expires / 1000)
+                else:
+                    expires_value = int(cookie.expires)
+
+            playwright_cookie = {
+                'name': cookie.name,
+                'value': cookie.value,
+                'domain': cookie.domain,
+                'path': cookie.path,
+                'expires': expires_value,
+                'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
+                'secure': cookie.secure,
+            }
+
+            same_site = cookie.get_nonstandard_attr('SameSite', 'Lax')
+            if same_site:
+                playwright_cookie['sameSite'] = same_site
+
+            playwright_cookies.append(playwright_cookie)
+
+        print(f"  → 已加载 {len(playwright_cookies)} 个cookies")
+
+        # 构造token获取URL
+        moodle_url = f'https://{domain}' if not domain.startswith('http') else domain
+        token_url = f"{moodle_url}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl"
+
+        # 使用Playwright访问
+        async def get_token():
+            captured_urls = []
+
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context()
+                await context.add_cookies(playwright_cookies)
+
+                page = await context.new_page()
+
+                # 🔧 关键修复：先访问Moodle主页来刷新session
+                # 这确保我们有一个活跃的MoodleSession cookie
+                print(f"  → 先访问Moodle主页以刷新session...")
+                try:
+                    await page.goto(f"{moodle_url}/my/", wait_until='domcontentloaded', timeout=15000)
+                    await page.wait_for_timeout(1000)  # 等待cookies更新
+                    print(f"  → Session已刷新")
+                except Exception as e:
+                    print(f"  → 警告: 刷新session失败 ({str(e)[:50]}...)")
+
+                # 监听控制台消息（可能包含重定向信息）
+                def handle_console(msg):
+                    text = msg.text
+                    if 'moodledl://' in text or 'moodlemobile://' in text:
+                        captured_urls.append(text)
+                        print(f"  → 从控制台捕获: {text[:80]}...")
+
+                page.on('console', handle_console)
+
+                # 监听请求（尝试捕获重定向）
+                def handle_request(request):
+                    url = request.url
+                    if 'moodledl://' in url or 'moodlemobile://' in url:
+                        captured_urls.append(url)
+                        print(f"  → 从请求捕获: {url[:80]}...")
+
+                page.on('request', handle_request)
+
+                # 监听响应
+                def handle_response(response):
+                    # 检查Location header
+                    location = response.headers.get('location', '')
+                    if 'moodledl://' in location or 'moodlemobile://' in location:
+                        captured_urls.append(location)
+                        print(f"  → 从响应头捕获: {location[:80]}...")
+
+                page.on('response', handle_response)
+
+                try:
+                    # 访问token URL，期望会重定向到moodledl://
+                    print(f"  → 访问token获取页面...")
+
+                    # 使用wait_for_load_state而不是wait_until，更灵活
+                    response = await page.goto(token_url, wait_until='load', timeout=30000)
+
+                    # 等待一小段时间，让所有事件触发
+                    await page.wait_for_timeout(2000)
+
+                    # 检查页面内容是否包含token URL
+                    content = await page.content()
+                    if 'moodledl://' in content or 'moodlemobile://' in content:
+                        # 从HTML中提取token URL
+                        token_match = re.search(r'(moodledl://token=[\w=]+)', content)
+                        if not token_match:
+                            token_match = re.search(r'(moodlemobile://token=[\w=]+)', content)
+                        if token_match:
+                            captured_urls.append(token_match.group(1))
+                            print(f"  → 从页面内容捕获: {token_match.group(1)[:80]}...")
+
+                except Exception as e:
+                    # 预期可能会出错（无法导航到moodledl://）
+                    error_str = str(e)
+                    print(f"  → 页面加载出错（预期行为）: {error_str[:100]}...")
+
+                    # 尝试从错误消息中提取token URL
+                    if 'moodledl://' in error_str or 'moodlemobile://' in error_str:
+                        match = re.search(r'(moodledl://token=[\w=]+)', error_str)
+                        if not match:
+                            match = re.search(r'(moodlemobile://token=[\w=]+)', error_str)
+                        if match:
+                            captured_urls.append(match.group(1))
+                            print(f"  → 从错误消息捕获: {match.group(1)[:80]}...")
+
+                await browser.close()
+
+                # 返回捕获到的URL
+                if captured_urls:
+                    # 返回第一个有效的token URL
+                    for url in captured_urls:
+                        if 'token=' in url:
+                            return url
+                return None
+
+        # 运行异步函数
+        token_redirect_url = asyncio.run(get_token())
+
+        if not token_redirect_url:
+            print("  ❌ 未能捕获到token重定向URL")
+            return None, None
+
+        # 从URL中提取token
+        print(f"  → 解析token...")
+        match = re.search(r'token=([\w=]+)', token_redirect_url)
+        if not match:
+            print(f"  ❌ 无法从URL中提取token")
+            return None, None
+
+        app_token = match.group(1)
+
+        # 解码Base64 token
+        try:
+            decoded = base64.b64decode(app_token).decode('utf-8')
+            parts = decoded.split(':::')
+
+            if len(parts) == 2:
+                # ⚠️ 重要：Moodle mobile token格式为 "app_token:::web_service_token"
+                # moodle-dl使用第二部分（parts[1]）作为API token
+                # 所以我们需要交换顺序以匹配moodle-dl的预期
+                mobile_app_token = parts[0]  # 用于mobile app
+                web_service_token = parts[1]   # 用于Web Service API（这是真正的API token）
+
+                print(f"  ✅ 成功提取API token")
+                print(f"     Web Service Token: {web_service_token[:20]}...")
+                print(f"     Mobile App Token: {mobile_app_token[:20]}...")
+
+                # 保存时：token字段保存web_service_token（moodle-dl会使用这个）
+                # privatetoken字段保存mobile_app_token（用于mobile app，如果需要的话）
+                save_token_to_config(domain, web_service_token, mobile_app_token, cookies_file)
+
+                return web_service_token, mobile_app_token
+            else:
+                print(f"  ❌ Token格式不正确")
+                return None, None
+
+        except Exception as e:
+            print(f"  ❌ 解码token失败: {e}")
+            return None, None
+
+    except ImportError as e:
+        print(f"  ❌ Playwright未安装: {e}")
+        print(f"  → 请运行: pip install playwright && playwright install chromium")
+        return None, None
+    except Exception as e:
+        print(f"  ❌ 获取API token失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def extract_api_token_with_cookies(domain: str, cookies_file: str):
+    """
+    使用导出的cookies自动获取Moodle API token
+
+    优先使用Playwright方式（更可靠），失败时回退到requests方式
+
+    Args:
+        domain: Moodle域名
+        cookies_file: cookies文件路径
+
+    Returns:
+        tuple: (token, privatetoken) 如果成功，否则 (None, None)
+    """
+    # 优先尝试Playwright方式
+    token, privatetoken = extract_api_token_with_playwright(domain, cookies_file)
+    if token and privatetoken:
+        return token, privatetoken
+
+    # 回退到requests方式（已知对SSO登录不太可靠）
+    print("\n正在使用HTTP请求方式获取API token...")
+    print("（注意：对于SSO登录，此方式可能失败）")
+
+    try:
+        import requests
+        from http.cookiejar import MozillaCookieJar
+        import re
+        import base64
+
+        # 加载cookies
+        session = requests.Session()
+        cookie_jar = MozillaCookieJar(cookies_file)
+        cookie_jar.load(ignore_discard=True, ignore_expires=True)
+        session.cookies = cookie_jar
+
+        # 构造token获取URL
+        moodle_url = f'https://{domain}' if not domain.startswith('http') else domain
+        token_url = f"{moodle_url}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl"
+
+        print(f"访问: {token_url}")
+
+        # 访问URL（不允许自动重定向）
+        # 这样我们可以从响应头中获取重定向URL
+        final_url = None
+        try:
+            response = session.get(token_url, allow_redirects=False, timeout=30)
+
+            # 检查是否有重定向
+            if response.status_code in (301, 302, 303, 307, 308):
+                final_url = response.headers.get('Location', '')
+                print(f"检测到重定向: {final_url[:100]}...")
+            elif response.status_code == 200:
+                # 检查响应内容中是否包含重定向
+                # 有些实现会用JavaScript重定向
+                content = response.text
+                js_match = re.search(r'window\.location\s*=\s*["\']([^"\']+)["\']', content)
+                if js_match:
+                    final_url = js_match.group(1)
+                    print(f"检测到JavaScript重定向: {final_url[:100]}...")
+                else:
+                    print(f"❌ 未检测到重定向，状态码: {response.status_code}")
+                    print(f"   响应内容: {content[:200]}...")
+                    return None, None
+
+        except requests.exceptions.ConnectionError as e:
+            # 有时候重定向到moodledl://会导致连接错误
+            error_str = str(e)
+            match = re.search(r'(moodledl://token=[\w=]+)', error_str)
+            if match:
+                final_url = match.group(1)
+                print(f"从错误中提取token URL: {final_url[:100]}...")
+            else:
+                print(f"❌ 连接错误但无法提取token: {error_str[:200]}")
+                return None, None
+        except Exception as e:
+            print(f"❌ 请求失败: {e}")
+            return None, None
+
+        if not final_url:
+            print(f"❌ 无法获取重定向URL")
+            return None, None
+
+        # 从URL中提取token
+        # 格式: moodledl://token=BASE64STRING
+        match = re.search(r'token=([\w=]+)', final_url)
+        if not match:
+            print(f"❌ 无法从URL中提取token: {final_url}")
+            return None, None
+
+        app_token = match.group(1)
+
+        # 解码Base64 token
+        # 格式: token:::privatetoken
+        try:
+            decoded = base64.b64decode(app_token).decode('utf-8')
+            parts = decoded.split(':::')
+
+            if len(parts) == 2:
+                # ⚠️ 重要：Moodle mobile token格式为 "app_token:::web_service_token"
+                # moodle-dl使用第二部分（parts[1]）作为API token
+                mobile_app_token = parts[0]  # 用于mobile app
+                web_service_token = parts[1]   # 用于Web Service API（这是真正的API token）
+
+                print(f"✅ 成功提取API token")
+                print(f"   Web Service Token: {web_service_token[:20]}...")
+                print(f"   Mobile App Token: {mobile_app_token[:20]}...")
+
+                # 保存时：token字段保存web_service_token（moodle-dl会使用这个）
+                # privatetoken字段保存mobile_app_token（用于mobile app，如果需要的话）
+                save_token_to_config(domain, web_service_token, mobile_app_token, cookies_file)
+
+                return web_service_token, mobile_app_token
+            else:
+                print(f"❌ Token格式不正确: {decoded}")
+                return None, None
+
+        except Exception as e:
+            print(f"❌ 解码token失败: {e}")
+            return None, None
+
+    except Exception as e:
+        print(f"❌ 获取API token失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return None, None
+
+
+def save_token_to_config(domain: str, token: str, privatetoken: str, cookies_file: str):
+    """
+    保存token到moodle-dl配置文件
+
+    Args:
+        domain: Moodle域名
+        token: API token
+        privatetoken: Private token
+        cookies_file: cookies文件路径（用于定位配置目录）
+    """
+    try:
+        import json
+
+        # 配置文件应该在cookies文件同一目录
+        config_dir = os.path.dirname(cookies_file)
+        config_file = os.path.join(config_dir, 'config.json')
+
+        if not os.path.exists(config_file):
+            print(f"⚠️  配置文件不存在: {config_file}")
+            print(f"   Token已获取但未保存，你需要手动配置")
+            print(f"   Token: {token}")
+            print(f"   Private token: {privatetoken}")
+            return
+
+        # 读取现有配置
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+
+        # 更新token
+        config['token'] = token
+        config['privatetoken'] = privatetoken
+
+        # 保存配置
+        with open(config_file, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+
+        print(f"✅ Token已保存到配置文件: {config_file}")
+
+    except Exception as e:
+        print(f"⚠️  保存token到配置文件失败: {e}")
+        print(f"   但token已成功获取:")
+        print(f"   Token: {token}")
+        print(f"   Private token: {privatetoken}")
+
+
+def export_cookies_interactive(domain: str = None, output_file: str = None, ask_browser: bool = True, auto_get_token: bool = False):
     """
     交互式导出 cookies（可被其他模块调用）
 
@@ -308,6 +868,7 @@ def export_cookies_interactive(domain: str = None, output_file: str = None, ask_
         domain: Moodle 域名（例如 moodle.example.com，如果为 None 则会提示用户输入）
         output_file: 输出文件路径（默认为当前目录的 Cookies.txt）
         ask_browser: 是否询问用户选择浏览器（默认 True）
+        auto_get_token: 是否自动获取 API token 而不询问用户（默认 False）
 
     Returns:
         bool: 是否成功导出并验证 cookies
@@ -439,10 +1000,12 @@ def export_cookies_interactive(domain: str = None, output_file: str = None, ask_
 
     # 尝试从选定的浏览器导出
     success = False
+    selected_browser = None
     for browser in browsers_to_try:
         print(f"\n尝试从 {browser} 导出...")
         if export_cookies_from_browser(domain, output_file, browser):
             success = True
+            selected_browser = browser
             break
 
     if not success:
@@ -456,6 +1019,61 @@ def export_cookies_interactive(domain: str = None, output_file: str = None, ask_
         print("=" * 80)
         return False
 
+    # 🚀 使用完全自动化的 SSO 登录来刷新 cookies
+    # 只要 SSO cookies 有效，完全无需手动操作
+    print("\n🔄 正在使用自动 SSO 登录刷新 cookies...")
+    print("   （只要 Microsoft/Google 的 SSO cookies 有效，将完全自动化）")
+
+    try:
+        # 导入自动 SSO 登录模块
+        # 注意：这个脚本可能从不同位置被调用，需要动态导入
+        import importlib.util
+        import sys
+
+        # 尝试直接导入（如果在 moodle-dl 环境中）
+        try:
+            from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+        except ImportError:
+            # 回退：尝试从文件路径加载
+            auto_sso_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                'moodle_dl', 'auto_sso_login.py'
+            )
+            if os.path.exists(auto_sso_path):
+                spec = importlib.util.spec_from_file_location("auto_sso_login", auto_sso_path)
+                auto_sso_module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(auto_sso_module)
+                auto_login_with_sso_sync = auto_sso_module.auto_login_with_sso_sync
+            else:
+                raise ImportError("Cannot find auto_sso_login module")
+
+        # 使用自动 SSO 登录刷新 cookies
+        refresh_success = auto_login_with_sso_sync(
+            moodle_domain=domain,
+            cookies_path=output_file,
+            preferred_browser=selected_browser,
+            headless=True  # 后台运行
+        )
+
+        if not refresh_success:
+            # 自动 SSO 登录失败 - 说明 SSO cookies 完全过期
+            print("\n" + "=" * 80)
+            print("⚠️  自动 SSO 登录失败 - SSO cookies 已完全过期")
+            print("=" * 80)
+            print("\n💡 解决方案：")
+            print(f"   在{selected_browser}浏览器中访问 {domain} 并完成 SSO 登录")
+            print(f"   登录后，SSO cookies 会自动保存到浏览器")
+            print(f"   然后重新运行此命令，将能够完全自动化")
+            print("\n📌 这是唯一需要手动操作的场景（SSO cookies 完全过期时）")
+            print("   之后的所有操作都将完全自动化，无需再次手动登录")
+            print("=" * 80)
+            return False
+
+    except Exception as e:
+        print(f"\n⚠️  自动 SSO 登录出错: {e}")
+        print("   回退到测试现有 cookies...")
+        refresh_success = False
+
     # 测试 cookies
     cookies_valid = test_cookies(domain, output_file)
 
@@ -463,6 +1081,17 @@ def export_cookies_interactive(domain: str = None, output_file: str = None, ask_
         print("\n" + "=" * 80)
         print("✅ Cookies 导出成功并已验证！")
         print("=" * 80)
+
+        # 获取API token - 始终自动获取，不询问用户
+        if auto_get_token or ask_browser:
+            # API token是必需的，直接自动获取
+            print("\n正在自动获取Moodle API token...")
+            print("（API token用于通过Web Service API下载课程内容）")
+            token, privatetoken = extract_api_token_with_cookies(domain, output_file)
+            if token and privatetoken:
+                print(f"✅ 已成功获取并保存API token!")
+            else:
+                print(f"⚠️  API token获取失败，你可以稍后手动运行: moodle-dl --new-token --sso")
 
     return cookies_valid
 

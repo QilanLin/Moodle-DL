@@ -29,6 +29,21 @@ class ConfigWizard:
             self.core_handler.version = version
         return user_id, version
 
+    @staticmethod
+    def get_config_steps_count() -> int:
+        """
+        返回配置向导的步骤数量
+        """
+        # 配置步骤菜单 - 与 interactively_acquire_config 中的步骤定义保持一致
+        steps = [
+            ('选择要下载的课程', None),
+            ('设置课程选项', None),
+            ('配置要下载的模块类型', None),
+            ('配置课程描述下载', None),
+            ('配置描述中的链接下载', None),
+        ]
+        return len(steps)
+
     def interactively_acquire_config(self):
         """
         Guides the user through the process of configuring the downloader
@@ -50,9 +65,11 @@ class ConfigWizard:
             ('配置要下载的模块类型', self._select_modules_to_download),
             ('配置课程描述下载', self._select_should_download_descriptions),
             ('配置描述中的链接下载', self._select_should_download_links_in_descriptions),
-            ('配置外部链接文件下载', self._select_should_download_linked_files),
-            ('配置需要 Cookie 的文件下载', self._select_should_download_also_with_cookie),
         ]
+
+        # 自动启用以下功能（不再需要用户单独配置）
+        self.config.set_property('download_also_with_cookie', True)  # Cookie下载
+        self.config.set_property('download_linked_files', True)      # 外部链接文件下载（ffmpeg是必需依赖）
 
         current_step = 0
 
@@ -467,55 +484,55 @@ class ConfigWizard:
         modules = [
             # 评估与作业模块
             ('download_submissions', '作业提交 (Submissions)',
-             'Submissions（提交）是你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。'),
+             '你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。'),
             ('download_quizzes', '测验 (Quizzes)',
              '测验是学生必须完成的在线考试，会被评分。包含题目、答案和成绩。只有正在进行或已完成的测验会被下载。'),
             ('download_lessons', '课程 (Lessons)',
-             'Lessons（课程）是一种自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。'),
+             '自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。'),
             ('download_workshops', '研讨会 (Workshops)',
-             'Workshops（研讨会）按照同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
+             '按同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
 
             # 内容与资源模块
             ('download_books', '书籍 (Books)',
-             'Books（书籍）是页面的集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
+             '页面集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
             ('download_scorms', 'SCORM包 (SCORM)',
-             'SCORM 是电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
+             '电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
             ('download_h5pactivities', 'H5P活动 (H5P Activities)',
-             'H5P 是现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
+             '现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
             ('download_imscps', 'IMS内容包 (IMS Content Package)',
-             'IMS CP 是IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
+             'IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
             ('download_urls', 'URL链接 (URLs)',
-             'URL 模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
+             '模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
             ('download_labels', '标签 (Labels)',
-             'Labels（标签）是课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
+             '课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
 
             # 协作与交流模块
             ('download_forums', '论坛 (Forums)',
              '论坛是学生和老师讨论交流的地方。包含讨论帖、回复、附件和评分信息。'),
             ('download_wikis', '维基 (Wikis)',
-             'Wikis（维基）是协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。'),
+             '协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。'),
             ('download_glossaries', '词汇表 (Glossaries)',
-             'Glossaries（词汇表）用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。'),
+             '用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。'),
             ('download_databases', '数据库 (Databases)',
              '数据库模块允许结构化数据收集和展示。包含数据库结构定义(schema)、所有条目数据、附件和元数据。学生通常可以添加和编辑条目。'),
             ('download_chats', '聊天 (Chats)',
-             'Chat（聊天）模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。'),
+             '模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。'),
 
             # 调查与反馈模块
             ('download_feedbacks', '反馈 (Feedbacks)',
-             'Feedbacks（反馈）是自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。'),
+             '自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。'),
             ('download_surveys', '调查 (Surveys)',
-             'Surveys（调查）是预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。'),
+             '预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。'),
             ('download_choices', '投票/选择 (Choices)',
-             'Choice（投票）是简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。'),
+             '简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。'),
 
             # 其他模块
             ('download_calendars', '日历 (Calendar)',
              '日历包含课程的所有事件和截止日期。每个事件导出为HTML文件，包含详细的事件信息、时间和附件。'),
             ('download_bigbluebuttonbns', 'BigBlueButton会议 (BigBlueButton)',
-             'BigBlueButton 是在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
+             '在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
             ('download_qbanks', '题库 (Question Banks)',
-             'Question Banks（题库）包含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
+             '含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
         ]
 
         # 获取当前配置
@@ -643,10 +660,8 @@ class ConfigWizard:
 
     def _select_should_download_also_with_cookie(self):
         """
-        Ask the user whether files for which a cookie is required should be downloaded.
+        自动启用 cookie 下载功能，并引导用户从浏览器导出 cookies 和 API token。
         """
-        download_also_with_cookie = self.config.get_download_also_with_cookie()
-
         self.section_seperator()
         Log.info(
             '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
@@ -654,36 +669,48 @@ class ConfigWizard:
             + '所以你需要浏览器 cookie 来下载这些插件文件。'
         )
 
-        Log.debug(
-            'Moodle 浏览器 cookie（MoodleSession）会使用你的私有令牌自动生成，并存储在 `Cookies.txt` 文件中。'
-            + '对于 SSO 登录（如 Microsoft、Google、Okta 等），你还需要手动从浏览器导出额外的 SSO 认证 cookies。'
-        )
+        print('')
+        Log.success('✅ Cookie 下载功能已自动启用')
 
-        if self.config.get_privatetoken() is None:
-            Log.error(
-                '当前配置中没有存储私有令牌。'
-                + '使用 moodle-dl --new-token 获取 Moodle Token（SSO 登录需加上 --sso）'
-            )
+        # 直接设置为 True，不再询问
+        self.config.set_property('download_also_with_cookie', True)
 
+        # 快速检查是否已有完整的cookies文件
+        from moodle_dl.utils import PathTools as PT
+        moodle_url = self.config.get_moodle_URL()
+        if moodle_url is None:
+            Log.error('错误：未找到 Moodle URL 配置，无法检查 cookies')
+            return
+
+        cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
+        cookies_exist = os.path.exists(cookies_path)
+
+        if cookies_exist:
+            has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_url.domain)
+            if has_sso_cookies:
+                # 如果已有完整cookies，只显示简短确认
+                Log.info(f'✅ 检测到完整的 Cookies.txt 文件，将用于下载受保护的内容')
+                print('')
+                return  # 直接返回，不显示冗长的导出流程
+
+        # 只有在没有cookies或cookies不完整时，才进入完整的导出流程
+        print('')
+        Log.info('现在将从浏览器导出 cookies（用于下载受保护的内容）')
         print('')
 
-        download_also_with_cookie = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想要下载需要 cookie 的文件吗？'),
-            default_is_yes=download_also_with_cookie,
-        )
+        # 引导导出浏览器 cookies 和 API token
+        self._export_browser_cookies_and_token()
 
-        self.config.set_property('download_also_with_cookie', download_also_with_cookie)
-
-        # 如果用户选择 Yes，引导导出浏览器 cookies
-        if download_also_with_cookie:
-            self._export_browser_cookies_if_needed()
-
-    def _export_browser_cookies_if_needed(self):
+    def _export_browser_cookies_and_token(self):
         """
-        引导用户导出浏览器 cookies（包含 SSO 提供商的认证 cookies）
+        引导用户从浏览器导出 cookies 和 API token（一步完成）
+        对于 SSO 登录，会同时导出所有必需的认证 cookies 和自动获取 API token
         """
         print('')
-        Log.warning('⚠️  对于 SSO 登录（如 Microsoft、Google、Okta 等），需要从浏览器导出额外的 cookies。')
+        Log.info('💡 提示：')
+        Log.info('   • 将从浏览器自动导出 cookies（包含 SSO 认证信息）')
+        Log.info('   • 同时自动获取 Moodle API token')
+        Log.info('   • 无需手动打开开发者工具！')
         print('')
 
         # 获取 Moodle URL 和输出路径
@@ -704,7 +731,13 @@ class ConfigWizard:
             has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_domain)
 
             if has_sso_cookies:
-                Log.info(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）: {cookies_path}')
+                # 如果cookies文件已存在且包含SSO cookies，说明在前面的token获取步骤中已经导出过
+                # 直接使用现有cookies，不再重复导出
+                Log.success(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）')
+                Log.info(f'   路径: {cookies_path}')
+                Log.info('   将使用现有cookies，无需重新导出')
+                print('')
+                return  # 直接返回，不再重复导出
             else:
                 Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies: {cookies_path}')
                 Log.info('   建议重新导出以获取完整的浏览器 cookies。')
@@ -835,16 +868,31 @@ class ConfigWizard:
                 if success:
                     # 验证 cookies
                     success = export_module.test_cookies(moodle_domain, cookies_path)
+
+                    # 自动获取API token
+                    if success:
+                        print('')
+                        Log.info('正在自动获取Moodle API token...')
+                        token, privatetoken = export_module.extract_api_token_with_cookies(moodle_domain, cookies_path)
+                        if token and privatetoken:
+                            Log.success('✅ 已成功获取并保存API token!')
+                        else:
+                            Log.warning('⚠️  API token获取失败，你可以稍后手动运行: moodle-dl --new-token --sso')
             else:
                 # 用户选择自动检测
                 success = export_module.export_cookies_interactive(
                     domain=moodle_domain,
                     output_file=cookies_path,
-                    ask_browser=False  # 已经在这里选择了
+                    ask_browser=False,  # 已经在这里选择了
+                    auto_get_token=True  # 自动获取API token，不再询问
                 )
 
             if success:
                 Log.success('✅ 浏览器 cookies 导出成功！')
+                # Save the selected browser to config for future auto-refresh
+                if selected_browser:
+                    self.config.set_property('preferred_browser', selected_browser)
+                    Log.info(f'✅ 已保存浏览器选择（{selected_browser}），将用于自动刷新cookies')
             else:
                 Log.error('❌ 浏览器 cookies 导出失败')
                 Log.warning('你可以稍后手动导出 cookies：')

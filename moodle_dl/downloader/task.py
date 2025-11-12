@@ -99,6 +99,14 @@ class Task:
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath
             )
+
+        # 🆕 Special handling for embedded videos (kalvidres, helixmedia, etc.)
+        # These are embedded in book/page/etc modules and should be saved in the module folder
+        if file.module_modname in ('cookie_mod-kalvidres', 'cookie_mod-helixmedia'):
+            return PT.path_of_file_in_module(
+                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
+            )
+
         return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
 
     def add_token_to_url(self, url: str) -> str:
@@ -401,9 +409,11 @@ class Task:
         if self.file.content_type == 'description-url':
             filename_template = '%(title).180B (%(id).32B).%(ext)s'
         else:
-            filename_template = (
-                PT.truncate_filename(self.filename, is_file=True, max_length=90) + ' - %(title).90B (%(id).32B).%(ext)s'
-            )
+            # For kalvidres and other videos, use the Moodle-provided filename directly
+            # This produces clean names like "fun 1 (21 mins).mp4" instead of "fun 1 (21 mins) - 08-fun1 (1_p3fpdw24).mp4"
+            # Remove extension from filename and let yt-dlp add it automatically
+            base_name = os.path.splitext(self.filename)[0]  # Remove .mp4 if present
+            filename_template = PT.truncate_filename(base_name, is_file=False, max_length=240) + '.%(ext)s'
         output_template = str(Path(self.destination) / filename_template)
 
         ydl_opts = {
@@ -639,10 +649,14 @@ class Task:
         @param ignore_attributes: If the file attributes should be ignored.
         """
         if self.file.content_type == 'description' and not ignore_attributes:
-            self.file.saved_to = str(Path(self.destination) / (self.filename + '.md'))
+            # 🔧 避免双重.md扩展名
+            filename = self.filename if self.filename.endswith('.md') else (self.filename + '.md')
+            self.file.saved_to = str(Path(self.destination) / filename)
 
         elif self.file.content_type == 'html' and not ignore_attributes:
-            self.file.saved_to = str(Path(self.destination) / (self.filename + '.html'))
+            # 🔧 避免双重.html扩展名
+            filename = self.filename if self.filename.endswith('.html') else (self.filename + '.html')
+            self.file.saved_to = str(Path(self.destination) / filename)
 
         elif force_file_extension is not None:
             self.file.saved_to = str(Path(self.destination) / (self.filename + f'.{force_file_extension}'))

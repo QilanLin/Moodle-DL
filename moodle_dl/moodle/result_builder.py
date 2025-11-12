@@ -78,6 +78,11 @@ class ResultBuilder:
             module_contents = module.get('contents', [])
             module_description = module.get('description', None)
 
+            # 🔍 DEBUG: Log all modules to see which branch books go through
+            if 'week 1' in location.get('module_name', '').lower() and 'software' in location.get('module_name', '').lower():
+                logging.info(f'🔵 [TRACE] Processing module: name="{location["module_name"]}", modname={location["module_modname"]}, id={location["module_id"]}')
+                logging.info(f'🔵 [TRACE]   module_description={module_description is not None}, module_contents={len(module_contents)}, module_url={module_url[:50] if module_url else "None"}')
+
             # handle not supported modules that results in an index.html special
             if location['module_modname'] in ['moodecvideo']:
                 location['module_modname'] = 'index_mod-' + location['module_modname']
@@ -102,11 +107,32 @@ class ResultBuilder:
 
             elif location['module_modname'] in fetched_mods:
                 # find mod module with same module_id
+                if location['module_modname'] == 'book':
+                    logging.info(f'🟢 [DEBUG] BOOK BRANCH HIT! module_id={location["module_id"]}, module_name={location["module_name"]}')
+                    logging.info(f'🟢 [DEBUG] fetched_mods.keys()={list(fetched_mods.keys())}')
+                    logging.info(f'🟢 [DEBUG] fetched_mods["book"].keys()={list(fetched_mods.get("book", {}).keys())}')
+
                 mod = fetched_mods.get(location['module_modname'], {}).get(location['module_id'], {})
                 mod['on_main_page'] = True
                 mod_files = mod.get('files', [])
+
+                # 🔍 DEBUG: Log book module file usage
+                if location['module_modname'] == 'book':
+                    logging.info(f'🔍 [ResultBuilder] Using files from book module for "{location["module_name"]}" (module_id={location["module_id"]})')
+                    logging.info(f'🔍 [ResultBuilder]   Found {len(mod_files)} files in fetched_mods')
+                    if location['module_id'] not in fetched_mods.get('book', {}):
+                        logging.warning(f'⚠️  Module ID {location["module_id"]} NOT in fetched_mods["book"]!')
+                        logging.warning(f'⚠️  Available module IDs: {list(fetched_mods.get("book", {}).keys())}')
+
                 files += self._handle_files(mod_files, **location)
             else:
+                # 🔍 DEBUG: Log if book module is not in fetched_mods
+                if location['module_modname'] == 'book':
+                    logging.warning(f'⚠️  [ResultBuilder] Book module "{location["module_name"]}" NOT in fetched_mods!')
+                    logging.warning(f'⚠️  [ResultBuilder]   module_id={location["module_id"]}, modname={location["module_modname"]}')
+                    logging.warning(f'⚠️  [ResultBuilder]   Available mods: {list(fetched_mods.keys())}')
+                    logging.warning(f'⚠️  [ResultBuilder]   module_contents count: {len(module_contents)}')
+
                 if location['module_modname'] not in ['label']:
                     logging.debug(
                         'Got unhandled module: name=%s mod=%s url=%s',
@@ -137,9 +163,17 @@ class ResultBuilder:
     def _get_files_not_on_main_page(self, fetched_mods: Dict[str, Dict]) -> List[File]:
         """
         Iterates over all mods to find files (or content) that are not listed on the main page.
-        @param fetched_mods: Contains the fetched mods of the course
+        @param fetched_mods: Contains the fetched_mods of the course
         @return: A list of files of mod modules not on the main page.
         """
+        import logging
+
+        # 🔍 DEBUG: Log books processing
+        if 'book' in fetched_mods:
+            logging.info(f'🟡 [NOT_ON_MAIN_PAGE] Found {len(fetched_mods["book"])} book(s) in fetched_mods')
+            for module_id, module in list(fetched_mods["book"].items())[:3]:
+                logging.info(f'🟡 [NOT_ON_MAIN_PAGE]   Book {module_id}: name={module.get("name", "?")}, on_main_page={("on_main_page" in module)}, files_count={len(module.get("files", []))}')
+
         files = []
         for mod_name, mod_modules in fetched_mods.items():
             location = {
@@ -157,6 +191,10 @@ class ResultBuilder:
                         'module_modname': mod_name,
                     }
                 )
+
+                # 🔍 DEBUG: Log when book is processed here
+                if mod_name == 'book':
+                    logging.info(f'🟡 [NOT_ON_MAIN_PAGE] Processing book: "{location["module_name"]}" (id={location["module_id"]}), files_count={len(module.get("files", []))}')
 
                 # Handle not supported modules that results in an index.html special
                 if location['module_modname'] in ['page'] and self.version < 2017051500:
@@ -226,6 +264,12 @@ class ResultBuilder:
         urls += list(set(re.findall(r'data=[\'"]?([^\'" >]+)', content_html)))
         urls = list(set(urls))
 
+        logging.debug(f'   🔎 _find_all_urls() found {len(urls)} raw URLs in HTML (length={len(content_html)})')
+        if 'kaltura' in content_html.lower():
+            logging.debug(f'   🎬 HTML contains "kaltura" - checking if Kaltura URLs are in extracted URLs')
+            kaltura_urls = [u for u in urls if 'kaltura' in u.lower()]
+            logging.debug(f'   🎬 Found {len(kaltura_urls)} Kaltura URLs: {kaltura_urls[:2] if kaltura_urls else "None"}')
+
         result = []
         original_module_modname = location['module_modname']
 
@@ -267,6 +311,24 @@ class ResultBuilder:
             elif url_parts.hostname == self.moodle_domain:
                 location['module_modname'] = 'cookie_mod-description-' + original_module_modname
 
+            # Special handling for Kaltura LTI launch URLs
+            # These are embedded Kaltura videos accessed via LTI (Learning Tools Interoperability)
+            # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
+            kaltura_converted = False
+            if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
+                # Extract entry_id from the source parameter
+                # URL format: ...source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2F...%2Fentryid%2F1_uwhesokp%2F...
+                entry_id_match = re.search(r'entryid[/%]([^/%&]+)', url)
+                if entry_id_match:
+                    entry_id = entry_id_match.group(1)
+                    # Convert to kalvidres URL format (same as standalone kalvidres modules)
+                    # This allows the video to be downloaded using the existing kalvidres handler
+                    url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+                    location['module_modname'] = 'cookie_mod-kalvidres'
+                    kaltura_converted = True
+                    logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
+
+            # Determine filename based on URL type
             if url.startswith('data:'):
                 # Schema: data:[<mime type>][;charset=<Charset>][;base64],<Data>
                 embedded_data = url.split(',', 1)[1]
@@ -284,6 +346,9 @@ class ResultBuilder:
                 short_data_hash = m.hexdigest()
 
                 fist_guess_filename = f'embedded_{media_type} ({short_data_hash}){file_extension_guess}'
+            elif kaltura_converted:
+                # Use entry_id for Kaltura videos
+                fist_guess_filename = f'Kaltura Video {entry_id}'
             else:
                 fist_guess_filename = url
                 if len(fist_guess_filename) > 254:
@@ -343,6 +408,14 @@ class ResultBuilder:
             module_modname: str,
         """
         import logging
+
+        # Debug: Log what we're processing
+        if location.get('module_modname') == 'book':
+            logging.debug(f'📚 _handle_files() for book: module_name={location.get("module_name")}, contents_count={len(module_contents)}')
+            for i, content in enumerate(module_contents):
+                logging.debug(f'   Content[{i}]: type={content.get("type")}, filename={content.get("filename", "?")},'
+                             f' has_html={("html" in content)}, html_len={len(content.get("html", ""))}')
+
         files = []
         kalvidres_count = 0
         for content in module_contents:
@@ -358,11 +431,13 @@ class ResultBuilder:
             # Keep module_modname as 'book' so videos are saved inside the book folder
             if content_type == 'kalvidres_embedded':
                 logging.info(f'🎥 Processing embedded Kaltura video: {content_filename}')
-                # Create File entry keeping book module context for proper path
+                # Create File entry, override module_modname to trigger yt-dlp in task.py
                 # Path will be: section_name/module_name/content_filepath/content_filename
+                # 需要创建一个修改后的 location 副本，覆盖 module_modname
+                video_location = {**location, 'module_modname': 'cookie_mod-kalvidres'}
                 file_obj = File(
-                    **location,
-                    content_filepath='/',  # Put videos at root of book folder
+                    **video_location,
+                    content_filepath=content_filepath,  # Use filepath from content (e.g., '/691947/')
                     content_filename=content_filename,  # Video name
                     content_fileurl=content_fileurl,  # Kalvidres URL
                     content_filesize=0,
@@ -372,7 +447,7 @@ class ResultBuilder:
                 )
                 files.append(file_obj)
                 kalvidres_count += 1
-                logging.info(f'   Created book-embedded kalvidres file: {content_filename}')
+                logging.info(f'   Created book-embedded kalvidres file: {content_filename} (path: {content_filepath})')
                 continue  # Skip normal file processing for this
 
             if content_fileurl == '' and location['module_modname'].startswith(('url', 'index_mod', 'cookie_mod')):
@@ -410,15 +485,44 @@ class ResultBuilder:
                 new_file.content = content.get('content', '')
 
             if content_type in ['description', 'html'] and not content.get('no_search_for_urls', False):
-                files += self._find_all_urls(
+                logging.debug(
+                    f'🔍 URL extraction for {content_type}: filename={content_filename}, '
+                    f'html_length={len(content_html)}, module={location.get("module_modname", "?")}'
+                )
+                extracted_files = self._find_all_urls(
                     content_html,
                     no_search_for_moodle_urls=content.get('no_search_for_moodle_urls', False),
                     filter_urls_containing=content.get('filter_urls_during_search_containing', []),
                     **location,
                     content_filepath=content_filepath,
                 )
+                if extracted_files:
+                    logging.debug(f'   ✅ Extracted {len(extracted_files)} URLs from {content_filename}')
+                    for extracted_file in extracted_files[:3]:  # Log first 3 URLs
+                        logging.debug(f'      - {extracted_file.content_fileurl[:80]}...')
+                files += extracted_files
 
             files.append(new_file)
+
+            # 🆕 处理嵌套的 contents 数组（支持层级化的文件结构）
+            # 这使得 feature/print-book 分支中 chapter_content['contents'] 中的视频能被正确处理
+            nested_contents = content.get('contents', [])
+            if nested_contents:
+                logging.debug(f'🔄 Processing nested contents in "{content_filename}": {len(nested_contents)} items')
+
+                # 递归处理嵌套内容，保持相同的 location 上下文（module_id, section_id 等）
+                nested_files = self._handle_files(nested_contents, **location)
+                files += nested_files
+
+                # 统计嵌套内容中的 Kaltura 视频
+                # 注意：nested_file.module_modname 仍然是 'book'，不是 'kalvidres'
+                # 所以我们检查 content_type 和 fileurl 来识别视频
+                for nested_file in nested_files:
+                    if nested_file.content_type == 'cookie_mod' and \
+                       ('kalvidres' in nested_file.content_fileurl or 'helixmedia' in nested_file.content_fileurl):
+                        kalvidres_count += 1
+
+                logging.debug(f'   ✅ Added {len(nested_files)} nested files from "{content_filename}"')
 
         if kalvidres_count > 0:
             logging.info(f'📤 _handle_files() returning {kalvidres_count} Kaltura videos for module "{location.get("module_name", "?")}"')
