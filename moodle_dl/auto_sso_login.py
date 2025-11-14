@@ -366,22 +366,31 @@ async def auto_login_with_sso(
                 logging.info(f'📍 最终URL: {current_url}')
                 logging.debug(f'🔍 是否经历过 SSO 重定向: {visited_sso}')
 
-                # 检查是否在登录/认证页面（失败）
+                # 检查是否在登录/认证页面
+                # 注意：停留在 Microsoft/Google OAuth 授权页面可能不是 cookies 过期
+                # 而是需要额外的交互式验证（Playwright 无法自动处理）
                 if 'login' in current_url.lower() or 'auth' in current_url.lower():
-                    logging.warning('⚠️  仍在登录页面，SSO cookies 可能已过期')
-                    logging.info('')
-                    logging.info('💡 解决方案：')
-                    logging.info('   在浏览器中访问 keats.kcl.ac.uk 并完成 SSO 登录')
-                    logging.info('   登录后，SSO cookies 会自动保存到浏览器')
-                    logging.info('   然后重新运行此命令，将能够完全自动化')
-                    logging.info('')
+                    # 区分不同的登录页面类型
+                    if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
+                        logging.warning('⚠️  Playwright 停留在 SSO 授权页面')
+                        logging.info('   原因：需要额外的交互式验证（Playwright 自动化无法完成）')
+                        logging.info('   但这不代表 SSO cookies 完全过期！')
+                        logging.debug('   💡 Playwright 自动登录失败，将回退到浏览器导出的 cookies')
+                    else:
+                        logging.warning('⚠️  Playwright 停留在 Moodle 登录页面')
+                        logging.info('   原因：SSO cookies 可能已过期，或需要重新验证')
 
                     # 保存当前页面截图（调试用）
                     screenshot_path = '/tmp/moodle_sso_login_failed.png'
-                    await page.screenshot(path=screenshot_path)
-                    logging.debug(f'📸 已保存截图到: {screenshot_path}')
+                    try:
+                        await page.screenshot(path=screenshot_path)
+                        logging.debug(f'📸 已保存截图到: {screenshot_path}')
+                    except:
+                        pass
 
                     await browser.close()
+                    # 返回 False，但这不意味着 cookies 完全无用
+                    # 调用者应该回退到使用浏览器导出的 cookies
                     return False
 
                 # 检查页面内容中的错误标志

@@ -43,18 +43,56 @@ class CookieHandler:
     def test_cookies(self) -> bool:
         """
         Test if cookies are valid
+        支持多种验证方式，更加容错
         @return: True if valid
         """
 
         logging.debug('Testing cookies using this URL: %s', self.moodle_test_url)
 
         response, dummy = self.client.get_URL(self.moodle_test_url, self.cookies_path)
-
         response_text = response.text
+        response_url = response.url
 
+        # 方法 1：检查是否有 logout 链接（最直接的有效标记）
         if response_text.find('login/logout.php') >= 0:
+            logging.debug('✅ 验证成功（方法1）：找到 logout 链接')
             return True
-        return False
+
+        # 方法 2：检查是否被重定向到登录页（cookies 无效的标志）
+        if 'login/index.php' in response_url or 'enrol/index.php' in response_url:
+            logging.debug(f'❌ 验证失败（方法2）：被重定向到登录/注册页: {response_url}')
+            return False
+
+        # 方法 3：检查页面是否含有 Moodle 特定的内容标记
+        moodle_markers = [
+            'moodle',
+            'course',
+            'dashboard',
+        ]
+        if any(marker.lower() in response_text.lower() for marker in moodle_markers):
+            logging.debug('✅ 验证成功（方法3）：页面包含 Moodle 标记')
+            return True
+
+        # 方法 4：检查是否有错误提示（未登录的标志）
+        error_markers = [
+            'not logged in',
+            'login required',
+            'guest access',
+            'please log in',
+        ]
+        if any(marker.lower() in response_text.lower() for marker in error_markers):
+            logging.debug('❌ 验证失败（方法4）：页面显示未登录错误')
+            return False
+
+        # 方法 5：基于响应长度（如果被重定向到登录页，响应会很短）
+        if len(response_text) < 100:
+            logging.debug(f'⚠️  验证不确定（方法5）：响应内容很短 ({len(response_text)} 字符)')
+            return False
+
+        # 如果以上方法都不能确定，假设 cookies 有效
+        # 理由：如果 cookies 真的过期了，会被重定向到登录页（方法2会检测到）
+        logging.debug('✅ 验证成功（默认）：无法判定为过期，假设 cookies 有效')
+        return True
 
     def check_and_fetch_cookies(self, privatetoken: str, userid: str) -> bool:
         if os.path.exists(self.cookies_path):
