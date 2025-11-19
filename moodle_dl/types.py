@@ -359,6 +359,7 @@ class DownloadOptions:
     restricted_filenames: bool
     write_links: Dict
     download_path: str
+    download_metadata_files: bool
     global_opts: MoodleDlOpts
 
 

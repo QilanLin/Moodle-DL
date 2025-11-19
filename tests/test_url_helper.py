@@ -4,11 +4,11 @@ URL Helper 单元测试
 测试基于官方 Moodle Mobile App 改进的 URL 处理功能
 """
 
-import pytest
+import unittest
 from moodle_dl.utils import UrlHelper
 
 
-class TestFixPluginfileUrl:
+class TestFixPluginfileUrl(unittest.TestCase):
     """测试 fix_pluginfile_url 方法"""
 
     def test_basic_pluginfile_url(self):
@@ -118,7 +118,7 @@ class TestFixPluginfileUrl:
 # TestUnfixPluginfileUrl - 暂时跳过，因为只实现了核心功能
 
 
-class TestIsPluginfileUrl:
+class TestIsPluginfileUrl(unittest.TestCase):
     """测试 is_pluginfile_url 方法"""
 
     def test_standard_pluginfile(self):
@@ -147,7 +147,7 @@ class TestIsPluginfileUrl:
 # 其他辅助方法测试 - 暂时跳过，只实现了核心功能
 
 
-class TestIntegration:
+class TestIntegration(unittest.TestCase):
     """集成测试 - 测试完整的使用场景"""
 
     def test_real_world_scenario_1(self):
@@ -190,4 +190,4 @@ class TestIntegration:
 
 
 if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+    unittest.main()

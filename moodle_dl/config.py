@@ -201,6 +201,20 @@ class ConfigHelper:
     def get_download_calendars(self) -> bool:
         return self.get_download_option('calendars')
 
+    def get_download_metadata_files(self) -> bool:
+        """
+        Get whether to download metadata files (JSON, info, etc.)
+        
+        Metadata files include:
+        - Resource module metadata (.json files corresponding to PDFs/videos)
+        - Module info files (_info)
+        - Notes files (_notes.md)
+        - Other auto-generated metadata
+        
+        Default: False (disabled to keep downloads clean)
+        """
+        return self.get_download_option('metadata_files', default=False)
+
     def get_auth_manager(self):
         """获取 AuthSessionManager 实例(用于数据库操作)"""
         return self._auth_manager
@@ -416,6 +430,7 @@ class ConfigHelper:
             restricted_filenames=self.get_restricted_filenames(),
             write_links=self.get_write_links(),
             download_path=self.get_download_path(),
+            download_metadata_files=self.get_download_metadata_files(),
             global_opts=opts,
         )
 

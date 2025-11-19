@@ -583,8 +583,9 @@ class Task:
 
         infos = await self.get_head_infos(url_to_download)
         if infos is None:
-            # Head request failed but we declare it as success (because URL is broken)
-            return
+            # Head request failed (e.g., 404)
+            # Raise exception so shortcut will be created as fallback
+            raise ValueError('无法获取外部链接信息（可能返回 404 或其他 HTTP 错误）')
 
         external_dl_cmd = self.opts.external_file_downloaders.get(infos.host, "")
         if infos.is_html and external_dl_cmd != "":
@@ -1098,9 +1099,49 @@ class Task:
             self.set_utime()
             self.file.time_stamp = int(time.time())
 
+    def _is_metadata_file(self) -> bool:
+        """
+        Check if this file is a metadata file that can be optionally skipped
+        
+        Metadata files include:
+        - JSON files from Resource module (corresponding to PDFs/videos)
+        - _metadata.json files
+        - _info files
+        - _notes.md files
+        """
+        filename_lower = self.file.content_filename.lower()
+        
+        # JSON files (Resource module metadata)
+        if filename_lower.endswith('.json'):
+            return True
+        
+        # Metadata info files
+        if filename_lower.endswith('_info'):
+            return True
+        
+        # Notes files
+        if filename_lower.endswith('_notes.md'):
+            return True
+        
+        return False
+
     async def real_run(self) -> bool:
         try:
             logging.debug('[%d] Starting Task: %s', self.task_id, self)
+            
+            # Check if this is a metadata file that should be skipped
+            if self._is_metadata_file() and not self.opts.download_metadata_files:
+                logging.debug(
+                    '[%d] Skipping metadata file (download_metadata_files is disabled): %s',
+                    self.task_id,
+                    self.file.content_filename
+                )
+                # Mark as skipped and return success
+                self.status.total_size = 0
+                self.status.bytes_downloaded = 0
+                self.report_success()
+                return True
+            
             PT.make_dirs(self.destination)
 
             # If file was modified try rename the old file, before create new one
