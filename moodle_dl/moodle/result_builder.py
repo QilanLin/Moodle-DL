@@ -35,7 +35,7 @@ class ResultBuilder:
                 'section_name': section.get('name', ''),
             }
             section_modules = section.get('modules', [])
-            files += self._get_files_in_modules(section_modules, fetched_mods, **location)
+            section_files = self._get_files_in_modules(section_modules, fetched_mods, **location)
 
             section_summary = section.get('summary', '')
             if section_summary is not None and section_summary != '':
@@ -46,7 +46,12 @@ class ResultBuilder:
                         'module_modname': 'section_summary',
                     }
                 )
-                files += self._handle_description(section_summary, **location)
+                section_files += self._handle_description(section_summary, **location)
+
+            # 为当前 section 的所有文件（包括 summary）分配位置索引
+            self._assign_positions_to_files(section_files)
+
+            files += section_files
 
         files += self._get_files_not_on_main_page(fetched_mods)
 
@@ -56,6 +61,50 @@ class ResultBuilder:
             logging.info(f'🌐 get_files_in_sections() returning {kalvidres_total} Kaltura videos total')
 
         return files
+
+    def _assign_positions_to_files(self, files: List[File]) -> None:
+        """
+        为文件列表中的每个文件分配位置索引。
+
+        系统文件（metadata.json、Table of Contents.html、隐藏文件）不分配索引。
+        其他文件按照在列表中的顺序分配从 0 开始的递增索引。
+
+        @param files: 文件列表（会被原地修改）
+        """
+        position = 0
+        for file in files:
+            filename = file.content_filename.lower()
+
+            # 排除系统文件：不分配位置索引
+            if self._is_system_file(filename):
+                file.position_in_section = None
+                continue
+
+            # 为普通文件分配位置
+            file.position_in_section = position
+            position += 1
+
+    @staticmethod
+    def _is_system_file(filename: str) -> bool:
+        """
+        判断是否为系统文件（不应添加索引前缀）
+
+        @param filename: 文件名（已转为小写）
+        @return: True 如果是系统文件
+        """
+        # 隐藏文件（以 . 开头）
+        if filename.startswith('.'):
+            return True
+
+        # 元数据文件
+        if filename == 'metadata.json':
+            return True
+
+        # 目录文件
+        if filename == 'table of contents.html':
+            return True
+
+        return False
 
     def _get_files_in_modules(self, section_modules: List, fetched_mods: Dict[str, Dict], **location) -> List[File]:
         """
@@ -424,6 +473,24 @@ class ResultBuilder:
             content_filepath = content.get('filepath', '/') or '/'
             content_fileurl = content.get('fileurl', '')
 
+            # 对于资源模块 (resource)，优先使用网页显示的标题 (module_name) 作为文件名
+            # 这样下载的文件名与 Moodle 网页上看到的标题一致
+            # 例如: "[Mandatory] Week 1 - Recorded Lecture 1 Handouts.pdf" 而不是 "Software_Testing_Week_1_...pdf" 或 "1.pdf"
+            if location['module_modname'] == 'resource' and content_filename:
+                # 从原始 API filename 中提取文件扩展名
+                original_filename = content.get('filename', '')
+                if original_filename and '.' in original_filename:
+                    # 提取扩展名（例如 ".pdf"）
+                    file_extension = '.' + original_filename.rsplit('.', 1)[-1]
+                else:
+                    # 如果无法从 filename 获取，尝试从 mimetype 推断
+                    mimetype = content.get('mimetype', '')
+                    file_extension = self._get_extension_from_mimetype(mimetype) if mimetype else ''
+
+                # 使用网页显示的标题，并保留文件扩展名
+                content_filename = location['module_name'] + file_extension
+                logging.debug(f'🔧 Resource module: using display name "{content_filename}" instead of API filename "{original_filename}"')
+
             content_description = content.get('description', '')
             content_html = content.get('html', '')
 
@@ -528,6 +595,21 @@ class ResultBuilder:
             logging.info(f'📤 _handle_files() returning {kalvidres_count} Kaltura videos for module "{location.get("module_name", "?")}"')
 
         return files
+
+    @staticmethod
+    def _get_extension_from_mimetype(mimetype: str) -> str:
+        """
+        从 MIME type 推断文件扩展名
+
+        @param mimetype: MIME type (例如 "application/pdf")
+        @return: 文件扩展名 (例如 ".pdf")，如果无法推断则返回空字符串
+        """
+        if not mimetype:
+            return ''
+
+        # 使用 Python 的 mimetypes 模块推断扩展名
+        extension = mimetypes.guess_extension(mimetype, strict=False)
+        return extension if extension else ''
 
     def _handle_description(
         self,

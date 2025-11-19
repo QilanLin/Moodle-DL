@@ -68,8 +68,94 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts):
         DatabaseManager(config, opts).interactively_manage_database()
     elif opts.new_token:
         MoodleWizard(config, opts).interactively_acquire_token(use_stored_url=True)
+    elif opts.retry_failed:
+        retry_failed_downloads(config, opts)
     else:
         run_main(config, opts)
+
+
+def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
+    """重试所有下载失败的文件"""
+    from moodle_dl.types import Course
+
+    logging.info('正在查询下载失败的文件...')
+
+    # 初始化数据库
+    database = StateRecorder(config, opts)
+
+    # 获取失败文件统计
+    summary = database.get_failed_files_summary()
+
+    if not summary:
+        logging.info('✓ 没有下载失败的文件！')
+        return
+
+    # 显示统计信息
+    total_failed_files = sum(info['failed_count'] for info in summary.values())
+    total_failures = sum(info['total_failures'] for info in summary.values())
+
+    logging.info('')
+    logging.info('=' * 60)
+    logging.info(f'找到 {total_failed_files} 个下载失败的文件（总失败次数：{total_failures}）')
+    logging.info('=' * 60)
+
+    for course_id, info in summary.items():
+        logging.info(f"课程 ID {course_id} ({info['course_name']}):")
+        logging.info(f"  - 失败文件数：{info['failed_count']}")
+        logging.info(f"  - 总失败次数：{info['total_failures']}")
+        logging.info(f"  - 最大连续失败：{info['max_consecutive']}")
+
+    logging.info('=' * 60)
+    logging.info('')
+
+    # 获取所有失败的文件（按课程分组）
+    courses_dict = database.get_failed_files_with_course_info()
+
+    if not courses_dict:
+        logging.warning('无法读取失败的文件，请检查数据库。')
+        return
+
+    # 构造 Course 对象
+    courses = []
+    for course_id, course_info in courses_dict.items():
+        course = Course(
+            _id=course_id,
+            fullname=course_info['course_fullname'],
+            files=course_info['files']
+        )
+        courses.append(course)
+
+    # 重置失败文件的状态为 pending
+    logging.info('正在重置失败文件状态...')
+    for course in courses:
+        for file in course.files:
+            database.reset_failed_file_for_retry(file, course.id)
+
+    logging.info('开始重试下载失败的文件...')
+
+    # TODO: Change this
+    PT.restricted_filenames = config.get_restricted_filenames()
+
+    # 使用下载服务重新下载
+    if opts.without_downloading_files:
+        downloader = FakeDownloadService(courses, config, opts, database)
+    else:
+        downloader = DownloadService(courses, config, opts, database)
+
+    downloader.run()
+
+    new_failed_downloads = downloader.get_failed_tasks()
+
+    # 显示结果
+    logging.info('')
+    logging.info('=' * 60)
+    if len(new_failed_downloads) > 0:
+        logging.warning(f'重试完成，仍有 {len(new_failed_downloads)} 个文件下载失败。')
+        for task in new_failed_downloads:
+            logging.warning(f'  - {task.file.content_filename}: {task.status.get_error_text()}')
+    else:
+        logging.info('✓ 所有失败的文件已成功重新下载！')
+    logging.info('=' * 60)
 
 
 def connect_sentry(config: ConfigHelper) -> bool:
@@ -327,6 +413,18 @@ def get_parser():
         default=False,
         action='store_true',
         help='Add all courses visible to the user to the configuration file.',
+    )
+
+    group.add_argument(
+        '-rf',
+        '--retry-failed',
+        dest='retry_failed',
+        default=False,
+        action='store_true',
+        help=(
+            'Retry downloading all previously failed files. '
+            + 'This will attempt to re-download files that failed in previous runs.'
+        ),
     )
 
     group.add_argument(

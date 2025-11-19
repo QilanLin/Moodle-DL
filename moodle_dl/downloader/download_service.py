@@ -57,8 +57,18 @@ class DownloadService:
             self.status.bytes_downloaded += extra_args['bytes_received']
         elif event == DlEvent.FAILED:
             self.status.files_failed += 1
+            # 记录失败的文件到数据库，包括目标路径和失败原因
+            error_message = task.status.get_error_text() if task.status else '未知错误'
+            self.database.save_failed_file(
+                task.file,
+                task.course.id,
+                task.course.fullname,
+                error_message
+            )
         elif event == DlEvent.FINISHED:
             self.database.save_file(task.file, task.course.id, task.course.fullname)
+            # 标记下载成功，重置失败计数器
+            self.database.mark_download_success(task.file, task.course.id)
             self.status.files_downloaded += 1
         elif event == DlEvent.TOTAL_SIZE:
             self.status.bytes_to_download += extra_args['content_length']

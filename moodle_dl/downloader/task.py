@@ -75,8 +75,42 @@ class Task:
         self.callback = callback
 
         self.destination = self.gen_path(options.download_path, course, file)
-        self.filename = PT.to_valid_name(self.file.content_filename, is_file=True)
+        self.filename = self._generate_filename_with_index(file)
         self.status = TaskStatus()
+
+    @staticmethod
+    def _generate_filename_with_index(file: File) -> str:
+        """
+        生成带索引前缀的文件名。
+
+        如果文件有 position_in_section，则在原始文件名前添加位置索引前缀。
+        ⚠️ 核心原则：保留原始文件名，只添加前缀。
+
+        示例:
+            position=0, original="lecture.pdf" → "01 lecture.pdf"
+            position=4, original="01-intro.pdf" → "05 01-intro.pdf" (保留原名中的 "01-")
+            position=None → "lecture.pdf" (无索引)
+
+        @param file: File 对象
+        @return: 处理后的文件名（已通过 to_valid_name 验证）
+        """
+        original_filename = PT.to_valid_name(file.content_filename, is_file=True)
+
+        # 如果文件没有分配位置索引，直接返回原始文件名
+        if file.position_in_section is None:
+            return original_filename
+
+        # 生成索引前缀
+        position = file.position_in_section
+        if position < 99:
+            index_str = f"{position + 1:02d}"
+        else:
+            index_str = f"{position + 1:03d}"
+
+        # 添加索引前缀（使用空格），保留原始文件名
+        indexed_filename = f"{index_str} {original_filename}"
+
+        return indexed_filename
 
     @staticmethod
     def gen_path(storage_path: str, course: Course, file: File):

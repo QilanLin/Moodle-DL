@@ -30,6 +30,7 @@ class File:
         file_hash: str = None,
         file_id: int = None,
         old_file_id: int = None,
+        position_in_section: int = None,
     ):
         self.file_id = file_id
 
@@ -97,6 +98,7 @@ class File:
         self.new_file = None
 
         self.old_file_id = old_file_id
+        self.position_in_section = position_in_section
 
     def getMap(self) -> {str: str}:
         return {
@@ -121,10 +123,17 @@ class File:
             'notified': 1 if self.notified else 0,
             'hash': self.hash,
             'old_file_id': self.old_file_id,
+            'position_in_section': self.position_in_section,
         }
 
     @staticmethod
     def fromRow(row):
+        # 尝试读取 position_in_section 字段（v8引入，可能不存在）
+        try:
+            position_in_section = row['position_in_section']
+        except (KeyError, IndexError):
+            position_in_section = None
+
         return File(
             file_id=row['file_id'],
             module_id=row['module_id'],
@@ -147,6 +156,7 @@ class File:
             notified=row['notified'],
             file_hash=row['hash'],
             old_file_id=row['old_file_id'],
+            position_in_section=position_in_section,
         )
 
     INSERT = """INSERT INTO files
@@ -155,14 +165,18 @@ class File:
             content_fileurl, content_filesize, content_timemodified,
             module_modname, content_type, content_isexternalfile,
             saved_to, time_stamp, modified, moved, deleted, notified,
-            hash, old_file_id)
+            hash, old_file_id, download_status, download_attempts,
+            last_download_at, last_failed_at, last_failed_reason,
+            consecutive_failures, position_in_section)
             VALUES (:course_id, :course_fullname, :module_id,
             :section_name, :section_id, :module_name, :content_filepath,
             :content_filename, :content_fileurl, :content_filesize,
             :content_timemodified, :module_modname, :content_type,
             :content_isexternalfile, :saved_to, :time_stamp,
             :modified, :moved, :deleted, :notified,  :hash,
-            :old_file_id);
+            :old_file_id, :download_status, :download_attempts,
+            :last_download_at, :last_failed_at, :last_failed_reason,
+            :consecutive_failures, :position_in_section);
             """
 
     def __str__(self):
@@ -263,6 +277,7 @@ class MoodleDlOpts:
     delete_old_files: bool
     log_responses: bool
     add_all_visible_courses: bool
+    retry_failed: bool
     sso: bool
     username: str
     password: str

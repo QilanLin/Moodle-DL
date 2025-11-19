@@ -3,11 +3,16 @@
 
 提供全局的cookies刷新、验证和管理功能，遵循DRY原则。
 所有需要使用browser cookies的模块都应该使用这里的函数。
+
+v2 改进：使用数据库存储 cookies 而不是文本文件
+- cookies 存储在 auth_sessions 和 cookie_store 表
+- 每次刷新都创建新的 session，形成版本链
+- 完整的审计日志追踪
 """
 
 import importlib.util
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 
 from moodle_dl.utils import Log
 
@@ -15,20 +20,132 @@ from moodle_dl.utils import Log
 class CookieManager:
     """
     Cookies管理器 - 统一处理cookies的导出、刷新和验证
+
+    v2 版本：整合数据库存储
+    - 优先使用数据库中的有效 session
+    - 刷新时创建新 session 并存储到数据库
+    - 保留向后兼容性（支持 Cookies.txt 回退）
     """
 
-    def __init__(self, config, moodle_domain: str, cookies_path: str):
+    def __init__(
+        self,
+        config,
+        moodle_domain: str,
+        cookies_path: str,
+        db_file: str = None
+    ):
         """
         初始化CookieManager
 
         @param config: moodle-dl配置对象
         @param moodle_domain: Moodle域名 (如 keats.kcl.ac.uk)
-        @param cookies_path: cookies文件路径
+        @param cookies_path: cookies文件路径（向后兼容）
+        @param db_file: SQLite 数据库文件路径（新增）
+
+        数据库初始化失败时直接抛出异常，不使用 fallback
         """
         self.config = config
         self.moodle_domain = moodle_domain
         self.cookies_path = cookies_path
+        self.db_file = db_file
         self._export_module = None
+        self._auth_manager = None
+
+        # 初始化认证管理器（必须成功，否则抛出异常）
+        if db_file:
+            from moodle_dl.auth_session_manager import AuthSessionManager
+            self._auth_manager = AuthSessionManager(db_file)
+            if not self._auth_manager:
+                raise RuntimeError(
+                    f'❌ 认证管理器初始化失败。数据库文件: {db_file}\n'
+                    f'请检查数据库是否存在且可写。'
+                )
+
+    def get_cookies_from_db(self) -> Optional[List[Dict]]:
+        """
+        从数据库获取有效的 cookies
+
+        @return: cookies 列表，或 None 如果不存在
+        """
+        if not self._auth_manager:
+            return None
+
+        session = self._auth_manager.get_valid_session(session_type='cookie_batch')
+        if session:
+            return self._auth_manager.get_session_cookies(session['session_id'])
+
+        return None
+
+    def save_cookies_to_db(
+        self,
+        cookies: List[dict],
+        source: str = 'browser_export'
+    ) -> Optional[str]:
+        """
+        将 cookies 保存到数据库
+
+        @param cookies: cookies 列表
+        @param source: 来源 (browser_export/autologin/sso 等)
+        @return: session_id，或 None 如果保存失败
+        """
+        if not self._auth_manager:
+            return None
+
+        try:
+            session_id = self._auth_manager.create_session(
+                session_type='cookie_batch',
+                source=source,
+                cookies=cookies,
+                ip_address=self._get_client_ip()
+            )
+            Log.debug(f'✓ Cookies 已保存到数据库（session_id={session_id}）')
+            return session_id
+        except Exception as e:
+            Log.debug(f'保存 cookies 到数据库失败: {e}')
+            return None
+
+    def refresh_session_with_new_cookies(
+        self,
+        new_cookies: List[dict],
+        source: str = 'browser_export'
+    ) -> Optional[str]:
+        """
+        刷新认证会话为新的 cookies（创建新版本）
+
+        @param new_cookies: 新的 cookies 列表
+        @param source: 来源
+        @return: 新 session_id，或 None 如果失败
+        """
+        if not self._auth_manager:
+            return self.save_cookies_to_db(new_cookies, source)
+
+        try:
+            # 获取当前有效的 session
+            old_session = self._auth_manager.get_valid_session(session_type='cookie_batch')
+
+            if old_session:
+                # 创建新版本的 session
+                new_session_id = self._auth_manager.refresh_session(
+                    old_session_id=old_session['session_id'],
+                    new_cookies=new_cookies
+                )
+                return new_session_id
+            else:
+                # 没有旧 session，创建新 session
+                return self.save_cookies_to_db(new_cookies, source)
+
+        except Exception as e:
+            Log.debug(f'刷新 session 失败: {e}')
+            return None
+
+    @staticmethod
+    def _get_client_ip() -> str:
+        """获取客户端 IP（简化版本）"""
+        try:
+            import socket
+            return socket.gethostbyname(socket.gethostname())
+        except:
+            return '127.0.0.1'
 
     def _load_export_module(self):
         """加载export_browser_cookies模块（懒加载）"""
@@ -103,7 +220,9 @@ class CookieManager:
                             self.moodle_domain,
                             self.cookies_path,
                             preferred_browser,
-                            True  # headless
+                            True,  # headless
+                            30000,  # timeout
+                            self._auth_manager  # 传入 AuthSessionManager 保存到数据库
                         )
                         success = future.result()
 
@@ -129,7 +248,8 @@ class CookieManager:
                         moodle_domain=self.moodle_domain,
                         cookies_path=self.cookies_path,
                         preferred_browser=preferred_browser,
-                        headless=True  # 使用无头模式（后台运行）
+                        headless=True,  # 使用无头模式（后台运行）
+                        auth_manager=self._auth_manager  # 传入 AuthSessionManager 保存到数据库
                     )
 
                     if success:
@@ -167,6 +287,21 @@ class CookieManager:
                 )
 
             if success:
+                # v2 改进：导出成功后，将 cookies 存储到数据库
+                if self._auth_manager and self.cookies_path:
+                    try:
+                        cookies = self._load_cookies_from_file(self.cookies_path)
+                        if cookies:
+                            session_id = self.refresh_session_with_new_cookies(
+                                new_cookies=cookies,
+                                source='browser_export'
+                            )
+                            if session_id:
+                                Log.debug(f'✓ Cookies已保存到数据库（session_id={session_id}）')
+                    except Exception as db_error:
+                        Log.debug(f'⚠️  将cookies保存到数据库失败: {db_error}')
+                        # 不中断流程，继续使用文件方式
+
                 Log.success('✅ Cookies自动刷新成功！')
                 return True
             else:
@@ -178,6 +313,47 @@ class CookieManager:
             Log.error(f'❌ 刷新cookies时出错: {e}')
             self._show_manual_refresh_instructions()
             return False
+
+    def _load_cookies_from_file(self, file_path: str) -> Optional[List[Dict]]:
+        """
+        从 Netscape 格式的 cookies 文件中加载 cookies
+
+        @param file_path: cookies 文件路径
+        @return: cookies 列表，或 None 如果加载失败
+        """
+        if not os.path.exists(file_path):
+            return None
+
+        cookies = []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    # 跳过注释和空行
+                    if not line or line.startswith('#'):
+                        continue
+
+                    # 解析 Netscape 格式
+                    # domain flag path secure expiration name value
+                    parts = line.split('\t')
+                    if len(parts) >= 7:
+                        cookies.append({
+                            'domain': parts[0],
+                            'path': parts[2],
+                            'secure': int(parts[3]),
+                            'expires': int(parts[4]) if parts[4] else None,
+                            'name': parts[5],
+                            'value': parts[6],
+                            'httponly': 1,  # Netscape 格式不包含 httponly，默认设为 1
+                            'samesite': 'Lax'  # 默认值
+                        })
+
+            Log.debug(f'✓ 从文件加载了 {len(cookies)} 个 cookies')
+            return cookies if cookies else None
+
+        except Exception as e:
+            Log.debug(f'加载 cookies 文件失败: {e}')
+            return None
 
     def _show_manual_refresh_instructions(self):
         """显示手动刷新cookies的说明"""
@@ -236,6 +412,7 @@ def create_cookie_manager_from_client(client, config) -> CookieManager:
     从RequestHelper客户端创建CookieManager
 
     便捷函数，用于从现有的moodle client创建cookie manager。
+    v2 改进：自动传入 db_file，支持数据库存储
 
     @param client: RequestHelper实例
     @param config: 配置对象
@@ -246,7 +423,15 @@ def create_cookie_manager_from_client(client, config) -> CookieManager:
     cookies_path = PT.get_cookies_path(config.get_misc_files_path())
     moodle_domain = client.moodle_url.domain
 
-    return CookieManager(config, moodle_domain, cookies_path)
+    # v2：获取数据库文件路径
+    db_file = None
+    try:
+        misc_files_path = config.get_misc_files_path()
+        db_file = PT.make_path(misc_files_path, 'moodle_state.db')
+    except:
+        pass
+
+    return CookieManager(config, moodle_domain, cookies_path, db_file)
 
 
 def convert_netscape_cookies_to_playwright(cookies_path: str) -> list:

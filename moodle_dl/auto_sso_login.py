@@ -31,60 +31,36 @@ def extract_all_cookies_from_browser(
 ) -> List[Dict]:
     """
     从浏览器中提取所有 cookies（不过滤）
-
+    
+    **v2: 彻底移除文件读取，只从浏览器获取**
+    
     核心原理：完整复制用户浏览器的所有 cookies 到 Playwright，
     这样 Playwright 就"继承"了用户的完整登录状态。
-
+    
+    **重要变更：**
+    - v2: 不再读取 cookies 文件（cookies_path 参数保留但不再使用）
+    - v2: 只从浏览器读取 cookies
+    
     @param browser_name: 浏览器名称（firefox, chrome 等）
     @param moodle_domain: Moodle 域名（用于日志）
-    @param cookies_path: 现有的 cookies 文件路径
+    @param cookies_path: [已废弃] cookies 文件路径（不再使用）
     @return: 所有 cookies 的列表
     """
     try:
-        import http.cookiejar
-
-        all_cookies = []
-
-        # 如果有现有的 cookies 文件，先读取
-        if os.path.exists(cookies_path):
-            logging.info(f'📖 正在读取现有cookies文件: {cookies_path}')
-            cookie_jar = http.cookiejar.MozillaCookieJar(cookies_path)
-            cookie_jar.load(ignore_discard=True, ignore_expires=True)
-
-            for cookie in cookie_jar:
-                # 处理 expires 字段（Playwright 只接受 -1 或正整数秒级时间戳）
-                expires_value = -1  # 默认永不过期
-                if cookie.expires is not None and cookie.expires > 0:
-                    # 如果是毫秒级时间戳（>10000000000），转换为秒级
-                    if cookie.expires > 10000000000:
-                        expires_value = int(cookie.expires / 1000)
-                    else:
-                        expires_value = int(cookie.expires)
-
-                # 转换为 Playwright 格式
-                cookie_dict = {
-                    'name': cookie.name,
-                    'value': cookie.value,
-                    'domain': cookie.domain,
-                    'path': cookie.path,
-                    'expires': expires_value,
-                    'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
-                    'secure': bool(cookie.secure),  # 确保是布尔值，不是整数
-                    'sameSite': cookie.get_nonstandard_attr('SameSite', 'Lax') or 'Lax',
-                }
-                all_cookies.append(cookie_dict)
-
-            logging.info(f'✓ 从文件读取到 {len(all_cookies)} 个 cookies')
-
-        # 如果文件中没有 cookies，从浏览器读取
-        if len(all_cookies) == 0:
-            logging.info(f'💡 cookies文件为空，正在从{browser_name}浏览器读取所有cookies...')
-            all_cookies = _read_all_cookies_from_browser(browser_name)
-
+        # v2: 直接从浏览器读取 cookies（永不读取文件）
+        logging.info(f'💡 正在从浏览器直接读取所有 cookies...')
+        all_cookies = _read_all_cookies_from_browser(browser_name)
+        
+        if all_cookies:
+            logging.info(f'✓ 从浏览器成功读取 {len(all_cookies)} 个 cookies')
+        else:
+            logging.warning('⚠️  浏览器中没有找到 cookies')
+            logging.info('   请确保浏览器已登录 Moodle，且 SSO cookies 有效')
+        
         return all_cookies
-
+        
     except Exception as e:
-        logging.error(f'❌ 提取cookies时出错: {e}')
+        logging.error(f'❌ 提取 cookies 时出错: {e}')
         return []
 
 
@@ -234,7 +210,8 @@ async def auto_login_with_sso(
     cookies_path: str,
     preferred_browser: str = 'firefox',
     headless: bool = False,
-    timeout: int = 30000
+    timeout: int = 30000,
+    auth_manager=None
 ) -> bool:
     """
     使用 Playwright 有头浏览器自动完成 SSO 登录
@@ -246,13 +223,14 @@ async def auto_login_with_sso(
     4. 访问 Moodle，触发 SSO 登录流程
     5. 等待 SSO 自动登录完成
     6. 提取新的 MoodleSession 和其他 cookies
-    7. 保存到 cookies 文件
+    7. 保存到数据库
 
     @param moodle_domain: Moodle 域名（如 keats.kcl.ac.uk）
-    @param cookies_path: 保存 cookies 的文件路径
+    @param cookies_path: 保存 cookies 的文件路径（向后兼容）
     @param preferred_browser: 首选浏览器（读取SSO cookies用）
     @param headless: 是否使用无头模式（默认False，使用有头浏览器）
     @param timeout: 页面加载超时时间（毫秒）
+    @param auth_manager: AuthSessionManager 实例（用于数据库保存）
     @return: 成功返回 True
     """
     try:
@@ -431,8 +409,23 @@ async def auto_login_with_sso(
                         if cookie['name'] == 'MoodleSession':
                             Log.info(f'   ✓ {cookie["name"]}: {cookie["value"]}')
 
-                    # 6. 保存 cookies 到文件（Netscape 格式）
-                    _save_cookies_to_file(updated_cookies, cookies_path, moodle_domain)
+                    # 6. 保存 cookies 到数据库（而不是文件）
+                    if auth_manager:
+                        # 使用数据库保存 cookies
+                        session_id = auth_manager.save_sso_cookies(updated_cookies)
+                        if session_id:
+                            logging.info(f'💾 Cookies 已保存到数据库: 会话 {session_id}')
+                            logging.info(f'   共 {len(updated_cookies)} 个 cookies')
+                        else:
+                            logging.error('❌ 保存 cookies 到数据库失败')
+                            await browser.close()
+                            return False
+                    else:
+                        # v2: 彻底移除文件回退，auth_manager 必须存在
+                        logging.error('❌ SSO登录失败: 必须提供 AuthSessionManager')
+                        logging.error('   这是v2架构的要求，数据库必须可用')
+                        await browser.close()
+                        return False
 
                     await browser.close()
                     return True
@@ -485,75 +478,28 @@ async def auto_login_with_sso(
         return False
 
 
-def _save_cookies_to_file(cookies: List[Dict], cookies_path: str, moodle_domain: str):
-    """
-    保存 cookies 到 Netscape 格式文件
-
-    @param cookies: Playwright 格式的 cookies 列表
-    @param cookies_path: 保存路径
-    @param moodle_domain: Moodle 域名
-    """
-    try:
-        import os
-
-        # 检查 cookies_path 是否有效
-        if not cookies_path or cookies_path.strip() == '':
-            logging.warning('⚠️  cookies_path 为空，跳过保存')
-            return
-
-        # 确保目录存在
-        dir_path = os.path.dirname(cookies_path)
-        if dir_path:  # 只有当目录路径不为空时才创建
-            os.makedirs(dir_path, exist_ok=True)
-
-        with open(cookies_path, 'w') as f:
-            # 写入 Netscape cookies 文件头
-            f.write('# Netscape HTTP Cookie File\n')
-            f.write('# This is a generated file! Do not edit.\n\n')
-
-            # 写入每个 cookie
-            for cookie in cookies:
-                domain = cookie.get('domain', '')
-                flag = 'TRUE' if domain.startswith('.') else 'FALSE'
-                path = cookie.get('path', '/')
-                secure = 'TRUE' if cookie.get('secure', False) else 'FALSE'
-                expires = cookie.get('expires', -1)
-                if expires == -1:
-                    expires = 0
-                elif expires > 10000000000:  # 毫秒转秒
-                    expires = int(expires / 1000)
-                name = cookie.get('name', '')
-                value = cookie.get('value', '')
-
-                f.write(f'{domain}\t{flag}\t{path}\t{secure}\t{expires}\t{name}\t{value}\n')
-
-        logging.info(f'💾 Cookies 已保存到: {cookies_path}')
-        logging.info(f'   共 {len(cookies)} 个 cookies')
-
-    except Exception as e:
-        logging.error(f'❌ 保存 cookies 失败: {e}')
-
-
 # 同步包装函数
 def auto_login_with_sso_sync(
     moodle_domain: str,
     cookies_path: str,
     preferred_browser: str = 'firefox',
     headless: bool = False,
-    timeout: int = 30000
+    timeout: int = 30000,
+    auth_manager=None
 ) -> bool:
     """
     同步版本的自动 SSO 登录
 
     @param moodle_domain: Moodle 域名
-    @param cookies_path: cookies 保存路径
+    @param cookies_path: cookies 保存路径（向后兼容）
     @param preferred_browser: 首选浏览器
     @param headless: 是否使用无头模式
     @param timeout: 页面加载超时时间（毫秒）
+    @param auth_manager: AuthSessionManager 实例（用于数据库保存）
     @return: 成功返回 True
     """
     return asyncio.run(auto_login_with_sso(
-        moodle_domain, cookies_path, preferred_browser, headless, timeout
+        moodle_domain, cookies_path, preferred_browser, headless, timeout, auth_manager
     ))
 
 
