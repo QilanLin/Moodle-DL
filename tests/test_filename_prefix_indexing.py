@@ -37,16 +37,35 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
 
     def test_is_system_file(self):
         """测试系统文件识别"""
-        # 系统文件应返回 True
-        self.assertTrue(ResultBuilder._is_system_file('metadata.json'))
-        self.assertTrue(ResultBuilder._is_system_file('table of contents.html'))
+        # 隐藏文件应返回 True
         self.assertTrue(ResultBuilder._is_system_file('.hidden'))
         self.assertTrue(ResultBuilder._is_system_file('.DS_Store'))
+        
+        # 基础元数据文件应返回 True
+        self.assertTrue(ResultBuilder._is_system_file('metadata.json'))
+        self.assertTrue(ResultBuilder._is_system_file('table of contents.html'))
+        
+        # 所有 .json 文件应返回 True（Resource 模块元数据）
+        self.assertTrue(ResultBuilder._is_system_file('[Mandatory] Week 1 - Recorded Lecture 1 Handouts.json'))
+        self.assertTrue(ResultBuilder._is_system_file('homework_metadata.json'))
+        self.assertTrue(ResultBuilder._is_system_file('lecture_notes.json'))
+        self.assertTrue(ResultBuilder._is_system_file('data.json'))
+        
+        # 各模块生成的文件应返回 True
+        self.assertTrue(ResultBuilder._is_system_file('questions.json'))      # Feedback/Quiz
+        self.assertTrue(ResultBuilder._is_system_file('analysis.json'))       # Feedback
+        self.assertTrue(ResultBuilder._is_system_file('grade'))               # Lesson
+        self.assertTrue(ResultBuilder._is_system_file('entry_metadata.json')) # Glossary/Data
+        self.assertTrue(ResultBuilder._is_system_file('session_1234567890.json'))  # Chat
+        self.assertTrue(ResultBuilder._is_system_file('homework_info'))       # Info 文件
+        self.assertTrue(ResultBuilder._is_system_file('lecture_notes.md'))    # Notes 文件
 
         # 普通文件应返回 False
         self.assertFalse(ResultBuilder._is_system_file('lecture.pdf'))
         self.assertFalse(ResultBuilder._is_system_file('01-introduction.pdf'))
         self.assertFalse(ResultBuilder._is_system_file('video.mp4'))
+        self.assertFalse(ResultBuilder._is_system_file('homework.doc'))
+        self.assertFalse(ResultBuilder._is_system_file('readme.txt'))
 
     def test_assign_positions_basic(self):
         """测试基本的位置分配"""

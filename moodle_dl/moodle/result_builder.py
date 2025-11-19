@@ -88,20 +88,64 @@ class ResultBuilder:
     def _is_system_file(filename: str) -> bool:
         """
         判断是否为系统文件（不应添加索引前缀）
+        
+        系统文件包括：
+        - 隐藏文件（以 . 开头）
+        - Moodle 生成的元数据文件（*_metadata.json、metadata.json 等）
+        - Resource 模块生成的 .json 文件（对应 PDF/MP4 等主文件）
+        - 特定模块生成的文件（questions.json、analysis.json 等）
+        - 目录和导航文件（table of contents.html）
+        - 笔记文件（_notes.md）
 
         @param filename: 文件名（已转为小写）
         @return: True 如果是系统文件
         """
+        filename_lower = filename.lower()
+        
         # 隐藏文件（以 . 开头）
-        if filename.startswith('.'):
+        if filename_lower.startswith('.'):
             return True
 
-        # 元数据文件
-        if filename == 'metadata.json':
+        # 元数据文件 - 通用模式
+        if filename_lower.endswith('_metadata.json'):
+            return True
+        
+        # 基础元数据文件
+        if filename_lower == 'metadata.json':
             return True
 
-        # 目录文件
-        if filename == 'table of contents.html':
+        # 目录和导航文件
+        if filename_lower == 'table of contents.html':
+            return True
+        
+        # 信息文件（来自各种模块）
+        if filename_lower.endswith('_info'):
+            return True
+        
+        # 笔记和文本文件（来自各种模块）
+        if filename_lower.endswith('_notes.md'):
+            return True
+        
+        # ✨ Resource 模块生成的 .json 文件
+        # 这些是对应 PDF、MP4 等主文件的元数据
+        # 例如: "[Mandatory] Week 1 - Recorded Lecture 1 Handouts.json"
+        # 对应: "[Mandatory] Week 1 - Recorded Lecture 1 Handouts.pdf"
+        if filename_lower.endswith('.json'):
+            # 排除通用的 JSON 数据文件，只识别特定模式
+            # 如果 .json 前面是通常用于导出的前缀，则是系统文件
+            return True  # Resource 模块的所有 .json 都是生成的元数据
+        
+        # 特定模块生成的文件
+        if filename_lower in [
+            'questions.json',      # Feedback, Quiz 模块
+            'analysis.json',       # Feedback 模块分析
+            'grade',               # Lesson 模块成绩
+            'entry_metadata.json', # Glossary, Data 模块条目元数据
+        ]:
+            return True
+        
+        # Session 文件（Chat 模块）
+        if filename_lower.startswith('session_') and filename_lower.endswith('.json'):
             return True
 
         return False
