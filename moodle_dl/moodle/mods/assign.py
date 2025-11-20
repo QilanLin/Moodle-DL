@@ -24,9 +24,18 @@ class AssignMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        assign_courses = (
-            await self.client.async_post('mod_assign_get_assignments', self.get_data_for_mod_entries_endpoint(courses))
-        ).get('courses', [])
+        """
+        获取所有作业信息，支持 Mobile API 和 Web API fallback。
+        
+        优先使用 mod_assign_get_assignments (Mobile API)，失败时使用 core_course_get_contents (Web API)。
+        """
+        try:
+            # 首先尝试使用 Mobile API
+            assign_courses = await self._fetch_assignments_mobile_api(courses)
+        except (RequestRejectedError, KeyError, Exception) as e:
+            logging.warning(f'❌ Mobile API 获取作业失败: {e}，尝试使用 Web API fallback...')
+            # Fallback 到 Web API
+            assign_courses = await self._fetch_assignments_web_api(courses, core_contents)
 
         result = {}
         for assign_course in assign_courses:
@@ -36,6 +45,120 @@ class AssignMod(MoodleMod):
         await self.add_submissions(result)
         await self.add_foreign_submissions(result)
         return result
+
+    async def _fetch_assignments_mobile_api(self, courses: List[Course]) -> List[Dict]:
+        """
+        使用 Mobile API (mod_assign_get_assignments) 获取作业。
+        
+        Return: 包含 assignments 的课程列表
+        """
+        logging.debug('📱 使用 Mobile API 获取作业信息...')
+        response = await self.client.async_post(
+            'mod_assign_get_assignments',
+            self.get_data_for_mod_entries_endpoint(courses)
+        )
+        assign_courses = response.get('courses', [])
+        
+        if not assign_courses:
+            raise KeyError('Mobile API 返回空的作业列表')
+        
+        logging.debug(f'✅ Mobile API 成功获取 {len(assign_courses)} 个课程的作业信息')
+        return assign_courses
+
+    async def _fetch_assignments_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API (core_course_get_contents) 获取作业信息。
+        
+        这是 mod_assign_get_assignments 的 fallback 实现。
+        通过解析 core_course_get_contents 返回的数据中的 assign 模块来获取作业信息。
+        
+        Return: 转换为与 Mobile API 相同格式的课程列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取作业信息...')
+        
+        assign_courses = []
+        
+        for course in courses:
+            course_id = course.id
+            
+            # 从 core_contents 中获取该课程的所有模块
+            if course_id not in core_contents:
+                logging.debug(f'⚠️ 课程 {course_id} 不在 core_contents 中，跳过')
+                continue
+            
+            sections = core_contents[course_id]
+            assignments = []
+            
+            # 遍历所有 section，查找 assign 模块
+            for section in sections:
+                modules = section.get('modules', [])
+                for module in modules:
+                    if module.get('modname') == 'assign':
+                        # 将 Web API 的 assign 模块转换为 Mobile API 的格式
+                        assignment = self._convert_web_api_assign_to_mobile(module, course_id)
+                        assignments.append(assignment)
+            
+            if assignments:
+                assign_courses.append({
+                    'id': course_id,
+                    'shortname': course.shortname if hasattr(course, 'shortname') else '',
+                    'fullname': course.fullname,
+                    'assignments': assignments
+                })
+        
+        if not assign_courses:
+            logging.warning('⚠️ Web API fallback 未找到任何作业')
+            raise ValueError('Web API 未能检索任何作业信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(assign_courses)} 个课程的作业信息')
+        return assign_courses
+
+    def _convert_web_api_assign_to_mobile(self, web_api_module: Dict, course_id: int) -> Dict:
+        """
+        将 Web API 的 assign 模块格式转换为 Mobile API 的格式。
+        
+        Web API 提供的数据较少，但包含关键的作业信息。
+        """
+        # 提取 Web API 中的基本信息
+        module_contents = web_api_module.get('contents', [])
+        introattachments = [c for c in module_contents if c.get('type') == 'file']
+        
+        # 构建 Mobile API 格式的作业数据
+        assignment = {
+            'id': web_api_module.get('instance', 0),
+            'cmid': web_api_module.get('id', 0),
+            'course': course_id,
+            'name': web_api_module.get('name', ''),
+            'intro': '',  # Web API 不直接提供 intro
+            'introformat': 1,
+            'introattachments': introattachments,
+            'duedate': 0,
+            'cutoffdate': 0,
+            'allowsubmissionsfromdate': 0,
+            'grade': 0,
+            'timemodified': web_api_module.get('timemodified', 0),
+            'timecreated': web_api_module.get('timecreated', 0),
+            # 其他字段设为默认值，因为 Web API 不提供详细的作业设置
+            'submissiondrafts': 0,
+            'sendnotifications': 1,
+            'sendlatenotifications': 0,
+            'sendstudentnotifications': 1,
+            'requiresubmissionstatement': 0,
+            'requireallteammemberssubmit': 0,
+            'teamsubmission': 0,
+            'blindmarking': 0,
+            'hidegrader': 0,
+            'revealidentities': 0,
+            'attemptreopenmethod': 'none',
+            'maxattempts': -1,
+            'markingworkflow': 0,
+            'markingallocation': 0,
+            'configs': [],
+        }
+        
+        return assignment
 
     def extract_assign_modules(self, assignments: List[Dict]) -> Dict[int, Dict]:
         result = {}
