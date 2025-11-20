@@ -16,8 +16,8 @@ class ForumMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        # TODO: Add download condition, currently forums get filtered on API Call, and are not deleted at all
-        return True
+        # 下载条件: 检查是否启用了论坛下载
+        return config.get_download_forums()
 
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]

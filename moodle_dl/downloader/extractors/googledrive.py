@@ -1,8 +1,8 @@
 from __future__ import unicode_literals
 
 import re
+from urllib.parse import parse_qs
 
-from yt_dlp.compat import compat_parse_qs
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import (
     ExtractorError,
@@ -182,7 +182,7 @@ class GoogleDriveIE(InfoExtractor):
         video_id = self._match_id(url)
 
         # First try the new method
-        video_info = compat_parse_qs(
+        video_info = parse_qs(
             self._download_webpage('https://drive.google.com/get_video_info', video_id, query={'docid': video_id})
         )
 

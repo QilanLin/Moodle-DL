@@ -74,23 +74,36 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts):
         run_main(config, opts)
 
 
-def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
-    """重试所有下载失败的文件"""
-    from moodle_dl.types import Course
+def _initialize_retry_database() -> StateRecorder:
+    """Initialize database for retry operation.
+    
+    Returns:
+        StateRecorder instance
+    """
+    from moodle_dl.config import ConfigHelper
+    from moodle_dl.types import MoodleDlOpts
+    
+    return StateRecorder(config, opts)
 
-    logging.info('正在查询下载失败的文件...')
 
-    # 初始化数据库
-    database = StateRecorder(config, opts)
+def _get_failed_download_statistics(database: StateRecorder) -> dict:
+    """Get summary of failed downloads from database.
+    
+    Args:
+        database: StateRecorder instance
+        
+    Returns:
+        Dictionary with failed files summary, or None if no failures
+    """
+    return database.get_failed_files_summary()
 
-    # 获取失败文件统计
-    summary = database.get_failed_files_summary()
 
-    if not summary:
-        logging.info('✓ 没有下载失败的文件！')
-        return
-
-    # 显示统计信息
+def _print_failed_statistics_header(summary: dict):
+    """Print header and summary statistics of failed downloads.
+    
+    Args:
+        summary: Dictionary with failed files information
+    """
     total_failed_files = sum(info['failed_count'] for info in summary.values())
     total_failures = sum(info['total_failures'] for info in summary.values())
 
@@ -99,6 +112,13 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     logging.info(f'找到 {total_failed_files} 个下载失败的文件（总失败次数：{total_failures}）')
     logging.info('=' * 60)
 
+
+def _print_failed_statistics_details(summary: dict):
+    """Print detailed statistics for each course.
+    
+    Args:
+        summary: Dictionary with failed files information
+    """
     for course_id, info in summary.items():
         logging.info(f"课程 ID {course_id} ({info['course_name']}):")
         logging.info(f"  - 失败文件数：{info['failed_count']}")
@@ -108,14 +128,24 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     logging.info('=' * 60)
     logging.info('')
 
-    # 获取所有失败的文件（按课程分组）
+
+def _load_failed_files_as_courses(database: StateRecorder) -> list:
+    """Load failed files from database and convert to Course objects.
+    
+    Args:
+        database: StateRecorder instance
+        
+    Returns:
+        List of Course objects with failed files
+    """
+    from moodle_dl.types import Course
+    
     courses_dict = database.get_failed_files_with_course_info()
 
     if not courses_dict:
         logging.warning('无法读取失败的文件，请检查数据库。')
-        return
+        return []
 
-    # 构造 Course 对象
     courses = []
     for course_id, course_info in courses_dict.items():
         course = Course(
@@ -125,28 +155,46 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
         )
         courses.append(course)
 
-    # 重置失败文件的状态为 pending
+    return courses
+
+
+def _reset_failed_files_for_retry(database: StateRecorder, courses: list):
+    """Reset status of all failed files to pending for retry.
+    
+    Args:
+        database: StateRecorder instance
+        courses: List of Course objects with files to reset
+    """
     logging.info('正在重置失败文件状态...')
     for course in courses:
         for file in course.files:
             database.reset_failed_file_for_retry(file, course.id)
 
-    logging.info('开始重试下载失败的文件...')
 
-    # TODO: Change this
-    PT.restricted_filenames = config.get_restricted_filenames()
-
-    # 使用下载服务重新下载
+def _create_downloader(courses: list, config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder):
+    """Create appropriate downloader instance based on options.
+    
+    Args:
+        courses: List of Course objects to download
+        config: ConfigHelper instance
+        opts: MoodleDlOpts instance
+        database: StateRecorder instance
+        
+    Returns:
+        DownloadService or FakeDownloadService instance
+    """
     if opts.without_downloading_files:
-        downloader = FakeDownloadService(courses, config, opts, database)
+        return FakeDownloadService(courses, config, opts, database)
     else:
-        downloader = DownloadService(courses, config, opts, database)
+        return DownloadService(courses, config, opts, database)
 
-    downloader.run()
 
-    new_failed_downloads = downloader.get_failed_tasks()
+def _print_retry_results(new_failed_downloads: list):
+    """Print results of retry operation.
 
-    # 显示结果
+    Args:
+        new_failed_downloads: List of failed tasks after retry
+    """
     logging.info('')
     logging.info('=' * 60)
     if len(new_failed_downloads) > 0:
@@ -156,6 +204,56 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     else:
         logging.info('✓ 所有失败的文件已成功重新下载！')
     logging.info('=' * 60)
+
+
+def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
+    """
+    Retry all failed downloads.
+    
+    Process pipeline:
+    1. Initialize database
+    2. Get failed download statistics
+    3. Print statistics
+    4. Load failed files as courses
+    5. Reset file status
+    6. Create and run downloader
+    7. Print results
+    """
+    logging.info('正在查询下载失败的文件...')
+
+    # Step 1: Initialize database
+    database = StateRecorder(config, opts)
+
+    # Step 2: Get statistics
+    summary = _get_failed_download_statistics(database)
+
+    if not summary:
+        logging.info('✓ 没有下载失败的文件！')
+        return
+
+    # Step 3: Print statistics
+    _print_failed_statistics_header(summary)
+    _print_failed_statistics_details(summary)
+
+    # Step 4: Load failed files as courses
+    courses = _load_failed_files_as_courses(database)
+    
+    if not courses:
+        return
+
+    # Step 5: Reset file status
+    _reset_failed_files_for_retry(database, courses)
+
+    logging.info('开始重载失败的文件...')
+
+    # Step 6: Create downloader and run
+    downloader = _create_downloader(courses, config, opts, database)
+    downloader.run()
+
+    new_failed_downloads = downloader.get_failed_tasks()
+
+    # Step 7: Print results
+    _print_retry_results(new_failed_downloads)
 
 
 def connect_sentry(config: ConfigHelper) -> bool:
@@ -173,9 +271,6 @@ def connect_sentry(config: ConfigHelper) -> bool:
 def run_main(config: ConfigHelper, opts: MoodleDlOpts):
     sentry_connected = connect_sentry(config)
     notify_services = get_all_notify_services(config)
-
-    # TODO: Change this
-    PT.restricted_filenames = config.get_restricted_filenames()
 
     try:
         moodle = MoodleService(config, opts)

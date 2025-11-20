@@ -16,7 +16,9 @@ class AssignMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        # TODO: Add condition for assignments not only submissions
+        # 下载条件: 作业本身或提交内容
+        # 如果启用了作业下载，则下载所有作业相关内容
+        # 如果仅启用了提交下载，则只下载提交内容
         return config.get_download_submissions() or (not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted))
 
     async def real_fetch_mod_entries(

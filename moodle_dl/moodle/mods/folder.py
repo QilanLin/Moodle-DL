@@ -20,8 +20,8 @@ class FolderMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        # TODO: Add download condition
-        return True
+        # 下载条件: 检查是否启用了资源下载 (文件夹作为资源模块)
+        return config.get_download_resources()
 
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]

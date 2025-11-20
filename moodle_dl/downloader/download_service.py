@@ -9,7 +9,7 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadStatus, MoodleDlOpts, TaskState
-from moodle_dl.utils import calc_speed, format_bytes, format_speed
+from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
 
 
 class DownloadService:
@@ -21,34 +21,170 @@ class DownloadService:
         self.opts = opts
         self.database = database
 
+        # 设置文件名限制（解决全局状态问题）
+        # 注意：这仍然使用类变量，但至少集中在一个地方设置
+        PT.restricted_filenames = config.get_restricted_filenames()
+
         self.status = DownloadStatus()
         self.all_tasks = self.gen_all_tasks()
 
-    def gen_all_tasks(self) -> List:
-        # Set custom chunk size
+    def _configure_task_settings(self) -> tuple:
+        """Configure task settings and create thread pool.
+        
+        Returns:
+            Tuple of (download_options, thread_pool)
+        """
         Task.CHUNK_SIZE = self.opts.download_chunk_size
         dl_options = self.config.get_download_options(self.opts)
         thread_pool = ThreadPoolExecutor(max_workers=self.opts.max_parallel_yt_dlp)
-        all_tasks = []
+        return dl_options, thread_pool
+
+    def _load_incomplete_downloads_map(self) -> dict:
+        """Load incomplete downloads from database and create a lookup map.
+        
+        Returns:
+            Dictionary mapping file_id to incomplete download info
+        """
+        incomplete_downloads = self.database.get_incomplete_downloads_for_retry()
+        incomplete_files_map = {}
+        for incomplete in incomplete_downloads:
+            file_id = incomplete['file_id']
+            incomplete_files_map[file_id] = incomplete
+        return incomplete_files_map
+
+    def _create_task(self, course_file, course, dl_options, thread_pool) -> Task:
+        """Create a single Task object.
+        
+        Args:
+            course_file: File object from course
+            course: Course object
+            dl_options: Download options configuration
+            thread_pool: ThreadPoolExecutor for yt-dlp
+            
+        Returns:
+            Task object
+        """
+        return Task(
+            task_id=self.status.files_to_download,
+            file=course_file,
+            course=course,
+            options=dl_options,
+            thread_pool=thread_pool,
+            callback=self.status_callback,
+        )
+
+    def _is_incomplete_download(self, course_file, incomplete_files_map) -> bool:
+        """Check if a file is an incomplete download that needs to be resumed.
+        
+        Args:
+            course_file: File object to check
+            incomplete_files_map: Map of incomplete downloads
+            
+        Returns:
+            True if file is incomplete, False otherwise
+        """
+        return course_file.file_id and course_file.file_id in incomplete_files_map
+
+    def _log_incomplete_download(self, course_file, incomplete_files_map):
+        """Log information about detected incomplete download.
+        
+        Args:
+            course_file: File object
+            incomplete_files_map: Map of incomplete downloads
+        """
+        incomplete_info = incomplete_files_map[course_file.file_id]
+        logging.info(
+            '✅ 检测到未完成的下载（%s/%s 字节）：%s',
+            format_bytes(incomplete_info['downloaded_bytes']),
+            format_bytes(incomplete_info['total_bytes']),
+            course_file.content_filename
+        )
+
+    def _update_download_statistics(self, course_file):
+        """Update download statistics when processing a file.
+        
+        Args:
+            course_file: File object being processed
+        """
+        self.status.bytes_to_download += course_file.content_filesize
+        self.status.files_to_download += 1
+
+    def _log_queue_summary(self, priority_task_count: int):
+        """Log a summary of the download queue.
+        
+        Args:
+            priority_task_count: Number of priority (incomplete) tasks
+        """
+        if self.status.files_to_download > 0:
+            if priority_task_count > 0:
+                logging.info(
+                    '下载队列包含 %d 个任务 (%d 个未完成的下载需要续传)',
+                    self.status.files_to_download,
+                    priority_task_count
+                )
+            else:
+                logging.info('下载队列包含 %d 个任务', self.status.files_to_download)
+        else:
+            logging.debug('下载队列为空')
+
+    def _cleanup_old_incomplete_downloads(self):
+        """Clean up incomplete download records older than 7 days."""
+        try:
+            cleaned = self.database.cleanup_old_incomplete_downloads(days_old=7)
+            if cleaned > 0:
+                logging.debug('清理了 %d 个超期的未完成下载记录', cleaned)
+        except Exception as cleanup_err:
+            logging.debug('清理未完成下载记录时出错: %s', cleanup_err)
+
+    def gen_all_tasks(self) -> List:
+        """Generate all download tasks from courses.
+        
+        Process pipeline:
+        1. Configure task settings (chunk size, thread pool)
+        2. Load incomplete downloads map
+        3. Iterate through courses and files
+        4. Create tasks with proper prioritization (incomplete first)
+        5. Log queue summary
+        6. Cleanup old incomplete download records
+        
+        Returns:
+            List of Task objects, with incomplete downloads prioritized
+        """
+        # Step 1: Configure settings
+        dl_options, thread_pool = self._configure_task_settings()
+        
+        # Step 2: Load incomplete downloads map
+        incomplete_files_map = self._load_incomplete_downloads_map()
+        
+        # Step 3-4: Build task queue with priority ordering
+        priority_tasks = []  # Incomplete downloads (high priority)
+        normal_tasks = []    # Regular downloads (normal priority)
+        
         for course in self.courses:
             for course_file in course.files:
                 if course_file.deleted is False:
-                    all_tasks.append(
-                        Task(
-                            task_id=self.status.files_to_download,
-                            file=course_file,
-                            course=course,
-                            options=dl_options,
-                            thread_pool=thread_pool,
-                            callback=self.status_callback,
-                        )
-                    )
-                    self.status.bytes_to_download += course_file.content_filesize
-                    self.status.files_to_download += 1
-        if self.status.files_to_download > 0:
-            logging.info('下载队列包含 %d 个任务', self.status.files_to_download)
-        else:
-            logging.debug('下载队列为空')
+                    # Create task
+                    task = self._create_task(course_file, course, dl_options, thread_pool)
+                    
+                    # Categorize by priority
+                    if self._is_incomplete_download(course_file, incomplete_files_map):
+                        priority_tasks.append(task)
+                        self._log_incomplete_download(course_file, incomplete_files_map)
+                    else:
+                        normal_tasks.append(task)
+                    
+                    # Update statistics
+                    self._update_download_statistics(course_file)
+        
+        # Combine tasks with priority ordering
+        all_tasks = priority_tasks + normal_tasks
+        
+        # Step 5: Log summary
+        self._log_queue_summary(len(priority_tasks))
+        
+        # Step 6: Cleanup old records
+        self._cleanup_old_incomplete_downloads()
+        
         return all_tasks
 
     def status_callback(self, event: DlEvent, task: Task, **extra_args):

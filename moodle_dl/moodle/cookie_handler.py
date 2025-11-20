@@ -19,7 +19,9 @@ class CookieHandler:
         self.version = version
         self.config = config
         self.opts = opts
-        self.cookies_path = PT.get_cookies_path(config.get_misc_files_path())
+        # 不再自动保存 cookies 到 Cookies.txt
+        # cookies 现在由 AuthSessionManager 管理，存储在数据库中
+        self.cookies_path = None
 
         self.moodle_test_url = self.client.url_base
 

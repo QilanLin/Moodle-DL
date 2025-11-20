@@ -9,6 +9,11 @@ import os
 import sys
 import glob
 import platform
+import asyncio
+import http.cookiejar
+import re
+import base64
+from typing import TYPE_CHECKING
 
 try:
     import browser_cookie3
@@ -16,6 +21,19 @@ except ImportError:
     print(": browser-cookie3")
     print(":pip install browser-cookie3")
     sys.exit(1)
+
+# Playwright 是可选依赖，用于 SSO 登录
+async_playwright = None
+
+if TYPE_CHECKING:
+    # 仅在类型检查时导入，避免运行时错误
+    from playwright.async_api import async_playwright as _async_playwright  # type: ignore[import-not-found]
+else:
+    try:
+        from playwright.async_api import async_playwright as _async_playwright  # type: ignore[import-not-found]
+        async_playwright = _async_playwright
+    except ImportError:
+        pass
 
 
 def normalize_cookie_for_playwright(cookie: dict) -> dict:
@@ -553,11 +571,8 @@ def extract_api_token_with_playwright(domain: str, cookies_file: str):
     print("\nPlaywrightAPI token...")
 
     try:
-        from playwright.async_api import async_playwright
-        import asyncio
-        import http.cookiejar
-        import re
-        import base64
+        if async_playwright is None:
+            raise ImportError("Playwright not installed. Install with: pip install playwright")
 
         # cookiesPlaywright
         print("  -> cookies...")
@@ -889,10 +904,8 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
     print(f"  ->  {len(cookies)}  cookies ...")
     
     try:
-        from playwright.async_api import async_playwright
-        import asyncio
-        import re
-        import base64
+        if async_playwright is None:
+            raise ImportError("Playwright not installed. Install with: pip install playwright")
         
         #  token  URL
         moodle_url = f'https://{domain}' if not domain.startswith('http') else domain

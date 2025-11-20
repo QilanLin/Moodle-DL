@@ -1020,48 +1020,97 @@ class Task:
         text = re.sub(r'\s+', ' ', text).strip()
         return text
 
-    def _clean_html_preserve_structure(self, html_text: str) -> str:
-        """Clean HTML but preserve structure (lists, formatting) as Markdown"""
+    @staticmethod
+    def _convert_line_breaks(html_text: str) -> str:
+        """Convert <br> tags to newlines"""
         import re
-        import html as html_module
+        return re.sub(r'<br\s*/?>', '\n', html_text)
 
-        if not html_text:
-            return ""
-
-        # Convert <br> to newlines
-        text = re.sub(r'<br\s*/?>', '\n', html_text)
-
-        # Convert paragraphs
-        text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', text)
+    @staticmethod
+    def _convert_paragraphs(html_text: str) -> str:
+        """Convert <p> tags to newlines"""
+        import re
+        text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', html_text)
         text = re.sub(r'</?p[^>]*>', '\n', text)
+        return text
 
-        # Convert lists
-        text = re.sub(r'<li[^>]*>', '\n• ', text)
+    @staticmethod
+    def _convert_lists(html_text: str) -> str:
+        """Convert list tags (<ul>, <ol>, <li>) to Markdown format"""
+        import re
+        text = re.sub(r'<li[^>]*>', '\n• ', html_text)
         text = re.sub(r'</li>', '', text)
         text = re.sub(r'</?ul[^>]*>', '\n', text)
         text = re.sub(r'</?ol[^>]*>', '\n', text)
+        return text
 
-        # Preserve bold (convert to Markdown)
-        text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text, flags=re.DOTALL)
+    @staticmethod
+    def _convert_formatting(html_text: str) -> str:
+        """Convert bold and italic tags to Markdown format"""
+        import re
+        # Convert bold tags
+        text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', html_text, flags=re.DOTALL)
         text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.DOTALL)
-
-        # Preserve italic
+        
+        # Convert italic tags
         text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.DOTALL)
         text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.DOTALL)
+        return text
 
-        # Preserve links
-        text = re.sub(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', text, flags=re.DOTALL)
+    @staticmethod
+    def _convert_links(html_text: str) -> str:
+        """Convert HTML links to Markdown format"""
+        import re
+        return re.sub(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', html_text, flags=re.DOTALL)
 
-        # Remove all other tags
-        text = re.sub(r'<[^>]+>', '', text)
+    @staticmethod
+    def _remove_html_tags(html_text: str) -> str:
+        """Remove all remaining HTML tags"""
+        import re
+        return re.sub(r'<[^>]+>', '', html_text)
 
-        # Decode HTML entities
-        text = html_module.unescape(text)
+    @staticmethod
+    def _decode_html_entities(html_text: str) -> str:
+        """Decode HTML entities to characters"""
+        import html as html_module
+        return html_module.unescape(html_text)
 
-        # Clean whitespace
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+    @staticmethod
+    def _clean_whitespace(html_text: str) -> str:
+        """Clean excessive whitespace"""
+        import re
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', html_text)
         text = re.sub(r' +', ' ', text)
         return text.strip()
+
+    def _clean_html_preserve_structure(self, html_text: str) -> str:
+        """
+        Clean HTML while preserving document structure as Markdown.
+        
+        Process pipeline:
+        1. Convert line breaks
+        2. Convert paragraphs
+        3. Convert lists
+        4. Convert formatting (bold, italic)
+        5. Convert links
+        6. Remove remaining tags
+        7. Decode HTML entities
+        8. Clean whitespace
+        """
+        if not html_text:
+            return ""
+
+        # Apply transformations in order
+        text = self._convert_line_breaks(html_text)
+        text = self._convert_paragraphs(text)
+        text = self._convert_lists(text)
+        text = self._convert_formatting(text)
+        text = self._convert_links(text)
+        text = self._remove_html_tags(text)
+        text = self._decode_html_entities(text)
+        text = self._clean_whitespace(text)
+        
+        return text
 
     async def _save_kalvidres_text(self, text_data: dict, save_path: str):
         """Save extracted text as Markdown file"""
@@ -1257,8 +1306,8 @@ class Task:
 
             logging.debug('[%d] Traceback:\n%s', self.task_id, traceback.format_exc())
 
-            # TODO: Do this in the error handlers of download functions
-            # TODO: See download_url; remove only if not recoverable
+            # 清理失败的文件（不可恢复的错误）
+            # 注意: download_url 中已经实现了智能的文件保留逻辑（断点续传）
             PT.remove_file(self.file.saved_to)
             self.report_received_bytes(-self.status.bytes_downloaded)
             self.report_failure()
@@ -1302,19 +1351,112 @@ class Task:
                     self.status.external_total_size = content_length
                 self.callback(DlEvent.TOTAL_SIZE, self, content_length=content_length)
 
+    async def _perform_download_request(
+        self,
+        session: aiohttp.ClientSession,
+        dl_url: str,
+        dest_path: str,
+        headers: dict,
+        ssl_context,
+        timeout: int,
+        file_obj,
+        total_bytes_received: int,
+        disable_compression: bool = False,
+    ):
+        """
+        执行单个下载请求，并处理编码问题的智能降级
+        
+        Args:
+            session: aiohttp ClientSession
+            dl_url: 下载 URL
+            dest_path: 目标文件路径
+            headers: 请求头
+            ssl_context: SSL 上下文
+            timeout: 超时时间
+            file_obj: 文件对象
+            total_bytes_received: 已接收字节数
+            disable_compression: 是否禁用压缩（智能降级标记）
+        
+        Returns:
+            (file_obj, total_bytes_received, content_length, content_range)
+        """
+        # 如果需要禁用压缩，添加相应的请求头
+        req_headers = headers.copy()
+        if disable_compression:
+            req_headers['Accept-Encoding'] = 'identity'
+            logging.debug(
+                '[%d] 禁用压缩重试：已设置 Accept-Encoding: identity',
+                self.task_id,
+            )
+        
+        async with session.request(
+            "GET", dl_url, headers=req_headers, ssl=ssl_context, timeout=timeout
+        ) as resp:
+            content_length = int(resp.headers.get("Content-Length", 0))
+            self.report_content_length(content_length)
+            content_range = resp.headers.get("Content-Range")  # Exp: bytes 200-1000/67589
+
+            if resp.status not in [200, 206]:
+                logging.debug('[%d] Warning got status %s', self.task_id, resp.status)
+
+            # 使用传入的 dest_path 参数而不是 self.destination
+            file_obj = file_obj or await aiofiles.open(dest_path, "wb")
+            
+            try:
+                async for chunk in resp.content.iter_chunked(self.CHUNK_SIZE):
+                    bytes_received = len(chunk)
+                    total_bytes_received += bytes_received
+                    self.report_received_bytes(bytes_received)
+                    await file_obj.write(chunk)
+            except aiohttp.ClientPayloadError as payload_err:
+                # 检查是否是编码相关的错误（如 gzip）
+                if 'gzip' in str(payload_err) or 'content-encoding' in str(payload_err).lower():
+                    if not disable_compression:
+                        # 标记需要禁用压缩重试
+                        logging.warning(
+                            '[%d] 检测到编码错误，将禁用压缩重试：%s',
+                            self.task_id,
+                            payload_err,
+                        )
+                        raise ValueError('需要禁用压缩重试')
+                # 重新抛出非编码相关的错误
+                raise
+
+            return file_obj, total_bytes_received, content_length, content_range
+
     async def download_url(self, dl_url: str, dest_path: str, timeout: int = None):
         total_bytes_received = 0
         done_tries = 0
         can_continue_on_fail = False
         file_obj = None
+        disable_compression = False
         headers = self.RQ_HEADER.copy()
         ssl_context = SslHelper.get_ssl_context(
             self.opts.global_opts.skip_cert_verify,
             self.opts.global_opts.allow_insecure_ssl,
             self.opts.global_opts.use_all_ciphers,
         )
+        
+        # 🆕 尝试恢复之前中断的下载
+        resume_attempted = False
+        
         with Timer() as watch:
             async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
+                # 尝试恢复未完成的下载（仅在第一次尝试时）
+                if not resume_attempted and os.path.exists(dest_path):
+                    resume_attempted = True
+                    try:
+                        resumed_bytes, resumed_file_obj = await self._resume_incomplete_download(
+                            dest_path, dl_url, session, headers, ssl_context
+                        )
+                        if resumed_file_obj is not None and resumed_bytes > 0:
+                            total_bytes_received = resumed_bytes
+                            file_obj = resumed_file_obj
+                            can_continue_on_fail = True
+                            headers['Range'] = f'bytes={total_bytes_received}-'
+                    except Exception as resume_err:
+                        logging.debug('[%d] 尝试恢复下载时出错: %s', self.task_id, resume_err)
+                
                 while done_tries < self.MAX_DL_RETRIES:
                     try:
                         if done_tries > 0:
@@ -1330,27 +1472,38 @@ class Task:
                         elif not can_continue_on_fail and 'Range' in headers:
                             del headers['Range']
 
-                        async with session.request(
-                            "GET", dl_url, headers=headers, ssl=ssl_context, timeout=timeout
-                        ) as resp:
-                            content_length = int(resp.headers.get("Content-Length", 0))
-                            self.report_content_length(content_length)
-                            content_range = resp.headers.get("Content-Range")  # Exp: bytes 200-1000/67589
+                        try:
+                            file_obj, total_bytes_received, content_length, content_range = await self._perform_download_request(
+                                session,
+                                dl_url,
+                                dest_path,
+                                headers,
+                                ssl_context,
+                                timeout,
+                                file_obj,
+                                total_bytes_received,
+                                disable_compression=disable_compression,
+                            )
+                        except ValueError as val_err:
+                            # 这是编码错误的标记，需要禁用压缩重试
+                            if str(val_err) == '需要禁用压缩重试':
+                                if not disable_compression:
+                                    disable_compression = True
+                                    # 重置状态重新尝试
+                                    if file_obj is not None and not file_obj.closed:
+                                        await file_obj.close()
+                                    file_obj = None
+                                    PT.remove_file(dest_path)
+                                    self.report_received_bytes(-total_bytes_received)
+                                    total_bytes_received = 0
+                                    # 继续下一次尝试（不增加 done_tries）
+                                    continue
+                            raise
 
-                            if resp.status not in [200, 206]:
-                                logging.debug('[%d] Warning got status %s', self.task_id, resp.status)
-
-                            if done_tries > 0 and can_continue_on_fail and not content_range and resp.status != 206:
-                                raise ContentRangeError(
-                                    f"[{self.task_id}] Server did not response with requested range data"
-                                )
-
-                            file_obj = file_obj or await aiofiles.open(dest_path, "wb")
-                            async for chunk in resp.content.iter_chunked(self.CHUNK_SIZE):
-                                bytes_received = len(chunk)
-                                total_bytes_received += bytes_received
-                                self.report_received_bytes(bytes_received)
-                                await file_obj.write(chunk)
+                        if done_tries > 0 and can_continue_on_fail and not content_range and content_length != 206:
+                            raise ContentRangeError(
+                                f"[{self.task_id}] Server did not response with requested range data"
+                            )
 
                         if file_obj is not None and not file_obj.closed:
                             await file_obj.close()
@@ -1363,6 +1516,19 @@ class Task:
                             )
 
                         logging.debug('[%d] Successfully downloaded %s', self.task_id, dest_path)
+                        
+                        # 🆕 清理完成的下载记录
+                        try:
+                            from moodle_dl.database import StateRecorder
+                            from moodle_dl.config import ConfigHelper
+                            
+                            if self.file.file_id is not None:
+                                config = ConfigHelper(self.opts.global_opts.moodle_path)
+                                database = StateRecorder(config, self.opts)
+                                database.mark_download_complete(self.file.file_id, dest_path)
+                        except Exception as cleanup_err:
+                            logging.debug('[%d] 清理下载记录时出错: %s', self.task_id, cleanup_err)
+                        
                         break
 
                     except (aiohttp.ClientError, OSError, ValueError, ContentRangeError) as err:
@@ -1381,12 +1547,32 @@ class Task:
                                 await file_obj.close()
                             file_obj = None
 
-                            # TODO: If download can be continued and size > 0,
-                            #  remember that the file started downloading, and continue downloading
-                            #  on next run instead of deleting it.
-                            PT.remove_file(dest_path)
-                            self.report_received_bytes(-total_bytes_received)
-                            total_bytes_received = 0
+                            # ✅ 断点续传改进：保留未完成的文件，记录到数据库
+                            # If download can be continued and size > 0,
+                            # remember that the file started downloading, and continue downloading
+                            # on next run instead of deleting it.
+                            if can_continue_on_fail and total_bytes_received > 0 and total_bytes_received < (content_length or 0):
+                                # 保存到数据库用于下次续传
+                                try:
+                                    self._save_incomplete_download(
+                                        dest_path, dl_url, total_bytes_received, content_length or 0
+                                    )
+                                    logging.warning(
+                                        '[%d] 下载中断，已保存 %s 字节，将在下次重试时继续下载',
+                                        self.task_id, 
+                                        format_bytes(total_bytes_received)
+                                    )
+                                except Exception as save_err:
+                                    logging.error('[%d] 保存中断下载记录失败: %s', self.task_id, save_err)
+                                    # 如果保存失败，删除文件（回退到原来的行为）
+                                    PT.remove_file(dest_path)
+                                    self.report_received_bytes(-total_bytes_received)
+                                    total_bytes_received = 0
+                            else:
+                                # 如果无法续传或没有部分下载，删除文件
+                                PT.remove_file(dest_path)
+                                self.report_received_bytes(-total_bytes_received)
+                                total_bytes_received = 0
 
                         if isinstance(err, aiohttp.ClientResponseError):
                             if err.status not in [408, 409, 429]:  # pylint: disable=no-member
@@ -1409,6 +1595,143 @@ class Task:
             format_bytes(total_bytes_received),
             format_seconds(watch.duration),
         )
+
+    def _save_incomplete_download(self, file_path: str, file_url: str, 
+                                   downloaded_bytes: int, total_bytes: int):
+        """
+        保存未完成的下载信息到数据库，用于断点续传
+        
+        @param file_path: 文件保存路径
+        @param file_url: 文件 URL
+        @param downloaded_bytes: 已下载的字节数
+        @param total_bytes: 文件总字节数
+        """
+        try:
+            # 获取数据库连接
+            from moodle_dl.database import StateRecorder
+            from moodle_dl.config import ConfigHelper
+            
+            config = ConfigHelper(self.opts.global_opts.moodle_path)
+            database = StateRecorder(config, self.opts)
+            
+            # 获取或创建 file_id
+            file_id = self.file.file_id
+            if file_id is None:
+                # 如果 file_id 不存在，需要先保存文件信息到数据库
+                database.new_file(self.file, self.course.id, self.course.fullname)
+                # 从数据库获取新的 file_id
+                import sqlite3
+                conn = sqlite3.connect(database.db_file)
+                cursor = conn.cursor()
+                cursor.execute(
+                    """SELECT file_id FROM files 
+                    WHERE course_id = ? AND module_id = ? AND content_fileurl = ?""",
+                    (self.course.id, self.file.module_id, self.file.content_fileurl)
+                )
+                result = cursor.fetchone()
+                conn.close()
+                file_id = result[0] if result else None
+                
+                if file_id is None:
+                    logging.warning('[%d] 无法获取 file_id，跳过保存中断下载记录', self.task_id)
+                    return
+            
+            # 保存到数据库
+            database.save_incomplete_download(
+                file_id=file_id,
+                file_url=file_url,
+                file_path=file_path,
+                total_bytes=total_bytes,
+                downloaded_bytes=downloaded_bytes,
+                server_supports_range=True,  # 因为我们知道服务器支持 Range
+                etag=None,
+                last_modified=None
+            )
+            
+            logging.debug(
+                '[%d] 已保存未完成下载记录: file_id=%d, 进度=%d/%d',
+                self.task_id, file_id, downloaded_bytes, total_bytes
+            )
+        except Exception as e:
+            logging.error('[%d] 保存未完成下载记录时出错: %s', self.task_id, e)
+            raise
+
+    async def _resume_incomplete_download(self, file_path: str, dl_url: str, 
+                                           session: aiohttp.ClientSession,
+                                           headers: dict, ssl_context) -> tuple:
+        """
+        尝试恢复未完成的下载
+        
+        @param file_path: 文件路径
+        @param dl_url: 下载 URL
+        @param session: aiohttp 会话
+        @param headers: HTTP 头
+        @param ssl_context: SSL 上下文
+        @return: (已下载字节数, 文件对象) 或 (0, None) 如果无法恢复
+        """
+        try:
+            from moodle_dl.database import StateRecorder
+            from moodle_dl.config import ConfigHelper
+            
+            config = ConfigHelper(self.opts.global_opts.moodle_path)
+            database = StateRecorder(config, self.opts)
+            
+            file_id = self.file.file_id
+            if file_id is None:
+                return 0, None
+            
+            # 获取未完成的下载信息
+            incomplete_info = database.get_incomplete_download(file_id, file_path)
+            if not incomplete_info:
+                return 0, None
+            
+            downloaded_bytes = incomplete_info['downloaded_bytes']
+            
+            # 检查文件是否存在且大小匹配
+            if not os.path.exists(file_path) or os.path.getsize(file_path) != downloaded_bytes:
+                logging.warning(
+                    '[%d] 本地文件大小不匹配，跳过续传 (本地: %d, 数据库: %d)',
+                    self.task_id,
+                    os.path.getsize(file_path) if os.path.exists(file_path) else 0,
+                    downloaded_bytes
+                )
+                database.increment_incomplete_download_attempt(incomplete_info['download_id'], '文件大小不匹配')
+                return 0, None
+            
+            # 尝试发送 HEAD 请求检查服务器是否支持 Range
+            if not incomplete_info['server_supports_range']:
+                logging.debug('[%d] 服务器不支持 Range 请求，无法续传', self.task_id)
+                return 0, None
+            
+            try:
+                async with session.head(dl_url, headers={'User-Agent': headers.get('User-Agent', '')}, 
+                                       ssl=ssl_context, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status not in [200, 206]:
+                        logging.warning('[%d] HEAD 请求返回 %d，无法续传', self.task_id, resp.status)
+                        return 0, None
+                    
+                    # 检查 Content-Length
+                    content_length = resp.content_length
+                    if content_length and downloaded_bytes >= content_length:
+                        logging.warning('[%d] 已下载字节数大于等于文件大小，删除中断记录', self.task_id)
+                        database.mark_download_complete(file_id, file_path)
+                        return 0, None
+            except Exception as head_err:
+                logging.debug('[%d] HEAD 请求失败，无法续传: %s', self.task_id, head_err)
+                return 0, None
+            
+            # 打开文件用于追加写入
+            file_obj = await aiofiles.open(file_path, 'a+b')
+            logging.info(
+                '[%d] 恢复未完成下载，从 %s 处继续',
+                self.task_id,
+                format_bytes(downloaded_bytes)
+            )
+            
+            return downloaded_bytes, file_obj
+        except Exception as e:
+            logging.debug('[%d] 恢复下载失败: %s', self.task_id, e)
+            return 0, None
 
     def __str__(self):
         return 'Task (%(task_id)s, %(file)s, %(course)s, %(status)s)' % {

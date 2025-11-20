@@ -3,12 +3,12 @@ from __future__ import unicode_literals
 
 import json
 import re
+from urllib.parse import urlparse, urlunparse
+from urllib.request import Request
 
-from yt_dlp.compat import compat_urllib_parse, compat_urllib_parse_urlparse
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import (
     ExtractorError,
-    HEADRequest,
     extract_attributes,
     js_to_json,
     mimetype2ext,
@@ -50,10 +50,10 @@ class HelixmediaLtiIE(InfoExtractor):
         if 'UploadSessionId' not in start_urlh.geturl():
             raise ExtractorError('Unable to launch helixmedia video', expected=True)
 
-        parsed_mediaserver_url = list(compat_urllib_parse_urlparse(start_urlh.geturl()))
+        parsed_mediaserver_url = list(urlparse(start_urlh.geturl()))
         parsed_mediaserver_url[4] += '&mobile=N&fullWidth=940&fullHeight=906'
         parsed_mediaserver_url[2] += 'Split'
-        mediaserver_url = compat_urllib_parse.urlunparse(parsed_mediaserver_url)
+        mediaserver_url = urlunparse(parsed_mediaserver_url)
 
         video_webpage = self._download_webpage(mediaserver_url, video_id, 'Downloading video details')
 
@@ -105,7 +105,7 @@ class HelixmediaLtiIE(InfoExtractor):
                 formats.append(track_obj)
 
         if download_url is not None:
-            ext_req = HEADRequest(download_url)
+            ext_req = Request(download_url, method='HEAD')
             ext_handle = self._request_webpage(ext_req, video_id, note='Determining extension')
             ext = self.urlhandle_detect_ext(ext_handle)
 

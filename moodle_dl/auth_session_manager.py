@@ -221,15 +221,18 @@ class AuthSessionManager:
 
         except Exception as e:
             conn.rollback()
-            self._log_action(
-                c,
-                action=self.ACTION_CREATE,
-                session_id=None,
-                status='failed',
-                reason=str(e),
-                triggered_by='system',
-                ip_address=ip_address
-            )
+            try:
+                self._log_action(
+                    c,
+                    action=self.ACTION_CREATE,
+                    session_id=None,
+                    status='failed',
+                    reason=str(e),
+                    triggered_by='system',
+                    ip_address=ip_address
+                )
+            except Exception as log_error:
+                self.logger.warning(f'⚠️  审计日志记录失败（可忽略）: {log_error}')
             self.logger.error(f'✗ Failed to create session: {e}')
             raise
         finally:

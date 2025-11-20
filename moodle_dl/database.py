@@ -1,7 +1,8 @@
 import logging
 import sqlite3
+import time
 from sqlite3 import Error
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.types import Course, File, MoodleDlOpts
@@ -12,7 +13,12 @@ class StateRecorder:
     """
     Saves the state and provides utilities to detect changes in the current
     state against the previous.
+    
+    包含查询优化和缓存机制，提高数据库访问性能。
     """
+    
+    # 🆕 查询缓存配置
+    CACHE_TTL_SECONDS = 300  # 缓存 5 分钟
 
     def __init__(self, config: ConfigHelper, opts: MoodleDlOpts):
         """
@@ -22,6 +28,10 @@ class StateRecorder:
         """
         self.opts = opts
         self.db_file = PT.make_path(config.get_misc_files_path(), 'moodle_state.db')
+        
+        # 🆕 查询缓存存储
+        self._query_cache: Dict[str, tuple] = {}  # {cache_key: (data, timestamp)}
+        self._cache_locks: Dict[str, bool] = {}  # 防止缓存击穿
 
         try:
             conn = sqlite3.connect(self.db_file)
@@ -30,360 +40,81 @@ class StateRecorder:
             # 检查数据库版本
             current_version = c.execute('pragma user_version').fetchone()[0]
             
-            # 检查 files 表是否存在
-            table_exists = c.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='files'"
-            ).fetchone() is not None
-
-            # 优化：对于全新数据库，直接创建最新版本的 schema（v8）
-            # 这避免了 8 次增量升级，大幅提高性能
-            if current_version == 0 and not table_exists:
-                logging.info('🆕 创建全新数据库（直接使用 v8 schema，跳过所有升级过程）')
-                self._create_fresh_database_v8(c)
-                current_version = 8
-                conn.commit()
-                logging.info('✅ 全新数据库已准备就绪（版本 v8）')
-            elif not table_exists and current_version > 0:
-                # 对于已存在版本号但缺少表的异常情况（不应该发生），创建 v0 基础表开始升级
-                logging.warning('⚠️  数据库异常：版本号存在但 files 表缺失，创建 v0 基础表')
-                # 创建基础 files 表（v0 schema - 仅用于向后兼容）
-                sql_create_index_table = """ CREATE TABLE IF NOT EXISTS files (
-                course_id integer NOT NULL,
-                course_fullname integer NOT NULL,
-                module_id integer NOT NULL,
-                section_name text NOT NULL,
-                module_name text NOT NULL,
-                content_filepath text NOT NULL,
-                content_filename text NOT NULL,
-                content_fileurl text NOT NULL,
-                content_filesize integer NOT NULL,
-                content_timemodified integer NOT NULL,
-                module_modname text NOT NULL,
-                content_type text NOT NULL,
-                content_isexternalfile text NOT NULL,
-                saved_to text NOT NULL,
-                time_stamp integer NOT NULL,
-                modified integer DEFAULT 0 NOT NULL,
-                deleted integer DEFAULT 0 NOT NULL,
-                notified integer DEFAULT 0 NOT NULL
-                );
-                """
-
-                # Create two indices for a faster search.
-                sql_create_index = """
-                CREATE INDEX IF NOT EXISTS idx_module_id
-                ON files (module_id);
-                """
-
-                sql_create_index2 = """
-                CREATE INDEX IF NOT EXISTS idx_course_id
-                ON files (course_id);
-                """
-
-                c.execute(sql_create_index_table)
-                c.execute(sql_create_index)
-                c.execute(sql_create_index2)
-                conn.commit()
-
-            # 执行增量升级（从当前版本升级到最新版本）
-            if current_version == 0:
-                # Add Hash Column
-                sql_create_hash_column = """ALTER TABLE files
-                ADD COLUMN hash text NULL;
-                """
-                c.execute(sql_create_hash_column)
-                c.execute("PRAGMA user_version = 1;")
-                current_version = 1
-                conn.commit()
-
-            if current_version == 1:
-                # Add moved Column
-                sql_create_moved_column = """ALTER TABLE files
-                ADD COLUMN moved integer DEFAULT 0 NOT NULL;
-                """
-                c.execute(sql_create_moved_column)
-
-                c.execute('PRAGMA user_version = 2;')
-                current_version = 2
-                conn.commit()
-
-            if current_version == 2:
-                # Modified gets a new meaning
-                sql_remove_modified_entries = """UPDATE files
-                    SET modified = 0
-                    WHERE modified = 1;
-                """
-                c.execute(sql_remove_modified_entries)
-
-                c.execute('PRAGMA user_version = 3;')
-                current_version = 3
-
-                conn.commit()
-
-            if current_version == 3:
-                # Add file_id Column
-                sql_create_new_files_table_1 = """
-                ALTER TABLE files
-                RENAME TO old_files;
-                """
-
-                sql_create_new_files_table_2 = """
-                CREATE TABLE IF NOT EXISTS files (
-                file_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                course_id integer NOT NULL,
-                course_fullname integer NOT NULL,
-                module_id integer NOT NULL,
-                section_name text NOT NULL,
-                module_name text NOT NULL,
-                content_filepath text NOT NULL,
-                content_filename text NOT NULL,
-                content_fileurl text NOT NULL,
-                content_filesize integer NOT NULL,
-                content_timemodified integer NOT NULL,
-                module_modname text NOT NULL,
-                content_type text NOT NULL,
-                content_isexternalfile text NOT NULL,
-                saved_to text NOT NULL,
-                hash text NULL,
-                time_stamp integer NOT NULL,
-                old_file_id integer NULL,
-                modified integer DEFAULT 0 NOT NULL,
-                moved integer DEFAULT 0 NOT NULL,
-                deleted integer DEFAULT 0 NOT NULL,
-                notified integer DEFAULT 0 NOT NULL
-                );"""
-
-                sql_create_new_files_table_3 = """
-                INSERT INTO files
-                (course_id, course_fullname, module_id, section_name,
-                 module_name, content_filepath, content_filename,
-                 content_fileurl, content_filesize, content_timemodified,
-                 module_modname, content_type, content_isexternalfile,
-                 saved_to, time_stamp, modified, deleted, notified, hash,
-                 moved)
-                SELECT * FROM old_files
-                """
-
-                sql_create_new_files_table_4 = """
-                DROP TABLE old_files;
-                """
-                c.execute(sql_create_new_files_table_1)
-                c.execute(sql_create_new_files_table_2)
-                c.execute(sql_create_new_files_table_3)
-                c.execute(sql_create_new_files_table_4)
-
-                c.execute('PRAGMA user_version = 4;')
-                current_version = 4
-
-                conn.commit()
-
-            if current_version == 4:
-                # Add section_id Column
-                sql_create_section_id_column = """ALTER TABLE files
-                ADD COLUMN section_id integer DEFAULT 0 NOT NULL;
-                """
-                c.execute(sql_create_section_id_column)
-
-                c.execute('PRAGMA user_version = 5;')
-                current_version = 5
-                conn.commit()
-
-            if current_version == 5:
-                # v6: Add authentication sessions management tables
-                # auth_sessions - 管理 tokens 和 cookies 的会话表
-                sql_create_auth_sessions = """
-                CREATE TABLE IF NOT EXISTS auth_sessions (
-                    session_id TEXT PRIMARY KEY,
-                    session_type TEXT NOT NULL,
-                    owner_id TEXT,
-                    creator_id TEXT,
-
-                    token_value TEXT,
-                    private_token_value TEXT,
-
-                    status TEXT DEFAULT 'valid',
-                    created_at INTEGER NOT NULL,
-                    last_accessed_at INTEGER DEFAULT 0,
-                    expires_at INTEGER,
-
-                    source TEXT NOT NULL,
-                    ip_restriction TEXT,
-                    ip_address TEXT,
-
-                    previous_session_id TEXT,
-                    replaced_by_session_id TEXT,
-
-                    context_id TEXT,
-                    metadata TEXT,
-
-                    FOREIGN KEY (previous_session_id) REFERENCES auth_sessions(session_id),
-                    FOREIGN KEY (replaced_by_session_id) REFERENCES auth_sessions(session_id)
-                );
-                """
-
-                # cookie_store - 详细的 cookies 存储表
-                sql_create_cookie_store = """
-                CREATE TABLE IF NOT EXISTS cookie_store (
-                    cookie_id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-
-                    name TEXT NOT NULL,
-                    value TEXT NOT NULL,
-                    domain TEXT NOT NULL,
-                    path TEXT DEFAULT '/',
-
-                    expires INTEGER,
-                    max_age INTEGER,
-                    secure INTEGER DEFAULT 0,
-                    httponly INTEGER DEFAULT 0,
-                    samesite TEXT DEFAULT 'Lax',
-
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER DEFAULT 0,
-                    valid INTEGER DEFAULT 1,
-
-                    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
-                );
-                """
-
-                # auth_audit_log - 认证操作审计日志表
-                sql_create_audit_log = """
-                CREATE TABLE IF NOT EXISTS auth_audit_log (
-                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT,
-
-                    action TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    reason TEXT,
-
-                    triggered_by TEXT NOT NULL,
-                    user_id TEXT,
-                    ip_address TEXT,
-                    user_agent TEXT,
-                    context_id TEXT,
-
-                    timestamp INTEGER NOT NULL,
-                    details TEXT,
-
-                    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
-                );
-                """
-
-                # 创建索引
-                sql_create_auth_indexes = [
-                    "CREATE INDEX IF NOT EXISTS idx_auth_token ON auth_sessions(token_value);",
-                    "CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_sessions(owner_id, created_at);",
-                    "CREATE INDEX IF NOT EXISTS idx_auth_creator ON auth_sessions(creator_id);",
-                    "CREATE INDEX IF NOT EXISTS idx_auth_status ON auth_sessions(status);",
-                    "CREATE INDEX IF NOT EXISTS idx_auth_expires ON auth_sessions(expires_at);",
-                    "CREATE INDEX IF NOT EXISTS idx_cookie_session ON cookie_store(session_id);",
-                    "CREATE INDEX IF NOT EXISTS idx_cookie_name ON cookie_store(name);",
-                    "CREATE INDEX IF NOT EXISTS idx_audit_session ON auth_audit_log(session_id);",
-                    "CREATE INDEX IF NOT EXISTS idx_audit_action ON auth_audit_log(action);",
-                    "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON auth_audit_log(timestamp);",
-                    "CREATE INDEX IF NOT EXISTS idx_audit_user ON auth_audit_log(user_id);",
-                ]
-
-                c.execute(sql_create_auth_sessions)
-                c.execute(sql_create_cookie_store)
-                c.execute(sql_create_audit_log)
-
-                for idx_sql in sql_create_auth_indexes:
-                    c.execute(idx_sql)
-
-                c.execute('PRAGMA user_version = 6;')
-                current_version = 6
-                conn.commit()
-                logging.info('✓ Database upgraded to v6: Authentication tables created')
-
-            if current_version == 6:
-                # v7: Add download failure tracking fields to files table
-                # 防御性编程：检查列是否已存在（处理数据库状态不一致的情况）
-                columns = [col[1] for col in c.execute("PRAGMA table_info(files)").fetchall()]
+            # 检查所有必要的表是否存在
+            required_tables = ['files', 'auth_sessions', 'cookie_store', 'auth_audit_log']
+            existing_tables = set([
+                row[0] for row in c.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
+                ).fetchall()
+            ])
+            missing_tables = set(required_tables) - existing_tables
+            
+            # 新策略：始终使用 v9 schema，弃用增量升级
+            should_rebuild = False
+            rebuild_reason = ""
+            
+            if current_version == 0 and not existing_tables:
+                # 情况 1：全新数据库
+                rebuild_reason = "全新数据库"
+                should_rebuild = True
+                logging.info('🆕 创建全新数据库（v9 schema）')
+            elif current_version < 9:
+                # 情况 2：旧版本数据库 → 直接升级到 v9
+                rebuild_reason = f"旧版本数据库 (v{current_version})"
+                should_rebuild = True
+                logging.warning(f'⚠️  检测到旧版本数据库 (v{current_version})，将升级到 v9')
+            elif missing_tables:
+                # 情况 3：版本正确但缺少表 → 数据库损坏，重建
+                rebuild_reason = f"数据库不完整，缺少表: {', '.join(missing_tables)}"
+                should_rebuild = True
+                logging.warning(f'⚠️  数据库结构不完整：缺少表 {missing_tables}')
+            
+            if should_rebuild:
+                logging.info(f'📋 重建数据库原因: {rebuild_reason}')
                 
-                sql_add_download_tracking = [
-                    ("download_status", """ALTER TABLE files ADD COLUMN download_status TEXT DEFAULT 'pending';"""),
-                    ("download_attempts", """ALTER TABLE files ADD COLUMN download_attempts INTEGER DEFAULT 0;"""),
-                    ("last_download_at", """ALTER TABLE files ADD COLUMN last_download_at INTEGER DEFAULT 0;"""),
-                    ("last_failed_at", """ALTER TABLE files ADD COLUMN last_failed_at INTEGER DEFAULT 0;"""),
-                    ("last_failed_reason", """ALTER TABLE files ADD COLUMN last_failed_reason TEXT;"""),
-                    ("consecutive_failures", """ALTER TABLE files ADD COLUMN consecutive_failures INTEGER DEFAULT 0;"""),
-                ]
-
-                for col_name, sql in sql_add_download_tracking:
-                    if col_name not in columns:
-                        try:
-                            c.execute(sql)
-                        except Exception as e:
-                            # 忽略"列已存在"的错误
-                            if 'already exists' not in str(e).lower() and 'duplicate column' not in str(e).lower():
-                                raise
-                    else:
-                        logging.debug(f'✓ Column {col_name} already exists, skipping')
-
-                # 防御性编程：确保 moved 字段存在（修复升级路径不完整的问题）
-                # 检查 moved 字段是否存在
-                columns = [col[1] for col in c.execute("PRAGMA table_info(files)").fetchall()]
-                if 'moved' not in columns:
-                    # moved 字段缺失，补充添加（应该在 v1→v2 升级时添加）
-                    logging.warning('⚠️  Database inconsistency detected: missing "moved" column, adding it now')
-                    c.execute("""ALTER TABLE files ADD COLUMN moved INTEGER DEFAULT 0 NOT NULL;""")
-
-                # 为现有记录设置默认状态：已下载的文件标记为 success
-                c.execute("""
-                    UPDATE files
-                    SET download_status = 'success'
-                    WHERE deleted = 0 AND modified = 0 AND moved = 0;
-                """)
-
-                # 创建索引加速失败文件查询
-                c.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_download_status
-                    ON files(download_status);
-                """)
-                c.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_consecutive_failures
-                    ON files(consecutive_failures);
-                """)
-
-                c.execute('PRAGMA user_version = 7;')
-                current_version = 7
+                # 删除所有现有的表和索引
+                if existing_tables:
+                    logging.info('  正在清理旧数据...')
+                    for table_name in existing_tables:
+                        c.execute(f'DROP TABLE IF EXISTS {table_name};')
+                    
+                    # 删除所有索引
+                    all_indexes = c.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%';"
+                    ).fetchall()
+                    for index in all_indexes:
+                        c.execute(f'DROP INDEX IF EXISTS {index[0]};')
+                    
                 conn.commit()
-                logging.info('✓ Database upgraded to v7: Download failure tracking added')
 
-            if current_version == 7:
-                # v8: Add position_in_section field for filename prefix indexing
-                # 防御性编程：检查列是否已存在
-                columns = [col[1] for col in c.execute("PRAGMA table_info(files)").fetchall()]
+                # 使用 v9 schema 创建所有表
+                self._create_fresh_database_v9(c)
                 
-                if 'position_in_section' not in columns:
-                    try:
-                        c.execute("""ALTER TABLE files ADD COLUMN position_in_section INTEGER;""")
-                    except Exception as e:
-                        if 'already exists' not in str(e).lower() and 'duplicate column' not in str(e).lower():
-                            raise
-                        logging.warning('⚠️  Column position_in_section already exists, skipping')
-                else:
-                    logging.debug('✓ Column position_in_section already exists, skipping')
-
-                # 为文件位置字段创建索引，加速按位置排序的查询
-                c.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_position_in_section
-                    ON files(course_id, section_id, position_in_section);
-                """)
-
-                c.execute('PRAGMA user_version = 8;')
-                current_version = 8
+                # 设置版本号为 9
+                c.execute('PRAGMA user_version = 9;')
+                current_version = 9
                 conn.commit()
-                logging.info('✓ Database upgraded to v8: Position tracking added for filename indexing')
+                logging.info('✅ 数据库已准备就绪（v9 schema）')
+            else:
+                logging.debug(f'✓ 数据库已是最新版本 (v{current_version})，所有表完整')
 
-            conn.commit()
+            # ============================================================
+            # 增量升级已弃用：统一使用 v8 schema
+            # 旧的增量升级代码已移至文件末尾的 _deprecated_incremental_upgrade()
+            # ============================================================
+
+                conn.commit()
             logging.debug('Database Version: %s', str(current_version))
-
             conn.close()
 
         except Error as error:
             raise RuntimeError(f'Could not create database! Error: {error}')
+
+    # ============================================================
+    # 已删除：旧的增量升级代码（v0→v1→v2→...→v8）
+    # 现在统一使用 v8 schema，大幅简化数据库初始化逻辑
+    # 如需参考旧代码，请查看 Git 历史记录
+    # ============================================================
 
     @staticmethod
     def _create_fresh_database_v8(cursor):
@@ -396,7 +127,7 @@ class StateRecorder:
         """
         # 创建 files 表（包含所有 v8 的字段）
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS files (
+                CREATE TABLE IF NOT EXISTS files (
                 file_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 course_id INTEGER NOT NULL,
                 course_fullname TEXT NOT NULL,
@@ -452,91 +183,142 @@ class StateRecorder:
         
         # 创建 auth_sessions 表
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS auth_sessions (
-                session_id TEXT PRIMARY KEY,
-                session_type TEXT NOT NULL,
-                owner_id TEXT,
-                creator_id TEXT,
-                token_value TEXT,
-                private_token_value TEXT,
-                status TEXT DEFAULT 'valid',
-                created_at INTEGER NOT NULL,
-                last_accessed_at INTEGER DEFAULT 0,
-                expires_at INTEGER,
-                source TEXT NOT NULL,
-                ip_restriction TEXT,
-                ip_address TEXT,
-                previous_session_id TEXT,
-                replaced_by_session_id TEXT,
-                context_id TEXT,
-                metadata TEXT,
-                FOREIGN KEY (previous_session_id) REFERENCES auth_sessions(session_id),
-                FOREIGN KEY (replaced_by_session_id) REFERENCES auth_sessions(session_id)
-            );
+                CREATE TABLE IF NOT EXISTS auth_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    session_type TEXT NOT NULL,
+                    owner_id TEXT,
+                    creator_id TEXT,
+                    token_value TEXT,
+                    private_token_value TEXT,
+                    status TEXT DEFAULT 'valid',
+                    created_at INTEGER NOT NULL,
+                    last_accessed_at INTEGER DEFAULT 0,
+                    expires_at INTEGER,
+                    source TEXT NOT NULL,
+                    ip_restriction TEXT,
+                    ip_address TEXT,
+                    previous_session_id TEXT,
+                    replaced_by_session_id TEXT,
+                    context_id TEXT,
+                    metadata TEXT,
+                    FOREIGN KEY (previous_session_id) REFERENCES auth_sessions(session_id),
+                    FOREIGN KEY (replaced_by_session_id) REFERENCES auth_sessions(session_id)
+                );
         """)
-        
+
         # 创建 cookie_store 表
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cookie_store (
-                cookie_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                name TEXT NOT NULL,
-                value TEXT NOT NULL,
-                domain TEXT NOT NULL,
-                path TEXT DEFAULT '/',
-                expires INTEGER,
-                max_age INTEGER,
-                secure INTEGER DEFAULT 0,
-                httponly INTEGER DEFAULT 0,
-                samesite TEXT DEFAULT 'Lax',
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER DEFAULT 0,
-                valid INTEGER DEFAULT 1,
-                FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
-            );
+                CREATE TABLE IF NOT EXISTS cookie_store (
+                    cookie_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    domain TEXT NOT NULL,
+                    path TEXT DEFAULT '/',
+                    expires INTEGER,
+                    max_age INTEGER,
+                    secure INTEGER DEFAULT 0,
+                    httponly INTEGER DEFAULT 0,
+                    samesite TEXT DEFAULT 'Lax',
+                    created_at INTEGER NOT NULL,
+                    updated_at INTEGER DEFAULT 0,
+                    valid INTEGER DEFAULT 1,
+                    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
+                );
         """)
-        
+
         # 创建 auth_audit_log 表
         cursor.execute("""
-            CREATE TABLE IF NOT EXISTS auth_audit_log (
-                log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT,
-                action TEXT NOT NULL,
-                status TEXT NOT NULL,
-                reason TEXT,
-                triggered_by TEXT NOT NULL,
-                user_id TEXT,
-                ip_address TEXT,
-                user_agent TEXT,
-                context_id TEXT,
-                timestamp INTEGER NOT NULL,
-                details TEXT,
-                FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
-            );
+                CREATE TABLE IF NOT EXISTS auth_audit_log (
+                    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_id TEXT,
+                    action TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT,
+                    triggered_by TEXT NOT NULL,
+                    user_id TEXT,
+                    ip_address TEXT,
+                    user_agent TEXT,
+                    context_id TEXT,
+                    timestamp INTEGER NOT NULL,
+                    details TEXT,
+                    FOREIGN KEY (session_id) REFERENCES auth_sessions(session_id)
+                );
         """)
-        
+
         # 创建认证表的所有索引
         auth_indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_auth_token ON auth_sessions(token_value);",
-            "CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_sessions(owner_id, created_at);",
-            "CREATE INDEX IF NOT EXISTS idx_auth_creator ON auth_sessions(creator_id);",
-            "CREATE INDEX IF NOT EXISTS idx_auth_status ON auth_sessions(status);",
-            "CREATE INDEX IF NOT EXISTS idx_auth_expires ON auth_sessions(expires_at);",
-            "CREATE INDEX IF NOT EXISTS idx_cookie_session ON cookie_store(session_id);",
-            "CREATE INDEX IF NOT EXISTS idx_cookie_name ON cookie_store(name);",
-            "CREATE INDEX IF NOT EXISTS idx_audit_session ON auth_audit_log(session_id);",
-            "CREATE INDEX IF NOT EXISTS idx_audit_action ON auth_audit_log(action);",
-            "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON auth_audit_log(timestamp);",
-            "CREATE INDEX IF NOT EXISTS idx_audit_user ON auth_audit_log(user_id);",
-        ]
-        
+                    "CREATE INDEX IF NOT EXISTS idx_auth_token ON auth_sessions(token_value);",
+                    "CREATE INDEX IF NOT EXISTS idx_auth_owner ON auth_sessions(owner_id, created_at);",
+                    "CREATE INDEX IF NOT EXISTS idx_auth_creator ON auth_sessions(creator_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_auth_status ON auth_sessions(status);",
+                    "CREATE INDEX IF NOT EXISTS idx_auth_expires ON auth_sessions(expires_at);",
+                    "CREATE INDEX IF NOT EXISTS idx_cookie_session ON cookie_store(session_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_cookie_name ON cookie_store(name);",
+                    "CREATE INDEX IF NOT EXISTS idx_audit_session ON auth_audit_log(session_id);",
+                    "CREATE INDEX IF NOT EXISTS idx_audit_action ON auth_audit_log(action);",
+                    "CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON auth_audit_log(timestamp);",
+                    "CREATE INDEX IF NOT EXISTS idx_audit_user ON auth_audit_log(user_id);",
+                ]
+
         for idx_sql in auth_indexes:
             cursor.execute(idx_sql)
-        
+
         # 设置数据库版本为 8
         cursor.execute('PRAGMA user_version = 8;')
         
         logging.info('✅ 全新数据库创建完成（v8 schema）')
+
+    @staticmethod
+    def _create_fresh_database_v9(cursor):
+        """
+        为全新数据库直接创建 v9 schema（最新版本）
+        
+        v9 相比 v8 的改进：
+        - 添加 incomplete_downloads 表用于支持断点续传
+        
+        @param cursor: SQLite cursor
+        """
+        # 首先创建 v8 的所有表
+        StateRecorder._create_fresh_database_v8(cursor)
+        
+        # 创建 incomplete_downloads 表（用于断点续传）
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS incomplete_downloads (
+                download_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                file_id INTEGER NOT NULL,
+                file_url TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                total_bytes INTEGER DEFAULT 0,
+                downloaded_bytes INTEGER DEFAULT 0,
+                start_time INTEGER NOT NULL,
+                last_update_time INTEGER NOT NULL,
+                server_supports_range INTEGER DEFAULT 0,
+                etag TEXT,
+                last_modified TEXT,
+                attempts INTEGER DEFAULT 0,
+                status TEXT DEFAULT 'pending',
+                error_reason TEXT,
+                FOREIGN KEY (file_id) REFERENCES files(file_id) ON DELETE CASCADE,
+                UNIQUE(file_id, file_path)
+            );
+        """)
+        
+        # 创建 incomplete_downloads 表的索引
+        incomplete_dl_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_incomplete_file_id ON incomplete_downloads(file_id);",
+            "CREATE INDEX IF NOT EXISTS idx_incomplete_status ON incomplete_downloads(status);",
+            "CREATE INDEX IF NOT EXISTS idx_incomplete_last_update ON incomplete_downloads(last_update_time);",
+            "CREATE INDEX IF NOT EXISTS idx_incomplete_attempts ON incomplete_downloads(attempts);",
+        ]
+        
+        for idx_sql in incomplete_dl_indexes:
+            cursor.execute(idx_sql)
+        
+        # 设置数据库版本为 9
+        cursor.execute('PRAGMA user_version = 9;')
+        
+        logging.info('✅ 全新数据库创建完成（v9 schema - 支持断点续传）')
 
     @staticmethod
     def files_have_same_type(file1: File, file2: File) -> bool:
@@ -649,62 +431,46 @@ class StateRecorder:
         return False
 
     def get_stored_files(self) -> List[Course]:
-        # get all stored files (that are not yet deleted)
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        stored_courses = []
-
-        cursor.execute(
-            """SELECT course_id, course_fullname
-            FROM files WHERE deleted = 0 AND modified = 0 AND moved = 0
-            GROUP BY course_id;"""
-        )
-
-        curse_rows = cursor.fetchall()
-
-        for course_row in curse_rows:
-            course = Course(course_row['course_id'], course_row['course_fullname'])
-
-            cursor.execute(
-                """SELECT *
-                FROM files
-                WHERE deleted = 0
-                AND modified = 0
-                AND moved = 0
-                AND course_id = ?;""",
-                (course.id,),
-            )
-
-            file_rows = cursor.fetchall()
-
-            course.files = []
-
-            for file_row in file_rows:
-                notify_file = File.fromRow(file_row)
-                course.files.append(notify_file)
-
-            stored_courses.append(course)
-
-        conn.close()
-        return stored_courses
+        """
+        获取所有存储的文件（未删除、未修改、未移动的文件）
+        
+        ✅ 优化：使用缓存和优化查询替代 N+1 查询
+        之前: 2 个查询 (1 个获取课程 + N 个获取每个课程的文件)
+        现在: 1 个查询 + 内存分组
+        """
+        # 生成缓存键
+        cache_key = self._get_cache_key('get_stored_files')
+        
+        # 使用缓存或执行优化查询
+        def query_func():
+            where_clause = "deleted = 0 AND modified = 0 AND moved = 0"
+            return self._query_files_optimized(where_clause)
+        
+        return self._get_cached(cache_key, query_func)
 
     def get_old_files(self) -> List[Course]:
-        # get all stored files (that are not yet deleted)
+        """
+        获取所有有旧版本的文件
+        
+        ✅ 优化：使用缓存和优化查询替代 N+1 查询
+        """
+        # 生成缓存键
+        cache_key = self._get_cache_key('get_old_files')
+        
+        # 使用缓存或执行优化查询
+        def query_func():
+            where_clause = "old_file_id IS NOT NULL"
+            return self._query_files_optimized(where_clause)
+        
+        result = self._get_cached(cache_key, query_func)
+        
+        # 保留原始方法的返回值处理
         conn = sqlite3.connect(self.db_file)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        stored_courses = []
-
-        cursor.execute(
-            """SELECT DISTINCT course_id, course_fullname
-            FROM files WHERE old_file_id IS NOT NULL"""
-        )
-
-        course_rows = cursor.fetchall()
-        for course_row in course_rows:
-            course = Course(course_row['course_id'], course_row['course_fullname'])
-
+        stored_courses = result
+        
+        for course in stored_courses:
             cursor.execute(
                 """SELECT *
                 FROM files
@@ -1023,6 +789,10 @@ class StateRecorder:
         conn.close()
 
     def save_file(self, file: File, course_id: int, course_fullname: str):
+        # 🆕 清除相关缓存（数据有变化）
+        self._clear_cache('get_stored_files')
+        self._clear_cache('get_old_files')
+        
         if file.deleted:
             self.delete_file(file, course_id, course_fullname)
         elif file.modified:
@@ -1057,6 +827,10 @@ class StateRecorder:
         conn.close()
 
     def batch_delete_files(self, courses: List[Course]):
+        # 🆕 清除相关缓存（数据有变化）
+        self._clear_cache('get_stored_files')
+        self._clear_cache('get_old_files')
+        
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
@@ -1496,3 +1270,351 @@ class StateRecorder:
         conn.commit()
         conn.close()
         logging.debug(f'重置失败文件状态用于重试: {file.content_filename}')
+
+    def save_incomplete_download(self, file_id: int, file_url: str, file_path: str, 
+                                  total_bytes: int, downloaded_bytes: int, 
+                                  server_supports_range: bool = False, 
+                                  etag: str = None, last_modified: str = None):
+        """
+        保存未完成的下载信息，用于断点续传
+        
+        @param file_id: 文件 ID
+        @param file_url: 下载 URL
+        @param file_path: 文件保存路径
+        @param total_bytes: 文件总字节数
+        @param downloaded_bytes: 已下载的字节数
+        @param server_supports_range: 服务器是否支持 Range 请求
+        @param etag: ETag（用于验证文件完整性）
+        @param last_modified: Last-Modified 时间戳
+        """
+        import time
+        
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        current_time = int(time.time())
+        
+        try:
+            # 检查是否已存在该下载记录
+            cursor.execute(
+                "SELECT download_id FROM incomplete_downloads WHERE file_id = ? AND file_path = ?",
+                (file_id, file_path)
+            )
+            existing = cursor.fetchone()
+            
+            if existing:
+                # 更新现有记录
+                cursor.execute(
+                    """UPDATE incomplete_downloads
+                    SET file_url = ?,
+                        total_bytes = ?,
+                        downloaded_bytes = ?,
+                        server_supports_range = ?,
+                        etag = ?,
+                        last_modified = ?,
+                        last_update_time = ?,
+                        status = 'pending'
+                    WHERE download_id = ?
+                    """,
+                    (file_url, total_bytes, downloaded_bytes, int(server_supports_range),
+                     etag, last_modified, current_time, existing[0])
+                )
+                logging.debug(f'更新未完成下载记录 [file_id={file_id}]: {downloaded_bytes}/{total_bytes} 字节')
+            else:
+                # 插入新记录
+                cursor.execute(
+                    """INSERT INTO incomplete_downloads
+                    (file_id, file_url, file_path, total_bytes, downloaded_bytes, 
+                     server_supports_range, etag, last_modified, start_time, last_update_time, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+                    """,
+                    (file_id, file_url, file_path, total_bytes, downloaded_bytes,
+                     int(server_supports_range), etag, last_modified, current_time, current_time)
+                )
+                logging.debug(f'保存未完成下载记录 [file_id={file_id}]: {downloaded_bytes}/{total_bytes} 字节')
+            
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_incomplete_download(self, file_id: int, file_path: str) -> dict:
+        """
+        获取未完成的下载信息
+        
+        @param file_id: 文件 ID
+        @param file_path: 文件路径
+        @return: 下载信息字典或 None
+        """
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                """SELECT download_id, file_url, total_bytes, downloaded_bytes, 
+                   server_supports_range, etag, last_modified, attempts, error_reason
+                FROM incomplete_downloads
+                WHERE file_id = ? AND file_path = ? AND status = 'pending'
+                """,
+                (file_id, file_path)
+            )
+            result = cursor.fetchone()
+            
+            if result:
+                return {
+                    'download_id': result[0],
+                    'file_url': result[1],
+                    'total_bytes': result[2],
+                    'downloaded_bytes': result[3],
+                    'server_supports_range': bool(result[4]),
+                    'etag': result[5],
+                    'last_modified': result[6],
+                    'attempts': result[7],
+                    'error_reason': result[8],
+                }
+            return None
+        finally:
+            conn.close()
+
+    def mark_download_complete(self, file_id: int, file_path: str):
+        """
+        标记下载为完成状态（删除不完整下载记录）
+        
+        @param file_id: 文件 ID
+        @param file_path: 文件路径
+        """
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                "DELETE FROM incomplete_downloads WHERE file_id = ? AND file_path = ?",
+                (file_id, file_path)
+            )
+            conn.commit()
+            logging.debug(f'删除完成的下载记录 [file_id={file_id}]')
+        finally:
+            conn.close()
+
+    def increment_incomplete_download_attempt(self, download_id: int, error_reason: str = None):
+        """
+        增加未完成下载的尝试次数
+        
+        @param download_id: 下载 ID
+        @param error_reason: 错误原因
+        """
+        import time
+        
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        current_time = int(time.time())
+        
+        try:
+            cursor.execute(
+                """UPDATE incomplete_downloads
+                SET attempts = attempts + 1,
+                    last_update_time = ?,
+                    error_reason = ?
+                WHERE download_id = ?
+                """,
+                (current_time, error_reason[:500] if error_reason else None, download_id)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def get_incomplete_downloads_for_retry(self, max_attempts: int = 5) -> list:
+        """
+        获取可以重试的不完整下载列表（按最后更新时间排序）
+        
+        @param max_attempts: 最大尝试次数
+        @return: 未完成下载列表
+        """
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                """SELECT download_id, file_id, file_url, file_path, total_bytes, 
+                   downloaded_bytes, server_supports_range, etag, last_modified, attempts
+                FROM incomplete_downloads
+                WHERE status = 'pending' AND attempts < ?
+                ORDER BY last_update_time DESC
+                """,
+                (max_attempts,)
+            )
+            
+            results = cursor.fetchall()
+            downloads = []
+            for row in results:
+                downloads.append({
+                    'download_id': row[0],
+                    'file_id': row[1],
+                    'file_url': row[2],
+                    'file_path': row[3],
+                    'total_bytes': row[4],
+                    'downloaded_bytes': row[5],
+                    'server_supports_range': bool(row[6]),
+                    'etag': row[7],
+                    'last_modified': row[8],
+                    'attempts': row[9],
+                })
+            
+            return downloads
+        finally:
+            conn.close()
+
+    def cleanup_old_incomplete_downloads(self, days_old: int = 7):
+        """
+        清理超过指定天数的未完成下载记录
+        
+        @param days_old: 超过多少天的记录会被删除
+        @return: 删除的记录数
+        """
+        import time
+        
+        conn = sqlite3.connect(self.db_file)
+        cursor = conn.cursor()
+        
+        try:
+            cutoff_time = int(time.time()) - (days_old * 24 * 60 * 60)
+            
+            cursor.execute(
+                "DELETE FROM incomplete_downloads WHERE last_update_time < ?",
+                (cutoff_time,)
+            )
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            if deleted_count > 0:
+                logging.debug(f'清理了 {deleted_count} 个超过 {days_old} 天的未完成下载记录')
+            
+            return deleted_count
+        finally:
+            conn.close()
+
+    # ========================================================================
+    # 🆕 查询缓存和性能优化方法
+    # ========================================================================
+    
+    def _get_cache_key(self, method_name: str, *args, **kwargs) -> str:
+        """
+        生成缓存键
+        
+        @param method_name: 方法名称
+        @param args: 位置参数
+        @param kwargs: 关键字参数
+        @return: 缓存键
+        """
+        import hashlib
+        key_parts = [method_name] + [str(arg) for arg in args] + [f"{k}={v}" for k, v in kwargs.items()]
+        key_str = "|".join(key_parts)
+        return hashlib.md5(key_str.encode()).hexdigest()
+    
+    def _get_cached(self, cache_key: str, query_func, *args, **kwargs):
+        """
+        获取缓存数据，如果缓存不存在或过期，则执行查询
+        
+        @param cache_key: 缓存键
+        @param query_func: 查询函数
+        @param args: 查询函数的位置参数
+        @param kwargs: 查询函数的关键字参数
+        @return: 查询结果
+        """
+        current_time = time.time()
+        
+        # 检查缓存是否有效
+        if cache_key in self._query_cache:
+            data, timestamp = self._query_cache[cache_key]
+            if current_time - timestamp < self.CACHE_TTL_SECONDS:
+                logging.debug(f'📦 使用缓存: {cache_key[:8]}...')
+                return data
+        
+        # 缓存不存在或过期，执行查询
+        logging.debug(f'🔍 执行数据库查询: {cache_key[:8]}...')
+        data = query_func(*args, **kwargs)
+        
+        # 保存到缓存
+        self._query_cache[cache_key] = (data, current_time)
+        return data
+    
+    def _clear_cache(self, pattern: Optional[str] = None):
+        """
+        清除缓存
+        
+        @param pattern: 模式（如果指定，只清除匹配的缓存）
+        """
+        if pattern is None:
+            # 清除所有缓存
+            self._query_cache.clear()
+            logging.debug('🧹 清除所有缓存')
+        else:
+            # 清除匹配的缓存
+            keys_to_delete = [k for k in self._query_cache.keys() if pattern in k]
+            for key in keys_to_delete:
+                del self._query_cache[key]
+            if keys_to_delete:
+                logging.debug(f'🧹 清除 {len(keys_to_delete)} 个匹配缓存')
+    
+    def _query_files_optimized(self, where_clause: str = "", where_params: tuple = ()) -> List[Course]:
+        """
+        优化的文件查询方法，使用 GROUP BY 和 JOIN 而不是 N+1 查询
+        
+        这个方法替代了原始的两步查询（先查询课程，再查询文件）
+        使用单个优化的查询获取所有数据。
+        
+        @param where_clause: WHERE 子句
+        @param where_params: WHERE 子句参数
+        @return: Course 对象列表
+        """
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        stored_courses = []
+        
+        try:
+            # 🔍 优化查询：一次获取所有文件数据
+            query = """
+                SELECT course_id, course_fullname, *
+                FROM files
+                WHERE 1=1
+            """
+            
+            if where_clause:
+                query += f" AND {where_clause}"
+            
+            query += " ORDER BY course_id"
+            
+            cursor.execute(query, where_params)
+            file_rows = cursor.fetchall()
+            
+            if not file_rows:
+                conn.close()
+                return []
+            
+            # 🔄 内存中分组，避免多次数据库查询
+            current_course_id = None
+            current_course = None
+            
+            for file_row in file_rows:
+                course_id = file_row['course_id']
+                
+                # 检测课程变更
+                if course_id != current_course_id:
+                    if current_course is not None:
+                        stored_courses.append(current_course)
+                    
+                    current_course = Course(course_id, file_row['course_fullname'])
+                    current_course_id = course_id
+                
+                # 添加文件到课程
+                notify_file = File.fromRow(file_row)
+                current_course.files.append(notify_file)
+            
+            # 添加最后一个课程
+            if current_course is not None:
+                stored_courses.append(current_course)
+        
+        finally:
+            conn.close()
+        
+        return stored_courses

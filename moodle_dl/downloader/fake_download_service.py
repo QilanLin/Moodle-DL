@@ -22,6 +22,9 @@ class FakeDownloadService:
         self.opts = opts
         self.config = config
         self.database = database
+        
+        # 设置文件名限制（与 DownloadService 保持一致）
+        PT.restricted_filenames = config.get_restricted_filenames()
 
     def get_failed_tasks(self):
         """

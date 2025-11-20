@@ -1,11 +1,62 @@
 import json
+import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 from moodle_dl.types import DownloadOptions, MoodleDlOpts, MoodleURL
 from moodle_dl.utils import PathTools as PT
+
+
+@dataclass
+class DownloadOptionsConfig:
+    """
+    配置下载选项的 dataclass，提供类型安全和默认值
+    
+    所有字段默认为 False，除了常用的选项（如 descriptions, resources 等）
+    """
+    submissions: bool = False
+    descriptions: bool = True
+    links_in_descriptions: bool = True
+    databases: bool = False
+    forums: bool = False
+    quizzes: bool = False
+    lessons: bool = False
+    workshops: bool = False
+    books: bool = True
+    bigbluebuttonbns: bool = False
+    wikis: bool = False
+    glossaries: bool = False
+    h5pactivities: bool = False
+    h5p_attempts: bool = False
+    imscps: bool = False
+    scorms: bool = False
+    scorm_scos: bool = False
+    scorm_attempts: bool = False
+    subsections: bool = True
+    qbanks: bool = False
+    resources: bool = True
+    urls: bool = False
+    labels: bool = False
+    chats: bool = False
+    choices: bool = False
+    feedbacks: bool = False
+    surveys: bool = False
+    ltis: bool = False
+    calendars: bool = False
+    metadata_files: bool = False
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, bool]) -> 'DownloadOptionsConfig':
+        """从字典创建配置对象"""
+        return cls(**{k: v for k, v in data.items() if hasattr(cls, k)})
+    
+    def to_dict(self) -> Dict[str, bool]:
+        """转换为字典"""
+        from dataclasses import asdict
+        return asdict(self)
 
 
 class ConfigHelper:
@@ -17,15 +68,28 @@ class ConfigHelper:
         pass
 
     def __init__(self, opts: MoodleDlOpts):
-        self._whole_config = {}
-        self.opts = opts
-        self.config_path = str(Path(opts.path) / 'config.json')
-        self._auth_manager = None
-        self._db_file = None
+        self._whole_config: Dict[str, Any] = {}
+        self.opts: MoodleDlOpts = opts
+        self.config_path: str = str(Path(opts.path) / 'config.json')
+        self._auth_manager: Any = None  # AuthSessionManager
+        self._db_file: str = None
 
         # 初始化认证管理器(用于存储 tokens 到数据库)
         # 数据库必须初始化成功,否则抛出异常,不使用 fallback
         self._db_file = str(Path(opts.path) / 'moodle_state.db')
+        
+        # 关键修复：先初始化数据库表，再初始化认证管理器
+        # 这确保在 --init 等操作中，数据库表已被正确创建
+        try:
+            from moodle_dl.database import StateRecorder
+            # 创建 StateRecorder 以初始化数据库表（如果表不存在）
+            # 这是一个轻量级操作，只在首次运行时会创建表
+            StateRecorder(self, opts)
+        except Exception as e:
+            import logging
+            logging.warning(f'⚠️  数据库初始化过程中出现警告: {e}')
+            # 不抛出异常，继续进行，因为表可能已经存在
+        
         from moodle_dl.auth_session_manager import AuthSessionManager
         self._auth_manager = AuthSessionManager(self._db_file)
 
@@ -39,7 +103,18 @@ class ConfigHelper:
         # Tests if a configuration file exists
         return os.path.isfile(self.config_path)
 
-    def load(self):
+    def load(self, validate: bool = True, auto_fix: bool = False):
+        """
+        加载配置文件
+        
+        Args:
+            validate: 是否验证配置（默认为 True）
+            auto_fix: 是否自动修复常见问题（默认为 False）
+        
+        Raises:
+            NoConfigError: 配置文件加载失败
+            ValueError: 配置验证失败（如果 validate=True）
+        """
         # TODO: Load config into dataclass, so we can access that class instead of using getters
         # Opens the configuration file and parse it to a JSON object
         try:
@@ -48,9 +123,116 @@ class ConfigHelper:
                 self._whole_config = json.loads(config_raw)
         except (IOError, OSError) as err_load:
             raise ConfigHelper.NoConfigError(f'Configuration could not be loaded from {self.config_path}\n{err_load!s}')
+        except json.JSONDecodeError as err_json:
+            raise ConfigHelper.NoConfigError(
+                f'配置文件 JSON 格式错误: {self.config_path}\n{err_json!s}\n'
+                f'提示: 使用 JSON 验证工具检查语法，或删除配置文件重新运行 --init'
+            )
+        
+        # 配置验证
+        if validate:
+            from moodle_dl.config_validator import ConfigValidator, auto_fix_config
+            
+            validator = ConfigValidator(strict=False)
+            result = validator.validate_config_data(self._whole_config)
+            
+            # 如果启用了自动修复
+            if auto_fix and (result.has_errors() or result.has_warnings()):
+                fixed_config, fixes = auto_fix_config(self._whole_config)
+                if fixes:
+                    logging.info('🔧 自动修复了以下配置问题:')
+                    for fix in fixes:
+                        logging.info(f'  • {fix}')
+                    self._whole_config = fixed_config
+                    self._save()
+                    # 重新验证
+                    result = validator.validate_config_data(self._whole_config)
+            
+            # 显示警告
+            if result.has_warnings():
+                logging.warning('⚠️  配置验证发现以下警告:')
+                for warning in result.warnings:
+                    logging.warning(f'  • {warning.field}: {warning.message}')
+                    if warning.suggestion:
+                        logging.warning(f'    💡 建议: {warning.suggestion}')
+            
+            # 如果有错误，抛出异常
+            if result.has_errors():
+                error_msg = '❌ 配置验证失败:\n'
+                for error in result.errors:
+                    error_msg += f'  • {error.field}: {error.message}\n'
+                    if error.suggestion:
+                        error_msg += f'    💡 建议: {error.suggestion}\n'
+                raise ValueError(error_msg)
 
-    def _save(self):
-        # TODO: Use dataclass and write that back to file, so that all options are always present
+    def _get_default_download_options(self) -> Dict[str, bool]:
+        """
+        获取所有下载选项的默认值
+        
+        确保保存时配置文件包含所有下载选项，使用户一目了然所有可用的配置项
+        
+        Returns:
+            包含所有下载选项及其默认值的字典
+        """
+        # 使用 dataclass 获取默认值，确保一致性
+        return DownloadOptionsConfig().to_dict()
+
+    def _ensure_download_options_present(self):
+        """
+        确保配置中存在所有下载选项
+        
+        对于缺失的选项，使用默认值填充。这样配置文件会始终包含所有可用的选项，
+        用户可以很容易地看到哪些选项是可用的。
+        """
+        if 'download_options' not in self._whole_config:
+            self._whole_config['download_options'] = {}
+        
+        download_options = self._whole_config['download_options']
+        defaults = self._get_default_download_options()
+        
+        for option_name, default_value in defaults.items():
+            if option_name not in download_options:
+                download_options[option_name] = default_value
+    
+    def _get_download_options_config(self) -> DownloadOptionsConfig:
+        """
+        获取下载选项的 dataclass 对象（只读）
+        
+        这个方法提供类型安全的访问，但不会修改配置
+        
+        Returns:
+            DownloadOptionsConfig 对象
+        """
+        download_options = self._whole_config.get('download_options', {})
+        return DownloadOptionsConfig.from_dict(download_options)
+
+    def _save(self, validate: bool = False):
+        """
+        保存配置到文件
+        
+        Args:
+            validate: 是否在保存前验证配置（默认为 False，避免循环依赖）
+        """
+        # 改进: 保存前补全所有配置选项，使配置文件更完整
+        self._ensure_download_options_present()
+        
+        # 可选：保存前验证
+        if validate:
+            from moodle_dl.config_validator import ConfigValidator
+            validator = ConfigValidator(strict=False)
+            result = validator.validate_config_data(self._whole_config)
+            
+            if result.has_errors():
+                error_msg = '❌ 配置验证失败，无法保存:\n'
+                for error in result.errors:
+                    error_msg += f'  • {error.field}: {error.message}\n'
+                raise ValueError(error_msg)
+            
+            if result.has_warnings():
+                logging.warning('⚠️  配置保存时发现警告:')
+                for warning in result.warnings:
+                    logging.warning(f'  • {warning.field}: {warning.message}')
+        
         config_formatted = json.dumps(self._whole_config, indent=4)
         # Saves the JSON object back to file
         with os.fdopen(
@@ -95,125 +277,196 @@ class ConfigHelper:
         """
         return self.get_property_or(f'download_{option_name}', default)
 
-    def set_property(self, key: str, value: any):
+    def set_property(self, key: str, value: any, validate: bool = False):
+        """
+        设置配置属性
+        
+        Args:
+            key: 属性键
+            value: 属性值
+            validate: 是否验证配置（默认为 False）
+        """
         # sets a property in the JSON object
         self._whole_config.update({key: value})
-        self._save()
+        self._save(validate=validate)
 
-    def remove_property(self, key):
+    def remove_property(self, key: str, validate: bool = False):
+        """
+        移除配置属性
+        
+        Args:
+            key: 属性键
+            validate: 是否验证配置（默认为 False）
+        """
         # removes a property from the JSON object
         self._whole_config.pop(key, None)
         #                           ^ behavior if the key is not present
-        self._save()
+        self._save(validate=validate)
+    
+    def validate(self) -> bool:
+        """
+        验证当前配置
+        
+        Returns:
+            bool: 配置是否有效（如果有错误返回 False，只有警告也返回 True）
+        """
+        from moodle_dl.config_validator import ConfigValidator
+        
+        validator = ConfigValidator(strict=False)
+        result = validator.validate_config_data(self._whole_config)
+        
+        # 显示结果
+        if result.has_errors() or result.has_warnings():
+            print(result.get_summary())
+        else:
+            logging.info('✅ 配置验证通过')
+        
+        return not result.has_errors()
 
     # ---------------------------- GETTERS ------------------------------------
 
     # Download option getters - using generic method to avoid code duplication
+    # ========================================================================
+    # 下载选项 Getter 方法 (使用 dataclass 简化，提供类型安全)
+    # ========================================================================
+    
     def get_download_submissions(self) -> bool:
-        return self.get_download_option('submissions')
+        """获取是否下载作业提交"""
+        return self._get_download_options_config().submissions
 
     def get_download_descriptions(self) -> bool:
-        return self.get_download_option('descriptions')
+        """获取是否下载描述"""
+        return self._get_download_options_config().descriptions
 
     def get_download_links_in_descriptions(self) -> bool:
-        return self.get_download_option('links_in_descriptions')
+        """获取是否下载描述中的链接"""
+        return self._get_download_options_config().links_in_descriptions
 
     def get_download_databases(self) -> bool:
-        return self.get_download_option('databases')
+        """获取是否下载数据库"""
+        return self._get_download_options_config().databases
 
     def get_download_forums(self) -> bool:
-        return self.get_download_option('forums')
+        """获取是否下载论坛"""
+        return self._get_download_options_config().forums
 
     def get_download_quizzes(self) -> bool:
-        return self.get_download_option('quizzes')
+        """获取是否下载测验"""
+        return self._get_download_options_config().quizzes
 
     def get_download_lessons(self) -> bool:
-        return self.get_download_option('lessons')
+        """获取是否下载课程"""
+        return self._get_download_options_config().lessons
 
     def get_download_workshops(self) -> bool:
-        return self.get_download_option('workshops')
+        """获取是否下载研讨会"""
+        return self._get_download_options_config().workshops
 
     def get_download_books(self) -> bool:
-        return self.get_download_option('books')
+        """获取是否下载书籍"""
+        return self._get_download_options_config().books
 
     def get_download_bigbluebuttonbns(self) -> bool:
-        return self.get_download_option('bigbluebuttonbns')
+        """获取是否下载 BigBlueButton 会议"""
+        return self._get_download_options_config().bigbluebuttonbns
 
     def get_download_wikis(self) -> bool:
-        return self.get_download_option('wikis')
+        """获取是否下载 Wiki"""
+        return self._get_download_options_config().wikis
 
     def get_download_glossaries(self) -> bool:
-        return self.get_download_option('glossaries')
+        """获取是否下载词汇表"""
+        return self._get_download_options_config().glossaries
 
     def get_download_h5pactivities(self) -> bool:
-        return self.get_download_option('h5pactivities')
+        """获取是否下载 H5P 活动"""
+        return self._get_download_options_config().h5pactivities
 
     def get_download_h5p_attempts(self) -> bool:
-        return self.get_download_option('h5p_attempts')
+        """获取是否下载 H5P 尝试"""
+        return self._get_download_options_config().h5p_attempts
 
     def get_download_imscps(self) -> bool:
-        return self.get_download_option('imscps')
+        """获取是否下载 IMSCP 包"""
+        return self._get_download_options_config().imscps
 
     def get_download_scorms(self) -> bool:
-        return self.get_download_option('scorms')
+        """获取是否下载 SCORM 课程"""
+        return self._get_download_options_config().scorms
 
     def get_download_scorm_scos(self) -> bool:
-        return self.get_download_option('scorm_scos')
+        """获取是否下载 SCORM 模块"""
+        return self._get_download_options_config().scorm_scos
 
     def get_download_scorm_attempts(self) -> bool:
-        return self.get_download_option('scorm_attempts')
+        """获取是否下载 SCORM 尝试"""
+        return self._get_download_options_config().scorm_attempts
 
     def get_download_subsections(self) -> bool:
-        return self.get_download_option('subsections')
+        """获取是否下载子章节"""
+        return self._get_download_options_config().subsections
 
     def get_download_qbanks(self) -> bool:
-        return self.get_download_option('qbanks')
+        """获取是否下载题库"""
+        return self._get_download_options_config().qbanks
 
     def get_download_resources(self) -> bool:
+        """获取是否下载资源（PDF、视频等文件）"""
         # Resource modules are one of the most commonly used in Moodle for file uploads
-        return self.get_download_option('resources', default=True)
+        return self._get_download_options_config().resources
 
     def get_download_urls(self) -> bool:
-        return self.get_download_option('urls')
+        """获取是否下载 URL 链接"""
+        return self._get_download_options_config().urls
 
     def get_download_labels(self) -> bool:
-        return self.get_download_option('labels')
+        """获取是否下载标签"""
+        return self._get_download_options_config().labels
 
     def get_download_chats(self) -> bool:
-        return self.get_download_option('chats')
+        """获取是否下载聊天"""
+        return self._get_download_options_config().chats
 
     def get_download_choices(self) -> bool:
-        return self.get_download_option('choices')
+        """获取是否下载选择"""
+        return self._get_download_options_config().choices
 
     def get_download_feedbacks(self) -> bool:
-        return self.get_download_option('feedbacks')
+        """获取是否下载反馈"""
+        return self._get_download_options_config().feedbacks
 
     def get_download_surveys(self) -> bool:
-        return self.get_download_option('surveys')
+        """获取是否下载问卷"""
+        return self._get_download_options_config().surveys
 
     def get_download_ltis(self) -> bool:
-        # LTI (external tool) module is always enabled for complete metadata export
-        # This method is kept for backward compatibility but always returns True
-        # The old cookie-based handling for 'lti' has been replaced with the full LTI module
-        # Note: kalvidres and helixmedia still use cookie-based handling with dedicated extractors
-        return True
+        """
+        获取是否下载 LTI 工具
+        
+        LTI (external tool) module is always enabled for complete metadata export
+        This method is kept for backward compatibility but always returns True
+        The old cookie-based handling for 'lti' has been replaced with the full LTI module
+        Note: kalvidres and helixmedia still use cookie-based handling with dedicated extractors
+        """
+        return True  # Always enabled
 
     def get_download_calendars(self) -> bool:
-        return self.get_download_option('calendars')
+        """获取是否下载日历"""
+        return self._get_download_options_config().calendars
 
     def get_download_metadata_files(self) -> bool:
         """
-        Get whether to download metadata files (JSON, info, etc.)
+        获取是否下载元数据文件（JSON、info 等）
         
-        Metadata files include:
-        - Resource module metadata (.json files corresponding to PDFs/videos)
-        - Module info files (_info)
-        - Notes files (_notes.md)
-        - Other auto-generated metadata
+        元数据文件包括：
+        - 资源模块元数据（.json 文件对应 PDF/视频）
+        - 模块信息文件（_info）
+        - 笔记文件（_notes.md）
+        - 其他自动生成的元数据
         
-        Default: False (disabled to keep downloads clean)
+        默认值: False（禁用以保持下载清洁）
         """
-        return self.get_download_option('metadata_files', default=False)
+        return self._get_download_options_config().metadata_files
 
     def get_auth_manager(self):
         """获取 AuthSessionManager 实例(用于数据库操作)"""
