@@ -38,9 +38,8 @@ class ConfigWizard:
         steps = [
             ('选择要下载的课程', None),
             ('设置课程选项', None),
+            ('指定额外课程（教师/TA）', None),
             ('配置要下载的模块类型', None),
-            ('配置课程描述下载', None),
-            ('配置描述中的链接下载', None),
         ]
         return len(steps)
 
@@ -64,8 +63,6 @@ class ConfigWizard:
             ('设置课程选项', lambda: self._set_options_of_courses(courses)),
             ('指定额外课程（教师/TA）', self._interactively_add_manually_specified_courses),
             ('配置要下载的模块类型', self._select_modules_to_download),
-            ('配置课程描述下载', self._select_should_download_descriptions),
-            ('配置描述中的链接下载', self._select_should_download_links_in_descriptions),
         ]
 
         # 自动启用以下功能（不再需要用户单独配置）
@@ -685,6 +682,12 @@ class ConfigWizard:
              '在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
             ('download_qbanks', '题库 (Question Banks)',
              '含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
+            
+            # 特殊选项
+            ('download_descriptions', '课程描述 (Descriptions)',
+             '课程中各种资源的描述文本。描述会创建为 Markdown 文件，包含文件、任务、作业的说明信息。适合离线阅读或存档。'),
+            ('download_links_in_descriptions', '描述中的链接 (Links in Descriptions)',
+             '描述中包含的网页、文件或视频链接。可指向 Moodle 内部页面或外部资源。下载后会创建快捷方式或副本文件。'),
         ]
 
         # 获取当前配置
