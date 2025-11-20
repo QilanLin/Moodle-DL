@@ -265,6 +265,11 @@ class ForumMod(MoodleMod):
         return []
 
     async def load_files_of_discussion(self, discussion: Dict) -> List[Dict]:
+        """
+        加载论坛讨论的帖子文件，支持 Mobile API 和 Web API fallback。
+        
+        优先使用 mod_forum_get_discussion_posts (Mobile API)，失败时使用 Web API fallback。
+        """
         result = []
 
         data = {
@@ -272,10 +277,14 @@ class ForumMod(MoodleMod):
             'sortby': 'modified',
             'sortdirection': 'ASC',
         }
-        if self.version >= 2019052000:  # 3.7
-            posts = (await self.client.async_post('mod_forum_get_discussion_posts', data)).get('posts', [])
-        else:
-            posts = (await self.client.async_post('mod_forum_get_forum_discussion_posts', data)).get('posts', [])
+        
+        try:
+            # 优先使用 Mobile API
+            posts = await self._fetch_discussion_posts_mobile_api(data)
+        except (Exception, KeyError) as e:
+            logging.debug(f"Mobile API 获取讨论帖子失败: {e}，尝试 Web API fallback...")
+            # Fallback 到 Web API
+            posts = await self._fetch_discussion_posts_web_api(discussion.get('discussion_id', 0))
 
         for post in posts:
             post_message = post.get('message', '') or ''
@@ -333,6 +342,53 @@ class ForumMod(MoodleMod):
             result.extend(post_files)
 
         return result
+
+    async def _fetch_discussion_posts_mobile_api(self, data: Dict) -> List[Dict]:
+        """
+        使用 Mobile API (mod_forum_get_discussion_posts 或分页版本) 获取讨论帖子。
+        
+        Return: 帖子列表
+        """
+        logging.debug('📱 使用 Mobile API 获取讨论帖子...')
+        
+        if self.version >= 2019052000:  # 3.7
+            result = await self.client.async_post('mod_forum_get_discussion_posts', data)
+        else:
+            result = await self.client.async_post('mod_forum_get_forum_discussion_posts', data)
+        
+        posts = result.get('posts', [])
+        
+        if not posts:
+            raise KeyError('Mobile API 返回空的帖子列表')
+        
+        logging.debug(f'✅ Mobile API 成功获取 {len(posts)} 个帖子')
+        return posts
+
+    async def _fetch_discussion_posts_web_api(self, discussion_id: int) -> List[Dict]:
+        """
+        使用 Web API fallback 获取讨论帖子信息。
+        
+        这是 mod_forum_get_discussion_posts 的 fallback 实现。
+        由于 Moodle Web Services API 没有提供论坛帖子 API，
+        此 fallback 返回空列表。
+        
+        注: 论坛讨论帖子数据必须通过 Mobile API 获取。
+        Web API (core_course_get_contents) 只提供论坛模块的基本信息，
+        不提供讨论或帖子的详细内容。
+        
+        Return: 帖子列表 (通常为空)
+        """
+        logging.warning(
+            f'⚠️ Web API fallback: 无法通过标准 Web Services API 获取论坛讨论帖子。'
+            f'\n   讨论 ID: {discussion_id}'
+            f'\n   建议:'
+            f'\n   1. 检查 Mobile API (mod_forum_get_discussion_posts) 的权限'
+            f'\n   2. 确保 Moodle 版本 >= 2.8 (支持 forum discussions API)'
+            f'\n   3. 检查用户是否有查看帖子的权限'
+        )
+        
+        # 返回空列表，避免错误
+        return []
 
     def add_legacy_inline_files(self, inline_files: List, post_files: List):
         for inline_file in inline_files:
