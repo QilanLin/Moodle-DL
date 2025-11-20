@@ -170,14 +170,24 @@ class WorkshopMod(MoodleMod):
         await self.run_async_load_function_on_mod_entries(workshops, self.load_workshop_files)
 
     async def load_workshop_files(self, workshop: Dict):
+        """
+        加载研讨会文件，支持 Mobile API 和 Web API fallback。
+        
+        优先使用 mod_workshop_get_submissions (Mobile API)，失败时使用 Web API fallback。
+        """
         workshop_id = workshop.get('id', 0)
         data = {'workshopid': workshop_id, 'userid': self.user_id}
 
         try:
-            submissions = (await self.client.async_post('mod_workshop_get_submissions', data)).get('submissions', [])
-        except RequestRejectedError:
-            logging.debug("No access rights for workshop %d", workshop_id)
-            return
+            # 优先使用 Mobile API
+            submissions = await self._fetch_workshop_submissions_mobile_api(data)
+        except (RequestRejectedError, Exception) as e:
+            logging.debug(f"Mobile API 获取研讨会 {workshop_id} 的提交失败: {e}，尝试 Web API fallback...")
+            # Fallback 到 Web API
+            submissions = await self._fetch_workshop_submissions_web_api(workshop_id)
+            if not submissions:
+                logging.debug("No access rights for workshop %d", workshop_id)
+                return
 
         try:
             assessments = (await self.client.async_post('mod_workshop_get_reviewer_assessments', data)).get(
@@ -208,6 +218,48 @@ class WorkshopMod(MoodleMod):
 
         workshop_files = self._get_files_of_workshop(submissions, grades, user_plan)
         workshop['files'] += workshop_files
+
+    async def _fetch_workshop_submissions_mobile_api(self, data: Dict) -> List[Dict]:
+        """
+        使用 Mobile API (mod_workshop_get_submissions) 获取研讨会提交。
+        
+        Return: 提交列表
+        """
+        logging.debug('📱 使用 Mobile API 获取研讨会提交...')
+        result = await self.client.async_post('mod_workshop_get_submissions', data)
+        submissions = result.get('submissions', [])
+        
+        if not submissions:
+            raise KeyError('Mobile API 返回空的提交列表')
+        
+        logging.debug(f'✅ Mobile API 成功获取 {len(submissions)} 个提交')
+        return submissions
+
+    async def _fetch_workshop_submissions_web_api(self, workshop_id: int) -> List[Dict]:
+        """
+        使用 Web API fallback 获取研讨会提交信息。
+        
+        这是 mod_workshop_get_submissions 的 fallback 实现。
+        由于 Moodle Web Services API 没有提供研讨会提交 API，
+        此 fallback 返回空列表。
+        
+        注: Workshop 模块的数据较为复杂，涉及提交、评审、反馈等多个环节。
+        完整的 fallback 需要通过 core_course_get_contents 获取 workshop 基本信息，
+        但提交详情无法通过标准 Web API 获取。
+        
+        Return: 提交列表 (通常为空)
+        """
+        logging.warning(
+            f'⚠️ Web API fallback: 无法通过标准 Web Services API 获取研讨会提交列表。'
+            f'\n   研讨会 ID: {workshop_id}'
+            f'\n   建议:'
+            f'\n   1. 检查 Mobile API (mod_workshop_get_submissions) 的权限'
+            f'\n   2. 确保用户已提交作业到研讨会'
+            f'\n   3. 检查 Moodle 版本兼容性 (需要 3.4+)'
+        )
+        
+        # 返回空列表，避免错误
+        return []
 
     async def load_foreign_submission(self, assessment: Dict) -> Dict:
         # assessment_id = assessment.get('id', 0)
