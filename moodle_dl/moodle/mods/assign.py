@@ -246,6 +246,8 @@ class AssignMod(MoodleMod):
     async def add_foreign_submissions(self, assignments: Dict[int, Dict[int, Dict]]):
         """
         Fetches for the assignments list additionally the submissions of other students
+        支持 Mobile API 和 Web API fallback。
+        
         @param assignments: Dictionary of all assignments, indexed by courses, then module id
         """
         if not self.config.get_download_submissions():
@@ -259,9 +261,13 @@ class AssignMod(MoodleMod):
         if len(indexed_assignment_ids) <= 0:
             return
 
-        assignments_with_all_submissions = (
-            await self.client.async_post('mod_assign_get_submissions', {'assignmentids': indexed_assignment_ids})
-        ).get('assignments', [])
+        try:
+            # 优先使用 Mobile API
+            assignments_with_all_submissions = await self._fetch_submissions_mobile_api(indexed_assignment_ids)
+        except (Exception, KeyError) as e:
+            logging.warning(f'❌ Mobile API 获取所有提交失败: {e}，尝试使用 Web API fallback...')
+            # Fallback 到 Web API
+            assignments_with_all_submissions = await self._fetch_submissions_web_api(assignments, indexed_assignment_ids)
 
         if len(assignments_with_all_submissions) <= 0:
             return
@@ -333,6 +339,53 @@ class AssignMod(MoodleMod):
                             is_file=False,
                         )
                     found_module['files'] += self._get_files_of_plugins(submission, f'/all_submissions/{subfolder}/')
+
+    async def _fetch_submissions_mobile_api(self, indexed_assignment_ids: List[int]) -> List[Dict]:
+        """
+        使用 Mobile API (mod_assign_get_submissions) 获取所有作业提交。
+        
+        Return: 包含所有提交的作业列表
+        """
+        logging.debug('📱 使用 Mobile API 获取所有作业提交...')
+        response = await self.client.async_post(
+            'mod_assign_get_submissions',
+            {'assignmentids': indexed_assignment_ids}
+        )
+        assignments = response.get('assignments', [])
+        
+        if not assignments:
+            raise KeyError('Mobile API 返回空的提交列表')
+        
+        logging.debug(f'✅ Mobile API 成功获取 {len(assignments)} 个作业的提交信息')
+        return assignments
+
+    async def _fetch_submissions_web_api(
+        self, assignments: Dict[int, Dict[int, Dict]], indexed_assignment_ids: List[int]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取作业提交信息。
+        
+        这是 mod_assign_get_submissions 的 fallback 实现。
+        由于 Moodle Web Services API 没有提供提交列表 API，
+        此 fallback 返回一个结构化的空响应，允许系统继续工作。
+        
+        注: 这个 fallback 有限制 - 只能获取当前用户的提交（通过 load_submissions），
+        无法获取其他学生的提交（这需要教师权限和特定 API）。
+        
+        Return: 转换为 Mobile API 格式的提交列表 (通常为空)
+        """
+        logging.warning(
+            f'⚠️ Web API fallback: 无法通过标准 Web Services API 获取所有学生的作业提交列表。'
+            f'\n   这个功能通常需要教师权限和 mod_assign_get_submissions API。'
+            f'\n   建议:'
+            f'\n   1. 检查用户是否有教师/评阅权限'
+            f'\n   2. 确保 Mobile API (mod_assign_get_submissions) 已启用'
+            f'\n   3. 检查课程权限配置'
+        )
+        
+        # 返回空结构，避免错误
+        # 个人提交仍然可以通过 load_submissions 和 mod_assign_get_submission_status 获取
+        return []
 
     async def _get_assignment_grades(self, assign_id: int) -> List[Dict]:
         """
