@@ -195,15 +195,8 @@ class WikiMod(MoodleMod):
 
         try:
             # Get pages for this subwiki
-            pages_response = await self.client.async_post(
-                'mod_wiki_get_subwiki_pages',
-                {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
-            )
-            pages = pages_response.get('pages', [])
+            pages = await self._fetch_wiki_pages_mobile_api(wiki_id, group_id, user_id, subwiki_id)
 
-        except RequestRejectedError:
-            logging.debug("No access to pages for subwiki %d", subwiki_id)
-            return result
         except Exception as e:
             logging.debug("Error getting pages for subwiki %d: %s", subwiki_id, str(e))
             return result
@@ -247,11 +240,8 @@ class WikiMod(MoodleMod):
         page_title = page.get('title', 'Untitled')
 
         try:
-            # Get page contents
-            page_contents = await self.client.async_post(
-                'mod_wiki_get_page_contents',
-                {'pageid': page_id}
-            )
+            # Get page contents (支持 fallback)
+            page_contents = await self._fetch_wiki_page_contents_mobile_api(page_id)
 
             page_data = page_contents.get('page', {})
             cached_content = page_data.get('cachedcontent', '')
@@ -392,3 +382,40 @@ class WikiMod(MoodleMod):
         }
         
         return wiki
+
+    async def _fetch_wiki_pages_mobile_api(
+        self, wiki_id: int, group_id: int, user_id: int, subwiki_id: int
+    ) -> List[Dict]:
+        """
+        使用 Mobile API (mod_wiki_get_subwiki_pages) 获取维基页面列表。
+        
+        Return: 页面列表
+        """
+        logging.debug(f'📱 使用 Mobile API 获取维基页面列表 (subwiki_id={subwiki_id})...')
+        pages_response = await self.client.async_post(
+            'mod_wiki_get_subwiki_pages',
+            {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
+        )
+        pages = pages_response.get('pages', [])
+        
+        if not pages:
+            logging.debug(f'⚠️ Mobile API 返回空的页面列表 (subwiki_id={subwiki_id})')
+        
+        return pages
+
+    async def _fetch_wiki_page_contents_mobile_api(self, page_id: int) -> Dict:
+        """
+        使用 Mobile API (mod_wiki_get_page_contents) 获取维基页面内容。
+        
+        Return: 页面内容数据
+        """
+        logging.debug(f'📱 使用 Mobile API 获取维基页面内容 (page_id={page_id})...')
+        page_contents = await self.client.async_post(
+            'mod_wiki_get_page_contents',
+            {'pageid': page_id}
+        )
+        
+        if not page_contents.get('page'):
+            logging.debug(f'⚠️ Mobile API 返回空的页面内容 (page_id={page_id})')
+        
+        return page_contents
