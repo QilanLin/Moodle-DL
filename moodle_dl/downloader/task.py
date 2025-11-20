@@ -73,6 +73,9 @@ class Task:
         self.opts = options
         self.thread_pool = thread_pool
         self.callback = callback
+        
+        # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
+        self.api_source = 'mobile'  # 默认为 mobile API
 
         self.destination = self.gen_path(options.download_path, course, file)
         self.filename = self._generate_filename_with_index(file)

@@ -19,6 +19,7 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         """Set up test fixtures"""
         self.config = MagicMock()
         self.config.get_download_options.return_value = MagicMock()
+        self.config.get_manually_specified_course_ids.return_value = []  # No manually specified courses by default
         self.opts = MagicMock()
         self.opts.download_chunk_size = 8192
         self.opts.max_parallel_yt_dlp = 4
@@ -194,8 +195,8 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         call_args = mock_logging.info.call_args[0]
         self.assertIn('下载队列包含', call_args[0])
         self.assertIn('未完成的下载', call_args[0])
-        self.assertEqual(call_args[1], 10)  # Total tasks
-        self.assertEqual(call_args[2], 3)   # Priority tasks
+        self.assertIn('10 个任务', call_args[0])
+        self.assertIn('3 个未完成的下载需要续传', call_args[0])
 
     @patch('moodle_dl.downloader.download_service.logging')
     def test_log_queue_summary_no_priority(self, mock_logging):
@@ -206,8 +207,8 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         
         mock_logging.info.assert_called_once()
         call_args = mock_logging.info.call_args[0]
-        self.assertIn('下载队列包含 %d 个任务', call_args[0])
-        self.assertEqual(call_args[1], 10)
+        self.assertIn('下载队列包含', call_args[0])
+        self.assertIn('10 个任务', call_args[0])
 
     @patch('moodle_dl.downloader.download_service.logging')
     def test_cleanup_old_incomplete_downloads_success(self, mock_logging):
@@ -255,6 +256,7 @@ class TestGenAllTasksFlow(unittest.TestCase):
         """Test the complete flow of loading incomplete downloads"""
         config = MagicMock()
         config.get_download_options.return_value = MagicMock()
+        config.get_manually_specified_course_ids.return_value = []
         opts = MagicMock()
         opts.download_chunk_size = 8192
         opts.max_parallel_yt_dlp = 2
@@ -288,6 +290,7 @@ class TestGenAllTasksFlow(unittest.TestCase):
         """Test the logic flow for detecting incomplete downloads"""
         config = MagicMock()
         config.get_download_options.return_value = MagicMock()
+        config.get_manually_specified_course_ids.return_value = []
         opts = MagicMock()
         opts.download_chunk_size = 8192
         opts.max_parallel_yt_dlp = 2

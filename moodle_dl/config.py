@@ -10,6 +10,31 @@ from moodle_dl.types import DownloadOptions, MoodleDlOpts, MoodleURL
 from moodle_dl.utils import PathTools as PT
 
 
+def normalize_moodle_url(url: str) -> str:
+    """
+    规范化 Moodle URL，自动添加 https:// 前缀（如果缺少）。
+    
+    支持以下输入:
+    • keats.kcl.ac.uk → https://keats.kcl.ac.uk
+    • https://keats.kcl.ac.uk → https://keats.kcl.ac.uk
+    • http://keats.kcl.ac.uk → http://keats.kcl.ac.uk
+    
+    Args:
+        url: 输入的 URL（可能缺少协议）
+        
+    Returns:
+        完整的 URL（包含协议）
+    """
+    url = url.strip()
+    
+    # 如果已经有协议，直接返回
+    if url.startswith('http://') or url.startswith('https://'):
+        return url
+    
+    # 否则添加 https:// 前缀
+    return f'https://{url}'
+
+
 @dataclass
 class DownloadOptionsConfig:
     """
@@ -491,6 +516,38 @@ class ConfigHelper:
     def get_download_public_course_ids(self) -> str:
         # return a stored list of public course ids hat should be downloaded
         return self.get_property_or('download_public_course_ids', [])
+    
+    def get_manually_specified_course_ids(self) -> List[int]:
+        """
+        获取手动指定的课程 ID 列表
+        
+        这些是用户通过网页版 API 指定的课程，
+        通常是他们有权限访问但没有 enrolled 的课程（如教师/TA）。
+        
+        Returns:
+            List[int]: 手动指定的课程 ID 列表
+        """
+        return self.get_property_or('manually_specified_course_ids', [])
+    
+    def set_manually_specified_course_ids(self, course_ids: List[int]):
+        """
+        设置手动指定的课程 ID 列表
+        
+        Args:
+            course_ids: 课程 ID 列表
+        """
+        # 验证输入
+        if not isinstance(course_ids, list):
+            raise ValueError("course_ids 必须是列表类型")
+        
+        if not all(isinstance(cid, int) for cid in course_ids):
+            raise ValueError("所有课程 ID 必须是整数")
+        
+        # 移除重复的 ID
+        unique_ids = list(set(course_ids))
+        unique_ids.sort()  # 按升序排列便于阅读
+        
+        self.set_property('manually_specified_course_ids', unique_ids)
 
     def get_token(self) -> str:
         """

@@ -90,10 +90,15 @@ class MoodleWizard:
         if use_stored_url:
             return self.config.get_moodle_URL()
 
+        from moodle_dl.config import normalize_moodle_url
+
         url_ok = False
         while not url_ok:
             url_ok = True
-            moodle_url = input('Moodle 的 URL:   ')
+            moodle_url_input = input('Moodle 的 URL（可省略 http(s)://）:   ').strip()
+
+            # 规范化 URL（自动添加 https:// 如果缺少协议）
+            moodle_url = normalize_moodle_url(moodle_url_input)
 
             use_http = False
             if moodle_url.startswith('http://'):
@@ -103,9 +108,6 @@ class MoodleWizard:
                     + '请使用 `https://` 重新运行该过程以保护你的数据。'
                 )
                 use_http = True
-            elif not moodle_url.startswith('https://'):
-                Log.error('你的 Moodle URL 必须以 `https://` 开头')
-                url_ok = False
 
         moodle_domain, moodle_path = MoodleService.split_moodle_url(moodle_url)
         return MoodleURL(use_http, moodle_domain, moodle_path)

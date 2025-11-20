@@ -52,7 +52,7 @@ class DownloadService:
             incomplete_files_map[file_id] = incomplete
         return incomplete_files_map
 
-    def _create_task(self, course_file, course, dl_options, thread_pool) -> Task:
+    def _create_task(self, course_file, course, dl_options, thread_pool, api_source='mobile') -> Task:
         """Create a single Task object.
         
         Args:
@@ -60,11 +60,12 @@ class DownloadService:
             course: Course object
             dl_options: Download options configuration
             thread_pool: ThreadPoolExecutor for yt-dlp
+            api_source: API source ('mobile' or 'web'), defaults to 'mobile'
             
         Returns:
             Task object
         """
-        return Task(
+        task = Task(
             task_id=self.status.files_to_download,
             file=course_file,
             course=course,
@@ -72,6 +73,9 @@ class DownloadService:
             thread_pool=thread_pool,
             callback=self.status_callback,
         )
+        # 标记任务使用的 API 来源
+        task.api_source = api_source
+        return task
 
     def _is_incomplete_download(self, course_file, incomplete_files_map) -> bool:
         """Check if a file is an incomplete download that needs to be resumed.
@@ -109,21 +113,23 @@ class DownloadService:
         self.status.bytes_to_download += course_file.content_filesize
         self.status.files_to_download += 1
 
-    def _log_queue_summary(self, priority_task_count: int):
+    def _log_queue_summary(self, priority_task_count: int, web_api_task_count: int = 0):
         """Log a summary of the download queue.
         
         Args:
             priority_task_count: Number of priority (incomplete) tasks
+            web_api_task_count: Number of tasks from web API (manually specified courses)
         """
         if self.status.files_to_download > 0:
+            msg_parts = [f'下载队列包含 {self.status.files_to_download} 个任务']
             if priority_task_count > 0:
-                logging.info(
-                    '下载队列包含 %d 个任务 (%d 个未完成的下载需要续传)',
-                    self.status.files_to_download,
-                    priority_task_count
-                )
-            else:
-                logging.info('下载队列包含 %d 个任务', self.status.files_to_download)
+                msg_parts.append(f'{priority_task_count} 个未完成的下载需要续传')
+            if web_api_task_count > 0:
+                msg_parts.append(f'{web_api_task_count} 个来自手动指定课程 (Web API)')
+            
+            # 构建最终消息
+            final_msg = msg_parts[0] + (' (' + ', '.join(msg_parts[1:]) + ')' if len(msg_parts) > 1 else '')
+            logging.info(final_msg)
         else:
             logging.debug('下载队列为空')
 
@@ -144,8 +150,9 @@ class DownloadService:
         2. Load incomplete downloads map
         3. Iterate through courses and files
         4. Create tasks with proper prioritization (incomplete first)
-        5. Log queue summary
-        6. Cleanup old incomplete download records
+        5. Add manually specified courses (via web API)
+        6. Log queue summary
+        7. Cleanup old incomplete download records
         
         Returns:
             List of Task objects, with incomplete downloads prioritized
@@ -160,11 +167,15 @@ class DownloadService:
         priority_tasks = []  # Incomplete downloads (high priority)
         normal_tasks = []    # Regular downloads (normal priority)
         
+        # Process enrolled courses (via Mobile API)
         for course in self.courses:
             for course_file in course.files:
                 if course_file.deleted is False:
-                    # Create task
-                    task = self._create_task(course_file, course, dl_options, thread_pool)
+                    # Create task with 'mobile' API source
+                    task = self._create_task(
+                        course_file, course, dl_options, thread_pool, 
+                        api_source='mobile'
+                    )
                     
                     # Categorize by priority
                     if self._is_incomplete_download(course_file, incomplete_files_map):
@@ -176,13 +187,19 @@ class DownloadService:
                     # Update statistics
                     self._update_download_statistics(course_file)
         
+        # Step 5: Process manually specified courses (via Web API)
+        manually_specified_ids = self.config.get_manually_specified_course_ids()
+        web_api_tasks = self._create_tasks_for_manually_specified_courses(
+            manually_specified_ids, dl_options, thread_pool, incomplete_files_map
+        )
+        
         # Combine tasks with priority ordering
-        all_tasks = priority_tasks + normal_tasks
+        all_tasks = priority_tasks + normal_tasks + web_api_tasks
         
-        # Step 5: Log summary
-        self._log_queue_summary(len(priority_tasks))
+        # Step 6: Log summary
+        self._log_queue_summary(len(priority_tasks), len(web_api_tasks))
         
-        # Step 6: Cleanup old records
+        # Step 7: Cleanup old records
         self._cleanup_old_incomplete_downloads()
         
         return all_tasks
@@ -284,6 +301,257 @@ class DownloadService:
                 message_line += f' | 失败: {self.status.files_failed}'
 
             logging.info(message_line)
+
+    def _create_tasks_for_manually_specified_courses(
+        self,
+        course_ids: List[int],
+        dl_options,
+        thread_pool,
+        incomplete_files_map: dict
+    ) -> List[Task]:
+        """Create tasks for manually specified courses using Web API.
+        
+        注意：当前是功能框架，文件列表为空。完整实现需要：
+        1. 从 core_course_get_contents 获取 sections
+        2. 从 sections 的 modules 生成 File 对象
+        3. 与 ResultBuilder.add_files_to_courses() 逻辑保持一致
+        
+        Args:
+            course_ids: List of manually specified course IDs
+            dl_options: Download options configuration
+            thread_pool: ThreadPoolExecutor for yt-dlp
+            incomplete_files_map: Map of incomplete downloads
+            
+        Returns:
+            List of Task objects for manually specified courses
+        """
+        web_api_tasks = []
+        
+        if not course_ids:
+            return web_api_tasks
+        
+        logging.info(
+            f'⚠️  手动课程支持仍在开发中 - '
+            f'当前框架已就位，但文件列表生成功能需要进一步实现'
+        )
+        
+        try:
+            from moodle_dl.moodle.course_validator import CourseValidator
+            validator = CourseValidator(self.config, self.opts)
+            
+            for course_id in course_ids:
+                try:
+                    # Get course info via web API
+                    course_info = validator.validate_course_exists_and_accessible(course_id)
+                    if not course_info:
+                        logging.warning(f'无法访问手动指定的课程 {course_id}，跳过')
+                        continue
+                    
+                    logging.info(f'✓ 课程 {course_id} ({course_info.get("fullname")}) 已验证')
+                    
+                    # Get course content via web API
+                    course_data = self._fetch_course_data_from_web_api(course_id)
+                    if not course_data:
+                        logging.warning(f'  → 无法从网页版 API 获取课程 {course_id} 的内容')
+                        continue
+                    
+                    # Create pseudo-Course object from web API data
+                    course = self._build_course_from_web_api_data(
+                        course_id, course_info, course_data
+                    )
+                    
+                    # Create tasks for course files
+                    for course_file in course.files:
+                        if course_file.deleted is False:
+                            task = self._create_task(
+                                course_file, course, dl_options, thread_pool,
+                                api_source='web'
+                            )
+                            
+                            # Categorize by priority
+                            if self._is_incomplete_download(course_file, incomplete_files_map):
+                                # 对于 web API 课程，未完成的下载也添加到主列表
+                                # （会在 gen_all_tasks 中重新排序）
+                                pass
+                            
+                            web_api_tasks.append(task)
+                            self._update_download_statistics(course_file)
+                    
+                    if not course.files:
+                        logging.info(f'  → 课程 {course_id} 没有可下载的文件')
+                
+                except Exception as e:
+                    logging.warning(f'处理手动课程 {course_id} 时出错: {str(e)}')
+                    continue
+        
+        except ImportError:
+            logging.error('无法导入 CourseValidator，跳过手动课程处理')
+        
+        return web_api_tasks
+    
+    def _fetch_course_data_from_web_api(self, course_id: int) -> dict:
+        """Fetch course data from web API (core_course_get_contents).
+        
+        获取课程内容（sections 和 modules）。
+        
+        Args:
+            course_id: Course ID
+            
+        Returns:
+            Dictionary with sections, or empty dict if failed
+        """
+        try:
+            from moodle_dl.moodle.request_helper import RequestHelper
+            request_helper = RequestHelper(self.config, self.opts)
+            
+            args = {
+                'wstoken': self.config.get_token(),
+                'wsfunction': 'core_course_get_contents',
+                'courseid': course_id,
+                'moodlewsrestformat': 'json'
+            }
+            
+            response = request_helper.get_URL(
+                f'https://{self.config.get_moodle_domain()}/webservice/rest/server.php',
+                args
+            )
+            
+            # 将响应包装为课程数据格式
+            if response and isinstance(response, list):
+                return {
+                    'id': course_id,
+                    'sections': response
+                }
+            
+            return {}
+        
+        except Exception as e:
+            logging.debug(f'从 Web API 获取课程内容 {course_id} 失败: {str(e)}')
+            return {}
+    
+    def _build_course_from_web_api_data(self, course_id: int, course_info: dict, course_data: dict) -> Course:
+        """Build a Course object from web API data.
+        
+        从 sections 中提取文件并构建 Course 对象。
+        这个实现基于 ResultBuilder.get_files_in_sections() 的逻辑。
+        
+        Args:
+            course_id: Course ID
+            course_info: Course metadata from core_course_get_courses
+            course_data: Course content from core_course_get_contents
+            
+        Returns:
+            Course object with files extracted from sections
+        """
+        from moodle_dl.types import Course, File
+        
+        # 创建 Course 对象
+        course = Course(
+            id=course_id,
+            fullname=course_info.get('fullname', f'Course {course_id}'),
+            shortname=course_info.get('shortname', f'C{course_id}'),
+            visible=course_info.get('visible', 1),
+            startdate=course_info.get('startdate', 0),
+            enddate=course_info.get('enddate', 0),
+        )
+        
+        # 从 sections 中提取文件
+        files = []
+        sections = course_data.get('sections', [])
+        
+        for section in sections:
+            section_id = section.get('id', 0)
+            section_name = section.get('name', '')
+            section_modules = section.get('modules', [])
+            
+            position_in_section = 0
+            
+            # 处理 section 中的每个 module
+            for module in section_modules:
+                module_id = module.get('id', 0)
+                module_name = module.get('name', '')
+                module_modname = module.get('modname', '')
+                module_contents = module.get('contents', [])
+                
+                # 从 module contents 中提取文件
+                for content in module_contents:
+                    # 跳过不是文件的内容
+                    if 'fileurl' not in content and 'content' not in content:
+                        continue
+                    
+                    # 确定是否是外部链接或嵌入内容
+                    if 'fileurl' in content:
+                        # 这是一个可下载文件
+                        file_url = content['fileurl']
+                        filename = content.get('filename', module_name)
+                        filesize = content.get('filesize', 0)
+                        timemodified = content.get('timemodified', 0)
+                        
+                        # 创建 File 对象
+                        file_obj = File(
+                            module_id=module_id,
+                            module_name=module_name,
+                            module_modname=module_modname,
+                            section_id=section_id,
+                            section_name=section_name,
+                            content_filename=filename,
+                            content_filepath='/',
+                            content_fileurl=file_url,
+                            content_filesize=filesize,
+                            content_timemodified=timemodified,
+                            content_type='file',
+                            content_isexternalfile=False,
+                        )
+                        
+                        # 不分配位置索引给系统文件
+                        if not self._is_system_file_from_web_api(filename):
+                            file_obj.position_in_section = position_in_section
+                            position_in_section += 1
+                        else:
+                            file_obj.position_in_section = None
+                        
+                        files.append(file_obj)
+        
+        course.files = files
+        logging.debug(
+            f'✓ 从网页版 API 为课程 {course_id} 提取了 {len(files)} 个文件'
+        )
+        
+        return course
+    
+    @staticmethod
+    def _is_system_file_from_web_api(filename: str) -> bool:
+        """判断文件是否为系统文件（不应编号）。
+        
+        基于 ResultBuilder._is_system_file() 的逻辑。
+        """
+        filename_lower = filename.lower()
+        
+        # 隐藏文件
+        if filename_lower.startswith('.'):
+            return True
+        
+        # 元数据文件
+        if filename_lower.endswith('_metadata.json') or filename_lower == 'metadata.json':
+            return True
+        
+        # 笔记和信息文件
+        if filename_lower.endswith(('_info', '_notes.md')):
+            return True
+        
+        # JSON 文件（来自 Resource 模块）
+        if filename_lower.endswith('.json'):
+            return True
+        
+        # 特定模块文件
+        if filename_lower in ('questions.json', 'analysis.json', 'grade', 'entry_metadata.json'):
+            return True
+        
+        # Session 文件
+        if filename_lower.startswith('session_') and filename_lower.endswith('.json'):
+            return True
+        
+        return False
 
     def get_failed_tasks(self) -> List[Task]:
         "Return a list of failed downloads."

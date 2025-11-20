@@ -62,6 +62,7 @@ class ConfigWizard:
         steps = [
             ('选择要下载的课程', lambda: self._select_courses_to_download(courses)),
             ('设置课程选项', lambda: self._set_options_of_courses(courses)),
+            ('指定额外课程（教师/TA）', self._interactively_add_manually_specified_courses),
             ('配置要下载的模块类型', self._select_modules_to_download),
             ('配置课程描述下载', self._select_should_download_descriptions),
             ('配置描述中的链接下载', self._select_should_download_links_in_descriptions),
@@ -468,6 +469,157 @@ class ConfigWizard:
             options_of_courses.update({str(course.id): current_course_settings})
             self.config.set_property('options_of_courses', options_of_courses)
 
+    def _interactively_add_manually_specified_courses(self):
+        """
+        交互式让用户指定他有权限但没有 enrolled 的课程（如教师/TA）
+        
+        这个功能使用网页版 API 验证课程可访问性，
+        允许教师/TA 等角色下载他们有权限但不 enrolled 的课程。
+        
+        支持多种输入方式：
+        • 单个课程 ID: 137304
+        • 多个课程 ID（空格分隔）: 137304 137305 137306
+        • 多个课程 ID（逗号分隔）: 137304,137305,137306
+        • 完整 URL: https://keats.kcl.ac.uk/course/view.php?id=137304
+        """
+        from moodle_dl.moodle.course_validator import validate_course_with_web_api
+        import re
+        
+        self.section_seperator()
+        Log.info(
+            '如果你是某些课程的教师或助教，你可能没有以学生身份注册这些课程。\n'
+            '但你仍然可以通过提供课程 ID 来下载这些课程的内容。\n'
+            '\n支持的输入格式：\n'
+            '  • 单个 ID: 137304\n'
+            '  • 多个 ID（空格）: 137304 137305 137306\n'
+            '  • 多个 ID（逗号）: 137304,137305,137306\n'
+            '  • 完整 URL: https://keats.kcl.ac.uk/course/view.php?id=137304'
+        )
+        
+        manually_specified_ids = self.config.get_manually_specified_course_ids()
+        print('')
+        Log.info(f'当前已指定 {len(manually_specified_ids)} 个手动课程')
+        
+        if len(manually_specified_ids) > 0:
+            Log.info(f'课程 IDs: {manually_specified_ids}')
+        
+        add_more = Cutie.prompt_yes_or_no(
+            Log.blue_str('是否添加更多手动指定的课程？'),
+            default_is_yes=False,
+        )
+        
+        if not add_more:
+            return
+        
+        print('')
+        new_ids = []
+        
+        while True:
+            Log.blue('输入课程 ID（可以输入一个或多个，用空格/逗号分隔，或留空完成）:')
+            course_input = input('  > ').strip()
+            
+            if not course_input:
+                break
+            
+            # 解析输入：支持空格、逗号和完整 URL
+            course_ids_to_add = self._parse_course_ids(course_input)
+            
+            if not course_ids_to_add:
+                Log.error('无法解析输入。请输入有效的课程 ID 或 URL')
+                print('')
+                continue
+            
+            # 验证和添加每个课程 ID
+            for course_id in course_ids_to_add:
+                try:
+                    # 检查是否已存在
+                    if course_id in manually_specified_ids or course_id in new_ids:
+                        Log.warning(f'课程 {course_id} 已添加，跳过')
+                        continue
+                    
+                    # 使用网页版 API 验证课程
+                    Log.info(f'正在验证课程 {course_id}...')
+                    course_info = validate_course_with_web_api(
+                        self.config,
+                        self.opts,
+                        course_id,
+                        check_content=False
+                    )
+                    
+                    if course_info:
+                        course_name = course_info.get('fullname', 'N/A')
+                        Log.success(f'✅ 课程 {course_id} ({course_name}) 验证成功')
+                        new_ids.append(course_id)
+                    else:
+                        Log.error(
+                            f'❌ 无法访问课程 {course_id}\n'
+                            f'   可能原因：\n'
+                            f'   • 课程 ID 不存在\n'
+                            f'   • 你没有访问权限\n'
+                            f'   • 课程已被删除或存档'
+                        )
+                
+                except Exception as e:
+                    Log.error(f'验证课程 {course_id} 时出错: {str(e)}')
+            
+            print('')
+        
+        # 保存新添加的课程 ID
+        if new_ids:
+            all_ids = manually_specified_ids + new_ids
+            self.config.set_manually_specified_course_ids(all_ids)
+            Log.success(f'已添加 {len(new_ids)} 个手动课程，总计 {len(all_ids)} 个')
+        
+        print('')
+    
+    @staticmethod
+    def _parse_course_ids(input_str: str):
+        """
+        从输入字符串解析课程 ID。
+        
+        支持多种格式：
+        • 单个 ID: "137304"
+        • 空格分隔: "137304 137305 137306"
+        • 逗号分隔: "137304,137305,137306"
+        • 完整 URL: "https://keats.kcl.ac.uk/course/view.php?id=137304"
+        • URL 无协议: "keats.kcl.ac.uk/course/view.php?id=137304"
+        
+        Returns:
+            List[int]: 解析出的课程 ID 列表，或空列表如果解析失败
+        """
+        import re
+        
+        course_ids = []
+        
+        # 检查是否是 URL（包含 ? 或 &）
+        url_match = re.search(r'[?&]id=(\d+)', input_str)
+        if url_match:
+            try:
+                course_ids.append(int(url_match.group(1)))
+                return course_ids
+            except (ValueError, AttributeError):
+                pass
+        
+        # 如果输入中包含逗号，用逗号分隔；否则用空格分隔
+        if ',' in input_str:
+            id_strings = input_str.split(',')
+        else:
+            id_strings = input_str.split()
+        
+        # 解析每个 ID
+        for id_str in id_strings:
+            id_str = id_str.strip()
+            if id_str:
+                try:
+                    course_id = int(id_str)
+                    if course_id > 0:
+                        course_ids.append(course_id)
+                except ValueError:
+                    # 如果有一个无效的 ID，返回空列表
+                    return []
+        
+        return course_ids
+    
     def _select_modules_to_download(self):
         """
         让用户一次性选择所有要下载的模块类型（整合的多选步骤）
