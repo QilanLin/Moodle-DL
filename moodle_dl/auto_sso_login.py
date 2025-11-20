@@ -205,6 +205,146 @@ def _read_sso_cookies_from_browser_DEPRECATED(browser_name: str, moodle_domain: 
         return []
 
 
+async def _launch_playwright_browser(playwright_obj, preferred_browser: str, headless: bool):
+    """
+    原子函数: 启动 Playwright 浏览器
+    
+    职责: 单一 - 仅负责浏览器启动
+    
+    Args:
+        playwright_obj: Playwright 实例
+        preferred_browser: 首选浏览器 ('firefox' 或其他)
+        headless: 是否无头模式
+        
+    Returns:
+        Browser 实例
+    """
+    browser_type = playwright_obj.firefox if preferred_browser == 'firefox' else playwright_obj.chromium
+
+    if headless:
+        logging.info('🌐 启动无头浏览器...')
+        return await browser_type.launch(headless=True)
+    else:
+        logging.info('🌐 启动有头浏览器（可见窗口，方便调试）...')
+        return await browser_type.launch(
+            headless=False,
+            slow_mo=500  # 减慢操作，方便观察
+        )
+
+
+async def _save_session_cookies(context, auth_manager) -> bool:
+    """
+    原子函数: 提取并保存 cookies 到数据库
+    
+    职责: 单一 - 仅负责 cookies 提取和保存
+    
+    Args:
+        context: 浏览器上下文
+        auth_manager: AuthSessionManager 实例
+        
+    Returns:
+        True 如果保存成功, False 否则
+    """
+    if not auth_manager:
+        logging.error('❌ SSO登录失败: 必须提供 AuthSessionManager')
+        logging.error('   这是v2架构的要求，数据库必须可用')
+        return False
+    
+    try:
+        updated_cookies = await context.cookies()
+        Log.info(f'📦 获取到 {len(updated_cookies)} 个 cookies')
+
+        # 显示关键 cookies（显示完整值来对比）
+        for cookie in updated_cookies:
+            if cookie['name'] == 'MoodleSession':
+                Log.info(f'   ✓ {cookie["name"]}: {cookie["value"]}')
+
+        # 保存 cookies 到数据库
+        session_id = auth_manager.save_sso_cookies(updated_cookies)
+        if not session_id:
+            logging.error('❌ 保存 cookies 到数据库失败')
+            return False
+
+        logging.info(f'💾 Cookies 已保存到数据库: 会话 {session_id}')
+        logging.info(f'   共 {len(updated_cookies)} 个 cookies')
+        return True
+        
+    except Exception as e:
+        logging.error(f'❌ 保存 cookies 时出错: {e}')
+        return False
+
+
+async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15) -> bool:
+    """
+    原子函数: 等待并检测 SSO 重定向完成
+    
+    职责: 单一 - 仅等待和检测重定向
+    
+    Args:
+        page: Playwright 页面对象
+        moodle_domain: Moodle 域名
+        max_wait: 最多等待秒数
+        
+    Returns:
+        True 如果访问过 SSO 提供商, False 否则
+    """
+    visited_sso = False
+    
+    for i in range(max_wait):
+        await page.wait_for_timeout(1000)  # 每次等待 1 秒
+        current_url = page.url
+
+        # 检测是否在 SSO 提供商页面
+        if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
+            visited_sso = True
+            logging.debug(f'🔐 检测到 SSO 重定向: {current_url}')
+
+        # 如果访问过 SSO 并且现在回到 Moodle 域名，说明重定向完成
+        if visited_sso and moodle_domain in current_url:
+            logging.debug(f'✓ SSO 重定向完成，已返回 Moodle: {current_url}')
+            break
+
+        if not visited_sso and moodle_domain in current_url:
+            logging.debug(f'⏳ 等待可能的 SSO 重定向... (第{i+1}/{max_wait}秒)')
+        elif not visited_sso:
+            logging.debug(f'🔍 当前URL: {current_url}')
+    
+    return visited_sso
+
+
+async def _setup_browser_context(browser, storage_state: dict):
+    """
+    原子函数: 创建浏览器上下文并加载 storage state
+    
+    职责: 单一 - 仅负责上下文创建和 storage state 加载
+    
+    Args:
+        browser: Browser 实例
+        storage_state: 要加载的 storage state
+        
+    Returns:
+        BrowserContext 实例
+    """
+    context_options = {
+        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
+        'viewport': {'width': 1920, 'height': 1080},
+        'locale': 'en-GB',
+        'timezone_id': 'Europe/London',
+    }
+    
+    try:
+        context = await browser.new_context(
+            storage_state=storage_state,
+            **context_options
+        )
+        logging.info('✓ Storage State 已加载（所有 cookies 已注入）')
+        return context
+    except Exception as e:
+        logging.warning(f'⚠️  Storage State 加载失败: {e}')
+        logging.info('   回退到创建空白 context...')
+        return await browser.new_context(**context_options)
+
+
 async def _handle_uncertain_login_status(current_url: str, page_content: str):
     """
     原子函数: 处理无法确定登录状态的情况
@@ -354,40 +494,13 @@ async def auto_login_with_sso(
 
         logging.info(f'   准备 Storage State: {len(all_cookies)} 个 cookies')
 
-        # 3. 启动 Playwright 浏览器并使用 Storage State
+        # 3. 启动 Playwright 浏览器并使用 Storage State（原子函数）
         async with async_playwright() as p:
-            # 使用有头浏览器（headless=False）以便查看登录过程
-            browser_type = p.firefox if preferred_browser == 'firefox' else p.chromium
-
-            if headless:
-                logging.info('🌐 启动无头浏览器...')
-                browser = await browser_type.launch(headless=True)
-            else:
-                logging.info('🌐 启动有头浏览器（可见窗口，方便调试）...')
-                browser = await browser_type.launch(
-                    headless=False,
-                    slow_mo=500  # 减慢操作，方便观察
-                )
-
-            # 创建浏览器上下文，使用 storageState 一次性加载所有 cookies
-            try:
-                context = await browser.new_context(
-                    storage_state=storage_state,
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='en-GB',
-                    timezone_id='Europe/London',
-                )
-                logging.info('✓ Storage State 已加载（所有 cookies 已注入）')
-            except Exception as e:
-                logging.warning(f'⚠️  Storage State 加载失败: {e}')
-                logging.info('   回退到创建空白 context...')
-                context = await browser.new_context(
-                    user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:109.0) Gecko/20100101 Firefox/115.0',
-                    viewport={'width': 1920, 'height': 1080},
-                    locale='en-GB',
-                    timezone_id='Europe/London',
-                )
+            # 启动浏览器（原子函数）
+            browser = await _launch_playwright_browser(p, preferred_browser, headless)
+            
+            # 创建浏览器上下文（原子函数）
+            context = await _setup_browser_context(browser, storage_state)
 
             # 4. 访问 Moodle 主页，触发 SSO 登录
             page = await context.new_page()
@@ -403,31 +516,8 @@ async def auto_login_with_sso(
                 # 对于SSO重定向来说，DOM加载完成就足够了
                 response = await page.goto(moodle_url, wait_until='domcontentloaded', timeout=timeout)
 
-                # 等待 SSO 重定向完成
-                # 策略：追踪 URL 变化，检测是否经历了 SSO 重定向流程
-                max_redirect_wait = 15  # 最多等待 15 秒让重定向完成
-                visited_sso = False  # 是否访问过 SSO 提供商（Microsoft/Google）
-
-                for i in range(max_redirect_wait):
-                    await page.wait_for_timeout(1000)  # 每次等待 1 秒
-                    current_url = page.url
-
-                    # 检测是否在 SSO 提供商页面
-                    if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
-                        visited_sso = True
-                        logging.debug(f'🔐 检测到 SSO 重定向: {current_url}')
-
-                    # 如果访问过 SSO 并且现在回到 Moodle 域名，说明重定向完成
-                    if visited_sso and moodle_domain in current_url:
-                        logging.debug(f'✓ SSO 重定向完成，已返回 Moodle: {current_url}')
-                        break
-
-                    # 如果一直没离开 Moodle（可能 cookies 仍然有效或已过期但没有重定向）
-                    # 继续等待一会儿看是否会发生重定向
-                    if not visited_sso and moodle_domain in current_url:
-                        logging.debug(f'⏳ 等待可能的 SSO 重定向... (第{i+1}/{max_redirect_wait}秒)')
-                    elif not visited_sso:
-                        logging.debug(f'🔍 当前URL: {current_url}')
+                # 等待 SSO 重定向完成（原子函数）
+                visited_sso = await _wait_for_sso_redirect(page, moodle_domain)
 
                 # 最终检查
                 current_url = page.url
@@ -453,35 +543,11 @@ async def auto_login_with_sso(
                     else:
                         Log.success('✅ SSO 自动登录成功！（使用现有 cookies）')
 
-                    # 5. 提取更新后的 cookies（包括新的 MoodleSession）
-                    updated_cookies = await context.cookies()
-                    Log.info(f'📦 获取到 {len(updated_cookies)} 个 cookies')
-
-                    # 显示关键 cookies（显示完整值来对比）
-                    for cookie in updated_cookies:
-                        if cookie['name'] == 'MoodleSession':
-                            Log.info(f'   ✓ {cookie["name"]}: {cookie["value"]}')
-
-                    # 6. 保存 cookies 到数据库（而不是文件）
-                    if auth_manager:
-                        # 使用数据库保存 cookies
-                        session_id = auth_manager.save_sso_cookies(updated_cookies)
-                        if session_id:
-                            logging.info(f'💾 Cookies 已保存到数据库: 会话 {session_id}')
-                            logging.info(f'   共 {len(updated_cookies)} 个 cookies')
-                        else:
-                            logging.error('❌ 保存 cookies 到数据库失败')
-                            await browser.close()
-                            return False
-                    else:
-                        # v2: 彻底移除文件回退，auth_manager 必须存在
-                        logging.error('❌ SSO登录失败: 必须提供 AuthSessionManager')
-                        logging.error('   这是v2架构的要求，数据库必须可用')
-                        await browser.close()
-                        return False
-
+                    # 5 & 6. 提取并保存 cookies（原子函数）
+                    save_success = await _save_session_cookies(context, auth_manager)
+                    
                     await browser.close()
-                    return True
+                    return save_success
 
                 else:
                     # 无法确定登录状态（原子函数）
