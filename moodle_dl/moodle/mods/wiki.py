@@ -36,13 +36,14 @@ class WikiMod(MoodleMod):
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
         """
-        Fetch all wiki entries from courses
+        Fetch all wiki entries from courses，支持 Mobile API 和 Web API fallback。
 
         Process:
-        1. Get wikis by courses
-        2. For each wiki, get subwikis
-        3. For each subwiki, get pages and files
-        4. Download page contents and attachments
+        1. Get wikis by courses (优先使用 Mobile API)
+        2. Fallback 到 Web API 如果 Mobile API 失败
+        3. For each wiki, get subwikis
+        4. For each subwiki, get pages and files
+        5. Download page contents and attachments
         """
 
         result = {}
@@ -50,11 +51,13 @@ class WikiMod(MoodleMod):
             return result
 
         # Get all wikis for the courses
-        wikis = (
-            await self.client.async_post(
-                'mod_wiki_get_wikis_by_courses', self.get_data_for_mod_entries_endpoint(courses)
-            )
-        ).get('wikis', [])
+        try:
+            # 优先使用 Mobile API
+            wikis = await self._fetch_wikis_mobile_api(courses)
+        except (Exception, KeyError) as e:
+            logging.warning(f'❌ Mobile API 获取维基失败: {e}，尝试使用 Web API fallback...')
+            # Fallback 到 Web API
+            wikis = await self._fetch_wikis_web_api(courses, core_contents)
 
         for wiki in wikis:
             course_id = wiki.get('course', 0)
@@ -295,3 +298,97 @@ class WikiMod(MoodleMod):
             logging.debug("Error getting content for page %d: %s", page_id, str(e))
 
         return result
+
+    async def _fetch_wikis_mobile_api(self, courses: List[Course]) -> List[Dict]:
+        """
+        使用 Mobile API (mod_wiki_get_wikis_by_courses) 获取维基。
+        
+        Return: 维基列表
+        """
+        logging.debug('📱 使用 Mobile API 获取维基信息...')
+        response = await self.client.async_post(
+            'mod_wiki_get_wikis_by_courses',
+            self.get_data_for_mod_entries_endpoint(courses)
+        )
+        wikis = response.get('wikis', [])
+        
+        if not wikis:
+            raise KeyError('Mobile API 返回空的维基列表')
+        
+        logging.debug(f'✅ Mobile API 成功获取 {len(wikis)} 个维基')
+        return wikis
+
+    async def _fetch_wikis_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取维基信息。
+        
+        这是 mod_wiki_get_wikis_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 wiki 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的维基列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取维基信息...')
+        
+        wikis = []
+        
+        for course in courses:
+            course_id = course.id
+            
+            # 从 core_contents 中获取该课程的所有模块
+            if course_id not in core_contents:
+                logging.debug(f'⚠️ 课程 {course_id} 不在 core_contents 中，跳过')
+                continue
+            
+            sections = core_contents[course_id]
+            
+            # 遍历所有 section，查找 wiki 模块
+            for section in sections:
+                modules = section.get('modules', [])
+                for module in modules:
+                    if module.get('modname') == 'wiki':
+                        # 将 Web API 的 wiki 模块转换为 Mobile API 的格式
+                        wiki = self._convert_web_api_wiki_to_mobile(module, course_id)
+                        wikis.append(wiki)
+        
+        if not wikis:
+            logging.warning('⚠️ Web API fallback 未找到任何维基')
+            raise ValueError('Web API 未能检索任何维基信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(wikis)} 个维基')
+        return wikis
+
+    def _convert_web_api_wiki_to_mobile(self, web_api_module: Dict, course_id: int) -> Dict:
+        """
+        将 Web API 的 wiki 模块格式转换为 Mobile API 的格式。
+        
+        Web API 提供的数据较少，但包含关键的维基信息。
+        """
+        # 提取 Web API 中的基本信息
+        module_contents = web_api_module.get('contents', [])
+        introattachments = [c for c in module_contents if c.get('type') == 'file']
+        
+        # 构建 Mobile API 格式的维基数据
+        wiki = {
+            'id': web_api_module.get('instance', 0),
+            'coursemodule': web_api_module.get('id', 0),
+            'course': course_id,
+            'name': web_api_module.get('name', ''),
+            'intro': '',  # Web API 不直接提供 intro
+            'introformat': 1,
+            'introfiles': introattachments,
+            'wikimode': 'collaborative',  # Web API 不提供，默认值
+            'firstpagetitle': 'Home',  # Web API 不提供，默认值
+            'defaultformat': 'html',  # Web API 不提供，默认值
+            'forceformat': 1,  # Web API 不提供，默认值
+            'editbegin': 0,
+            'editend': 0,
+            'timemodified': web_api_module.get('timemodified', 0),
+            'timecreated': web_api_module.get('timecreated', 0),
+            'cancreatepages': True,  # 假设用户有权限
+            'caneditpages': True,
+            'canviewpage': True,
+        }
+        
+        return wiki
