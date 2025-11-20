@@ -1178,144 +1178,231 @@ class Task:
         return False
 
     async def real_run(self) -> bool:
+        """
+        主下载流程的原子化编排器。
+        
+        职责：协调下载流程的 4 个阶段
+        1. 元数据文件检查（可跳过）
+        2. 文件准备（目录/重命名/移动）
+        3. 类型特定的下载执行
+        4. 错误处理和清理
+        
+        每个阶段都由独立的原子函数处理，便于测试和复用。
+        """
         try:
             logging.debug('[%d] Starting Task: %s', self.task_id, self)
             
-            # Check if this is a metadata file that should be skipped
-            if self._is_metadata_file() and not self.opts.download_metadata_files:
-                logging.debug(
-                    '[%d] Skipping metadata file (download_metadata_files is disabled): %s',
-                    self.task_id,
-                    self.file.content_filename
-                )
-                # Mark as skipped and return success
-                self.status.total_size = 0
-                self.status.bytes_downloaded = 0
-                self.report_success()
+            # 阶段 1: 检查元数据文件
+            if await self._handle_metadata_file():
                 return True
             
-            PT.make_dirs(self.destination)
-
-            # If file was modified try rename the old file, before create new one
-            if self.file.modified:
-                self.rename_old_file()
-
-            # Create an empty destination file
-            self.set_path()
-            logging.debug('[%d] Starting downloading of: %s', self.task_id, self.file.saved_to)
-
-            # Try to move the old file if it still exists
-            if self.file.moved:
-                if self.move_old_file():
-                    return True
-
-            if self.file.content_type == 'description':
-                # Create a description file instead of downloading it
-                await self.create_description()
-
-            elif self.file.content_type == 'html':
-                # Create a HTML file instead of downloading it
-                await self.create_html_file()
-
-            elif self.file.content_type == 'content':
-                # Create a content file (like metadata.json) instead of downloading it
-                await self.create_content_file()
-
-            elif self.file.module_modname.startswith('index_mod'):
-                await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
-
-            elif self.file.module_modname.startswith('cookie_mod'):
-                # Special handling for kalvidres: extract page text before downloading video
-                if self.file.module_modname == 'cookie_mod-kalvidres':
-                    # Construct text file path (replace video extension with _notes.md)
-                    video_path = str(self.file.saved_to)
-                    text_path = os.path.splitext(video_path)[0] + '_notes.md'
-
-                    # Extract text content from kalvidres page
-                    logging.info('[%d] Extracting kalvidres text content...', self.task_id)
-                    await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
-
-                    # Extract the real Kaltura video URL for yt-dlp
-                    logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)
-                    kaltura_url = await self.extract_kalvidres_video_url(self.file.content_fileurl)
-
-                    if kaltura_url:
-                        # Temporarily replace the URL with the extracted Kaltura URL
-                        original_url = self.file.content_fileurl
-                        self.file.content_fileurl = kaltura_url
-                        logging.info('[%d] Using extracted Kaltura URL: %s', self.task_id, kaltura_url)
-
-                        # Download video with the extracted URL
-                        await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
-
-                        # Restore original URL
-                        self.file.content_fileurl = original_url
-                    else:
-                        # Fallback to original URL if extraction fails
-                        logging.warning('[%d] Failed to extract Kaltura URL, trying original URL', self.task_id)
-                        await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
-                else:
-                    # Download video (for other cookie_mod types)
-                    await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
-
-            elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
-                # 先尝试下载 HTTP 内容
-                download_success = False
-                if self.opts.download_linked_files and not self.is_filtered_external_domain():
-                    try:
-                        await self.external_download_url(
-                            add_token=False, delete_if_successful=True, needs_moodle_cookies=False
-                        )
-                        download_success = True
-                        logging.debug('[%d] 外部链接下载成功，跳过快捷方式创建', self.task_id)
-                    except Exception as e:
-                        logging.debug('[%d] 外部链接下载失败：%r，将创建快捷方式作为备选', self.task_id, e)
-                        download_success = False
-
-                # 只有下载失败或不满足下载条件时才创建快捷方式
-                if not download_success:
-                    await self.create_shortcut()
-
-            elif self.file.content_fileurl.startswith('data:'):
-                await self.create_data_url_file()
-
-            else:
-                url_to_download = self.file.content_fileurl
-                logging.debug('[%d] Downloading %s', self.task_id, url_to_download)
-                url_to_download = self.add_token_to_url(self.file.content_fileurl)
-                await self.download_url(url_to_download, self.file.saved_to)
-
+            # 阶段 2: 准备下载环境
+            if not await self._prepare_download():
+                return False
+            
+            # 阶段 3: 执行实际下载
+            await self._execute_download()
+            
             logging.debug('[%d] Download finished', self.task_id)
             self.report_success()
             return True
+            
         except Exception as dl_err:
-            self.status.error = dl_err
+            # 阶段 4: 错误处理
+            await self._handle_error(dl_err)
+            return False
+    
+    async def _handle_metadata_file(self) -> bool:
+        """
+        检查并处理元数据文件的跳过逻辑。
+        
+        返回: True 如果文件被跳过，False 继续处理
+        """
+        if self._is_metadata_file() and not self.opts.download_metadata_files:
+            logging.debug(
+                '[%d] Skipping metadata file (download_metadata_files is disabled): %s',
+                self.task_id,
+                self.file.content_filename
+            )
+            self.status.total_size = 0
+            self.status.bytes_downloaded = 0
+            self.report_success()
+            return True  # 已处理，停止进一步处理
+        return False  # 继续处理
+    
+    async def _prepare_download(self) -> bool:
+        """
+        准备下载环境：创建目录、处理已修改文件、检查移动状态。
+        
+        返回: True 如果准备成功，False 如果需要停止
+        """
+        PT.make_dirs(self.destination)
 
-            logging.error('[%d] %r', self.task_id, dl_err)
-            logging.error('[%d] 尝试下载文件时出错：%s', self.task_id, dl_err)
+        # 如果文件已修改，重命名旧文件
+        if self.file.modified:
+            self.rename_old_file()
 
-            if os.path.isfile(self.file.saved_to):
-                file_size = 0
-                try:
-                    file_size = os.path.getsize(self.file.saved_to)
-                except OSError:
-                    pass
-                logging.debug(
-                    '[%d] file size: %d; downloaded: %d',
-                    self.task_id,
-                    file_size,
-                    self.status.bytes_downloaded,
+        # 创建空的目标文件
+        self.set_path()
+        logging.debug('[%d] Starting downloading of: %s', self.task_id, self.file.saved_to)
+
+        # 尝试移动旧文件（如果存在）
+        if self.file.moved:
+            if self.move_old_file():
+                return False  # 文件已移动，停止处理
+        
+        return True
+    
+    async def _execute_download(self):
+        """
+        根据文件类型执行不同的下载策略。
+        
+        支持的类型：
+        - description: 从描述创建文件
+        - html: 从 HTML 内容创建文件
+        - content: 元数据文件
+        - index_mod: Moodle 索引模块
+        - cookie_mod: 需要 cookies 的模块（视频等）
+        - url: 外部链接（带快捷方式备选）
+        - data: 数据 URL
+        - 默认: 常规 HTTP 下载
+        """
+        if self.file.content_type == 'description':
+            await self.create_description()
+        
+        elif self.file.content_type == 'html':
+            await self.create_html_file()
+        
+        elif self.file.content_type == 'content':
+            await self.create_content_file()
+        
+        elif self.file.module_modname.startswith('index_mod'):
+            await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
+        
+        elif self.file.module_modname.startswith('cookie_mod'):
+            await self._download_cookie_mod_file()
+        
+        elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
+            await self._download_external_url_with_fallback()
+        
+        elif self.file.content_fileurl.startswith('data:'):
+            await self.create_data_url_file()
+        
+        else:
+            # 常规 HTTP 下载
+            url_to_download = self.add_token_to_url(self.file.content_fileurl)
+            logging.debug('[%d] Downloading %s', self.task_id, url_to_download)
+            await self.download_url(url_to_download, self.file.saved_to)
+    
+    async def _download_cookie_mod_file(self):
+        """
+        处理需要 cookies 的模块文件（如 Kaltura 视频）。
+        
+        对于 kalvidres：先提取文本内容和视频 URL，然后下载视频。
+        """
+        if self.file.module_modname == 'cookie_mod-kalvidres':
+            await self._handle_kalvidres_download()
+        else:
+            # 其他 cookie_mod 类型的视频
+            await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+    
+    async def _handle_kalvidres_download(self):
+        """
+        处理 Kalvidres（Kaltura 视频）的特殊下载流程。
+        
+        步骤：
+        1. 提取页面文本内容
+        2. 提取真实的 Kaltura 视频 URL
+        3. 使用提取的 URL 下载，如失败则回退到原始 URL
+        """
+        video_path = str(self.file.saved_to)
+        text_path = os.path.splitext(video_path)[0] + '_notes.md'
+
+        # 提取文本内容
+        logging.info('[%d] Extracting kalvidres text content...', self.task_id)
+        await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
+
+        # 提取 Kaltura 视频 URL
+        logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)
+        kaltura_url = await self.extract_kalvidres_video_url(self.file.content_fileurl)
+
+        if kaltura_url:
+            # 使用提取的 URL 下载
+            original_url = self.file.content_fileurl
+            self.file.content_fileurl = kaltura_url
+            logging.info('[%d] Using extracted Kaltura URL: %s', self.task_id, kaltura_url)
+            
+            try:
+                await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+            finally:
+                # 恢复原始 URL
+                self.file.content_fileurl = original_url
+        else:
+            # 回退到原始 URL
+            logging.warning('[%d] Failed to extract Kaltura URL, trying original URL', self.task_id)
+            await self.external_download_url(add_token=False, delete_if_successful=True, needs_moodle_cookies=True)
+    
+    async def _download_external_url_with_fallback(self):
+        """
+        下载外部链接，如果下载失败则创建快捷方式作为备选。
+        
+        流程：
+        1. 检查是否应该下载外部链接
+        2. 尝试下载
+        3. 如果失败或不满足条件，创建快捷方式
+        """
+        download_success = False
+        
+        if self.opts.download_linked_files and not self.is_filtered_external_domain():
+            try:
+                await self.external_download_url(
+                    add_token=False, delete_if_successful=True, needs_moodle_cookies=False
                 )
+                download_success = True
+                logging.debug('[%d] 外部链接下载成功，跳过快捷方式创建', self.task_id)
+            except Exception as e:
+                logging.debug('[%d] 外部链接下载失败：%r，将创建快捷方式作为备选', self.task_id, e)
+                download_success = False
 
-            logging.debug('[%d] Traceback:\n%s', self.task_id, traceback.format_exc())
+        # 如果下载失败或不满足条件，创建快捷方式
+        if not download_success:
+            await self.create_shortcut()
+    
+    async def _handle_error(self, dl_err: Exception):
+        """
+        统一的错误处理和清理。
+        
+        处理：
+        1. 记录错误和追踪信息
+        2. 分析文件状态
+        3. 清理失败的文件和统计
+        4. 报告失败
+        """
+        self.status.error = dl_err
+        logging.error('[%d] %r', self.task_id, dl_err)
+        logging.error('[%d] 尝试下载文件时出错：%s', self.task_id, dl_err)
 
-            # 清理失败的文件（不可恢复的错误）
-            # 注意: download_url 中已经实现了智能的文件保留逻辑（断点续传）
-            PT.remove_file(self.file.saved_to)
-            self.report_received_bytes(-self.status.bytes_downloaded)
-            self.report_failure()
+        # 分析文件状态
+        if os.path.isfile(self.file.saved_to):
+            file_size = 0
+            try:
+                file_size = os.path.getsize(self.file.saved_to)
+            except OSError:
+                pass
+            logging.debug(
+                '[%d] file size: %d; downloaded: %d',
+                self.task_id,
+                file_size,
+                self.status.bytes_downloaded,
+            )
 
-        return False
+        logging.debug('[%d] Traceback:\n%s', self.task_id, traceback.format_exc())
+
+        # 清理失败的文件
+        # 注意: download_url 中已经实现了智能的文件保留逻辑（断点续传）
+        PT.remove_file(self.file.saved_to)
+        self.report_received_bytes(-self.status.bytes_downloaded)
+        self.report_failure()
 
     def get_cookie_jar(self) -> aiohttp.CookieJar:
         # TODO: Since we currently do not modify the cookieJar we could just use a deep copied instance.

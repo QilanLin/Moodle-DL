@@ -107,44 +107,116 @@ class MoodleService:
 
     async def fetch_state(self, database: StateRecorder) -> List[Course]:
         """
-        Fetch the current status of the configured Moodle account and compare it with the last known state
+        Fetch the current status of the configured Moodle account and compare it with the last known state.
+        
+        原子化编排器：协调 5 个阶段的状态获取
+        1. 初始化处理器和认证
+        2. 获取课程基本信息
+        3. 加载课程内容和模块
+        4. 合并数据和添加块信息
+        5. 检测变化并应用过滤
+        
         It does not change the known state, nor does it download the files.
         @return: List with detected changes between the new and old state
         """
         logging.debug('正在获取当前 Moodle 状态...')
+        
+        # 阶段 1: 初始化所有处理器
+        request_helper, core_handler, user_id, version = await self._initialize_handlers()
+        
+        # 阶段 1b: 可选的 Cookie 处理
+        cookie_handler = self._setup_cookie_handler(request_helper, version, user_id)
+        
+        # 阶段 2: 获取课程列表
+        courses = self.get_courses_list(core_handler, user_id)
+        
+        # 阶段 3: 加载内容和模块
+        await self._load_course_contents_and_modules(core_handler, courses, user_id, database, request_helper)
+        
+        # 阶段 4: 合并结果并添加块信息
+        await self._merge_results_and_add_blocks(core_handler, courses, request_helper)
+        
+        # 阶段 5: 检测变化并应用过滤
+        changes = self._detect_and_filter_changes(database, courses, cookie_handler)
+        
+        return changes
+    
+    async def _initialize_handlers(self) -> tuple:
+        """
+        初始化所有必需的处理器（RequestHelper, CoreHandler）。
+        
+        Returns:
+            (request_helper, core_handler, user_id, version)
+        """
         token = self.config.get_token()
-        privatetoken = self.config.get_privatetoken()
         moodle_url = self.config.get_moodle_URL()
 
         request_helper = RequestHelper(self.config, self.opts, moodle_url, token)
         core_handler = CoreHandler(request_helper)
         user_id, version = self.get_user_id_and_version(core_handler)
-
+        
+        return request_helper, core_handler, user_id, version
+    
+    def _setup_cookie_handler(self, request_helper: 'RequestHelper', version: int, user_id: int) -> 'CookieHandler':
+        """
+        可选地初始化 CookieHandler（如果配置要求）。
+        
+        Args:
+            request_helper: RequestHelper 实例
+            version: Moodle 版本
+            user_id: 用户 ID
+            
+        Returns:
+            CookieHandler 实例或 None
+        """
         cookie_handler = None
         if self.config.get_download_also_with_cookie():
+            privatetoken = self.config.get_privatetoken()
             cookie_handler = CookieHandler(request_helper, version, self.config, self.opts)
             cookie_handler.check_and_fetch_cookies(privatetoken, user_id)
-
-        courses = self.get_courses_list(core_handler, user_id)
-
+        
+        return cookie_handler
+    
+    async def _load_course_contents_and_modules(
+        self, 
+        core_handler: 'CoreHandler', 
+        courses: List[Course], 
+        user_id: int,
+        database: StateRecorder,
+        request_helper: 'RequestHelper'
+    ):
+        """
+        加载课程内容（sections）和模块文件。
+        
+        此函数直接修改 courses 列表（添加 files 属性）。
+        """
         core_contents = await core_handler.async_load_core_contents(courses)
-        mods = get_all_mods(request_helper, version, user_id, database.get_last_timestamp_per_mod_module(), self.config)
+        mods = get_all_mods(request_helper, len(courses), user_id, database.get_last_timestamp_per_mod_module(), self.config)
         fetched_mods_files = await fetch_mods_files(mods, courses, core_contents)
-
+        
         logging.debug('正在合并 API 结果...')
-        result_builder = ResultBuilder(moodle_url, version, get_mod_plurals())
-        result_builder.add_files_to_courses(
-            courses, core_contents, fetched_mods_files
-        )
-
-        # Debug: Check how many kalvidres files were added
-        for course in courses:
-            kalvidres_count = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
-            if kalvidres_count > 0:
-                logging.info(f'✨ Course "{course.fullname}" has {kalvidres_count} Kaltura videos AFTER add_files_to_courses()')
-
-        # Fetch and add course blocks (sidebar widgets like Key Contacts, announcements, etc.)
+        moodle_url = self.config.get_moodle_URL()
+        result_builder = ResultBuilder(moodle_url, len(courses), get_mod_plurals())
+        result_builder.add_files_to_courses(courses, core_contents, fetched_mods_files)
+        
+        # Debug: 验证 Kalvidres 文件数量
+        self._log_kalvidres_count_after_merge(courses, 'AFTER add_files_to_courses()')
+    
+    async def _merge_results_and_add_blocks(
+        self,
+        core_handler: 'CoreHandler',
+        courses: List[Course],
+        request_helper: 'RequestHelper'
+    ):
+        """
+        添加课程块（sidebar widgets）到课程对象。
+        
+        此函数直接修改 courses 列表（添加 blocks 属性）。
+        """
         logging.debug('正在获取课程 blocks...')
+        moodle_url = self.config.get_moodle_URL()
+        result_builder = ResultBuilder(moodle_url, len(courses), get_mod_plurals())
+        
         for course in courses:
             try:
                 course_blocks = core_handler.fetch_course_blocks(course.id)
@@ -153,26 +225,51 @@ class MoodleService:
                     logging.debug(f'已为课程 {course.id} "{course.fullname}" 获取 {len(course_blocks)} 个 blocks')
             except Exception as e:
                 logging.debug(f'获取课程 {course.id} 的 blocks 失败: {e}')
-                # Continue even if blocks fetch fails
-
-        # Debug: Final check before changes detection
+                # 即使块获取失败，继续处理
+    
+    def _log_kalvidres_count_after_merge(self, courses: List[Course], stage: str):
+        """
+        日志记录：检查每个课程中 Kalvidres 文件的数量。
+        
+        用于调试 Kalvidres 集成。
+        """
         for course in courses:
             kalvidres_count = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
             if kalvidres_count > 0:
-                logging.info(f'🔍 Course "{course.fullname}" has {kalvidres_count} Kaltura videos BEFORE changes detection')
-
+                logging.info(f'✨ Course "{course.fullname}" has {kalvidres_count} Kaltura videos {stage}')
+    
+    def _detect_and_filter_changes(
+        self,
+        database: StateRecorder,
+        courses: List[Course],
+        cookie_handler: 'CookieHandler' = None
+    ) -> List[Course]:
+        """
+        检测与数据库中已知状态的变化，并应用过滤。
+        
+        Args:
+            database: StateRecorder 实例（用于变化检测）
+            courses: 所有课程列表
+            cookie_handler: CookieHandler 实例（可选）
+            
+        Returns:
+            经过过滤的变化课程列表
+        """
         logging.debug('正在检查变化...')
         changes = database.changes_of_new_version(courses)
-
-        # Debug: Check kalvidres in changes
+        
+        # Debug: 检查 Kalvidres 文件在变化中
         for change in changes:
             kalvidres_in_changes = len([f for f in change.files if f.module_modname == 'cookie_mod-kalvidres'])
             if kalvidres_in_changes > 0:
                 logging.info(f'📝 Changes for "{change.fullname}" contains {kalvidres_in_changes} Kaltura videos')
-
+        
+        # 应用课程选项
         changes = self.add_options_to_courses(changes)
+        
+        # 应用过滤
         changes = self.filter_courses(changes, self.config, cookie_handler, courses)
-
+        
         return changes
 
     def add_options_to_courses(self, courses: List[Course]):
