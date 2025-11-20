@@ -205,6 +205,98 @@ def _read_sso_cookies_from_browser_DEPRECATED(browser_name: str, moodle_domain: 
         return []
 
 
+async def _handle_uncertain_login_status(current_url: str, page_content: str):
+    """
+    原子函数: 处理无法确定登录状态的情况
+    
+    职责: 单一 - 仅处理未知登录状态的调试和日志
+    """
+    logging.warning('⚠️  无法确定登录状态')
+    logging.info(f'   当前URL: {current_url}')
+    logging.info('   页面中未找到 logout 链接')
+    logging.info('   未检测到 SSO 重定向')
+
+    # 保存调试信息
+    debug_path = '/tmp/moodle_login_uncertain.html'
+    try:
+        with open(debug_path, 'w', encoding='utf-8') as f:
+            f.write(page_content)
+        logging.debug(f'📝 已保存页面内容到: {debug_path}')
+    except Exception as e:
+        logging.debug(f'保存调试文件失败: {e}')
+
+
+async def _check_login_errors(page_content: str, visited_sso: bool) -> bool:
+    """
+    原子函数: 检查页面内容中的错误指示
+    
+    职责: 单一 - 仅检查是否存在登录错误标志
+    
+    Args:
+        page_content: 页面 HTML 内容
+        visited_sso: 是否经历过 SSO 重定向
+        
+    Returns:
+        True 如果检测到错误，False 否则
+    """
+    error_indicators = [
+        'Sign in to your account',  # Microsoft 登录页面
+        'Invalid login',  # Moodle 登录错误
+        'You are not logged in',  # 未登录
+        'enrol/index.php',  # 需要注册/登录
+    ]
+
+    has_error = any(indicator in page_content for indicator in error_indicators)
+
+    if has_error and not visited_sso:
+        logging.warning('⚠️  页面显示未登录，且未经历 SSO 重定向')
+        logging.warning('⚠️  SSO cookies 可能已完全过期')
+        logging.info('')
+        logging.info('💡 解决方案：')
+        logging.info('   在浏览器中访问 Moodle 并完成 SSO 登录')
+        logging.info('   之后将能够完全自动化')
+        logging.info('')
+        return True
+    
+    return False
+
+
+async def _is_on_login_page(current_url: str, page) -> bool:
+    """
+    原子函数: 检查页面是否在登录/认证页面
+    
+    职责: 单一 - 仅检查是否停留在登录页
+    
+    Args:
+        current_url: 当前页面 URL
+        page: Playwright 页面对象
+        
+    Returns:
+        True 如果在登录页，False 如果不在
+    """
+    if 'login' in current_url.lower() or 'auth' in current_url.lower():
+        # 区分不同的登录页面类型
+        if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
+            logging.warning('⚠️  Playwright 停留在 SSO 授权页面')
+            logging.info('   原因：需要额外的交互式验证（Playwright 自动化无法完成）')
+            logging.info('   但这不代表 SSO cookies 完全过期！')
+            logging.debug('   💡 Playwright 自动登录失败，将回退到浏览器导出的 cookies')
+        else:
+            logging.warning('⚠️  Playwright 停留在 Moodle 登录页面')
+            logging.info('   原因：SSO cookies 可能已过期，或需要重新验证')
+
+        # 保存当前页面截图（调试用）
+        screenshot_path = '/tmp/moodle_sso_login_failed.png'
+        try:
+            await page.screenshot(path=screenshot_path)
+            logging.debug(f'📸 已保存截图到: {screenshot_path}')
+        except:
+            pass
+
+        return True
+    return False
+
+
 async def auto_login_with_sso(
     moodle_domain: str,
     cookies_path: str,
@@ -344,52 +436,13 @@ async def auto_login_with_sso(
                 logging.info(f'📍 最终URL: {current_url}')
                 logging.debug(f'🔍 是否经历过 SSO 重定向: {visited_sso}')
 
-                # 检查是否在登录/认证页面
-                # 注意：停留在 Microsoft/Google OAuth 授权页面可能不是 cookies 过期
-                # 而是需要额外的交互式验证（Playwright 无法自动处理）
-                if 'login' in current_url.lower() or 'auth' in current_url.lower():
-                    # 区分不同的登录页面类型
-                    if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
-                        logging.warning('⚠️  Playwright 停留在 SSO 授权页面')
-                        logging.info('   原因：需要额外的交互式验证（Playwright 自动化无法完成）')
-                        logging.info('   但这不代表 SSO cookies 完全过期！')
-                        logging.debug('   💡 Playwright 自动登录失败，将回退到浏览器导出的 cookies')
-                    else:
-                        logging.warning('⚠️  Playwright 停留在 Moodle 登录页面')
-                        logging.info('   原因：SSO cookies 可能已过期，或需要重新验证')
-
-                    # 保存当前页面截图（调试用）
-                    screenshot_path = '/tmp/moodle_sso_login_failed.png'
-                    try:
-                        await page.screenshot(path=screenshot_path)
-                        logging.debug(f'📸 已保存截图到: {screenshot_path}')
-                    except:
-                        pass
-
+                # 检查是否在登录/认证页面（原子函数：检查登录状态）
+                if await _is_on_login_page(current_url, page):
                     await browser.close()
-                    # 返回 False，但这不意味着 cookies 完全无用
-                    # 调用者应该回退到使用浏览器导出的 cookies
                     return False
 
-                # 检查页面内容中的错误标志
-                error_indicators = [
-                    'Sign in to your account',  # Microsoft 登录页面
-                    'Invalid login',  # Moodle 登录错误
-                    'You are not logged in',  # 未登录
-                    'enrol/index.php',  # 需要注册/登录
-                ]
-
-                has_error = any(indicator in page_content for indicator in error_indicators)
-
-                if has_error and not visited_sso:
-                    logging.warning('⚠️  页面显示未登录，且未经历 SSO 重定向')
-                    logging.warning('⚠️  SSO cookies 可能已完全过期')
-                    logging.info('')
-                    logging.info('💡 解决方案：')
-                    logging.info('   在浏览器中访问 keats.kcl.ac.uk 并完成 SSO 登录')
-                    logging.info('   之后将能够完全自动化')
-                    logging.info('')
-
+                # 检查页面内容中的错误标志（原子函数）
+                if await _check_login_errors(page_content, visited_sso):
                     await browser.close()
                     return False
 
@@ -431,18 +484,8 @@ async def auto_login_with_sso(
                     return True
 
                 else:
-                    # 无法确定登录状态
-                    logging.warning('⚠️  无法确定登录状态')
-                    logging.info(f'   当前URL: {current_url}')
-                    logging.info('   页面中未找到 logout 链接')
-                    logging.info('   未检测到 SSO 重定向')
-
-                    # 保存调试信息
-                    debug_path = '/tmp/moodle_login_uncertain.html'
-                    with open(debug_path, 'w', encoding='utf-8') as f:
-                        f.write(page_content)
-                    logging.debug(f'📝 已保存页面内容到: {debug_path}')
-
+                    # 无法确定登录状态（原子函数）
+                    await _handle_uncertain_login_status(current_url, page_content)
                     await browser.close()
                     return False
 
