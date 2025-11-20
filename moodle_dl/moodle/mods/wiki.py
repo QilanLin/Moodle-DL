@@ -202,21 +202,13 @@ class WikiMod(MoodleMod):
             return result
 
         # Get subwiki files
-        try:
-            files_response = await self.client.async_post(
-                'mod_wiki_get_subwiki_files',
-                {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
-            )
-            subwiki_files = files_response.get('files', [])
-
-            # Add files to result
-            for file in subwiki_files:
-                file['filepath'] = subwiki_folder + file.get('filepath', '/')
-                self.set_props_of_file(file, type='wiki_file')
-                result.append(file)
-
-        except Exception as e:
-            logging.debug("Error getting files for subwiki %d: %s", subwiki_id, str(e))
+        subwiki_files = await self._fetch_wiki_subwiki_files_mobile_api(wiki_id, group_id, user_id, subwiki_id)
+        
+        # Add files to result
+        for file in subwiki_files:
+            file['filepath'] = subwiki_folder + file.get('filepath', '/')
+            self.set_props_of_file(file, type='wiki_file')
+            result.append(file)
 
         # Download each page's content
         for page in pages:
@@ -387,35 +379,85 @@ class WikiMod(MoodleMod):
         self, wiki_id: int, group_id: int, user_id: int, subwiki_id: int
     ) -> List[Dict]:
         """
-        使用 Mobile API (mod_wiki_get_subwiki_pages) 获取维基页面列表。
+        使用 Mobile API (mod_wiki_get_subwiki_pages) 获取维基页面列表，支持优雅降级。
         
         Return: 页面列表
         """
         logging.debug(f'📱 使用 Mobile API 获取维基页面列表 (subwiki_id={subwiki_id})...')
-        pages_response = await self.client.async_post(
-            'mod_wiki_get_subwiki_pages',
-            {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
-        )
-        pages = pages_response.get('pages', [])
-        
-        if not pages:
-            logging.debug(f'⚠️ Mobile API 返回空的页面列表 (subwiki_id={subwiki_id})')
-        
-        return pages
+        try:
+            pages_response = await self.client.async_post(
+                'mod_wiki_get_subwiki_pages',
+                {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
+            )
+            pages = pages_response.get('pages', [])
+            
+            if not pages:
+                logging.debug(f'⚠️ Mobile API 返回空的页面列表 (subwiki_id={subwiki_id})')
+            else:
+                logging.debug(f'✅ Mobile API 成功获取 {len(pages)} 个页面')
+            
+            return pages
+        except Exception as e:
+            logging.warning(
+                f'❌ Mobile API 获取维基页面列表失败 (subwiki_id={subwiki_id}): {e}'
+                f'\n   💡 Web API 无法提供维基页面列表，只能通过 Mobile API 获取'
+                f'\n   建议: 检查 Mobile API (mod_wiki_get_subwiki_pages) 是否启用'
+            )
+            return []
 
     async def _fetch_wiki_page_contents_mobile_api(self, page_id: int) -> Dict:
         """
-        使用 Mobile API (mod_wiki_get_page_contents) 获取维基页面内容。
+        使用 Mobile API (mod_wiki_get_page_contents) 获取维基页面内容，支持优雅降级。
         
         Return: 页面内容数据
         """
         logging.debug(f'📱 使用 Mobile API 获取维基页面内容 (page_id={page_id})...')
-        page_contents = await self.client.async_post(
-            'mod_wiki_get_page_contents',
-            {'pageid': page_id}
-        )
+        try:
+            page_contents = await self.client.async_post(
+                'mod_wiki_get_page_contents',
+                {'pageid': page_id}
+            )
+            
+            if not page_contents.get('page'):
+                logging.debug(f'⚠️ Mobile API 返回空的页面内容 (page_id={page_id})')
+            else:
+                logging.debug(f'✅ Mobile API 成功获取页面内容')
+            
+            return page_contents
+        except Exception as e:
+            logging.warning(
+                f'❌ Mobile API 获取维基页面内容失败 (page_id={page_id}): {e}'
+                f'\n   💡 Web API 无法提供维基页面内容，只能通过 Mobile API 获取'
+                f'\n   建议: 检查 Mobile API (mod_wiki_get_page_contents) 是否启用'
+            )
+            return {'page': {}}
+
+    async def _fetch_wiki_subwiki_files_mobile_api(
+        self, wiki_id: int, group_id: int, user_id: int, subwiki_id: int
+    ) -> List[Dict]:
+        """
+        使用 Mobile API (mod_wiki_get_subwiki_files) 获取维基附件列表，支持优雅降级。
         
-        if not page_contents.get('page'):
-            logging.debug(f'⚠️ Mobile API 返回空的页面内容 (page_id={page_id})')
-        
-        return page_contents
+        Return: 附件列表
+        """
+        logging.debug(f'📱 使用 Mobile API 获取维基附件列表 (subwiki_id={subwiki_id})...')
+        try:
+            files_response = await self.client.async_post(
+                'mod_wiki_get_subwiki_files',
+                {'wikiid': wiki_id, 'groupid': group_id, 'userid': user_id}
+            )
+            subwiki_files = files_response.get('files', [])
+            
+            if not subwiki_files:
+                logging.debug(f'⚠️ Mobile API 返回空的附件列表 (subwiki_id={subwiki_id})')
+            else:
+                logging.debug(f'✅ Mobile API 成功获取 {len(subwiki_files)} 个附件')
+            
+            return subwiki_files
+        except Exception as e:
+            logging.warning(
+                f'❌ Mobile API 获取维基附件列表失败 (subwiki_id={subwiki_id}): {e}'
+                f'\n   💡 Web API 无法提供维基附件列表，只能通过 Mobile API 获取'
+                f'\n   建议: 检查 Mobile API (mod_wiki_get_subwiki_files) 是否启用'
+            )
+            return []
