@@ -361,7 +361,7 @@ class AssignMod(MoodleMod):
     async def load_submissions(self, assign: Dict):
         "Fetches for a given assign module the submissions"
         data = {'userid': self.user_id, 'assignid': assign.get('id', 0)}
-        submission = await self.client.async_post('mod_assign_get_submission_status', data)
+        submission = await self._fetch_submission_status_mobile_api(assign.get('id', 0), data)
         assign['files'] += self._get_files_of_submission(submission)
 
         # Get detailed grades information
@@ -459,3 +459,36 @@ class AssignMod(MoodleMod):
                     )
 
         return result
+
+    async def _fetch_submission_status_mobile_api(
+        self, assignment_id: int, data: Dict
+    ) -> Dict:
+        """
+        使用 Mobile API (mod_assign_get_submission_status) 获取学生提交状态，支持优雅降级。
+        
+        这是学生 API，用于获取当前用户的作业提交状态。
+        基本不会失败，但仍然添加异常处理以增强健壮性。
+        
+        Args:
+            assignment_id: 作业 ID
+            data: 请求参数 {'userid': user_id, 'assignid': assignment_id}
+            
+        Return: 提交状态数据
+        """
+        logging.debug(f'📱 使用 Mobile API 获取作业提交状态 (assignment_id={assignment_id})...')
+        try:
+            submission = await self.client.async_post('mod_assign_get_submission_status', data)
+            
+            if submission.get('submission'):
+                logging.debug(f'✅ Mobile API 成功获取提交状态')
+            else:
+                logging.debug(f'⚠️ Mobile API 返回空的提交状态 (assignment_id={assignment_id})')
+            
+            return submission
+        except Exception as e:
+            logging.warning(
+                f'❌ Mobile API 获取提交状态失败 (assignment_id={assignment_id}): {e}'
+                f'\n   💡 这是学生 API，基本不应该失败'
+                f'\n   建议: 检查网络连接和 Mobile API 是否可用'
+            )
+            return {'submission': None}
