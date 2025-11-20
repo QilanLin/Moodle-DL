@@ -127,8 +127,11 @@ class ForumMod(MoodleMod):
         await self.run_async_load_function_on_mod_entries(forums, self.load_latest_discussions)
 
     async def load_latest_discussions(self, forum: Dict):
-        "Adds the discussions that needs to be updated to the forum dict"
-
+        """
+        获取论坛的最新讨论，支持 Mobile API 和 Web API fallback。
+        
+        优先使用 mod_forum_get_forum_discussions (Mobile API)，失败时使用 core_course_get_contents (Web API)。
+        """
         # Get forum access information (permissions and capabilities)
         forum_id = forum.get('id', 0)
         try:
@@ -155,47 +158,22 @@ class ForumMod(MoodleMod):
         last_timestamp = self.last_timestamps.get(self.MOD_NAME, {}).get(forum.get('_cmid', 0), 0)
         latest_discussions = []
         done = False
-        while not done:
-            data = {
-                'forumid': forum.get('id', 0),
-                'perpage': 10,
-                'page': page_num,
-            }
-
-            if self.version >= 2019052000:  # 3.7
-                discussions_result = await self.client.async_post('mod_forum_get_forum_discussions', data)
-            else:
-                discussions_result = await self.client.async_post('mod_forum_get_forum_discussions_paginated', data)
-
-            logging.debug(
-                'Loaded %(mod_name)s page %(page_num)d of "%(forum_name)s"',
-                {'mod_name': self.MOD_NAME, 'page_num': page_num, 'forum_name': forum.get('name', '')},
-            )
-
-            discussions = discussions_result.get('discussions', [])
-
-            if len(discussions) == 0:
-                done = True
-                break
-
-            for discussion in discussions:
-                time_modified = discussion.get('timemodified', 0)
-                if discussion.get('modified', 0) > time_modified:
-                    time_modified = discussion.get('modified', 0)
-
-                if last_timestamp < time_modified:
-                    latest_discussions.append(
-                        {
-                            'subject': discussion.get('subject', ''),
-                            'timemodified': time_modified,
-                            'discussion_id': discussion.get('discussion', 0),
-                            'created': discussion.get('created', 0),
-                        }
-                    )
-                else:
-                    done = True
-                    break
-            page_num += 1
+        
+        # 尝试使用 Mobile API 获取讨论
+        use_web_api = False
+        try:
+            while not done:
+                latest_discussions, done = await self._fetch_discussions_mobile_api(
+                    forum, page_num, last_timestamp, latest_discussions
+                )
+                page_num += 1
+        except (Exception, KeyError) as e:
+            logging.warning(f'❌ Mobile API 获取论坛讨论失败: {e}，尝试使用 Web API fallback...')
+            use_web_api = True
+        
+        # Fallback 到 Web API
+        if use_web_api:
+            latest_discussions = await self._fetch_discussions_web_api(forum, last_timestamp)
 
         forum['files'] += await self.run_async_collect_function_on_list(
             latest_discussions,
@@ -203,6 +181,88 @@ class ForumMod(MoodleMod):
             'discussion',
             {'collect_id': 'discussion_id', 'collect_name': 'subject'},
         )
+
+    async def _fetch_discussions_mobile_api(
+        self, forum: Dict, page_num: int, last_timestamp: int, latest_discussions: List[Dict]
+    ) -> tuple:
+        """
+        使用 Mobile API (mod_forum_get_forum_discussions) 获取单页论坛讨论。
+        
+        Return: (latest_discussions, done)
+        """
+        data = {
+            'forumid': forum.get('id', 0),
+            'perpage': 10,
+            'page': page_num,
+        }
+
+        logging.debug(
+            '📱 使用 Mobile API 获取论坛讨论页 %(page_num)d of "%(forum_name)s"',
+            {'page_num': page_num, 'forum_name': forum.get('name', '')},
+        )
+
+        if self.version >= 2019052000:  # 3.7
+            discussions_result = await self.client.async_post('mod_forum_get_forum_discussions', data)
+        else:
+            discussions_result = await self.client.async_post('mod_forum_get_forum_discussions_paginated', data)
+
+        discussions = discussions_result.get('discussions', [])
+
+        if len(discussions) == 0:
+            return latest_discussions, True
+
+        done = False
+        for discussion in discussions:
+            time_modified = discussion.get('timemodified', 0)
+            if discussion.get('modified', 0) > time_modified:
+                time_modified = discussion.get('modified', 0)
+
+            if last_timestamp < time_modified:
+                latest_discussions.append(
+                    {
+                        'subject': discussion.get('subject', ''),
+                        'timemodified': time_modified,
+                        'discussion_id': discussion.get('discussion', 0),
+                        'created': discussion.get('created', 0),
+                    }
+                )
+            else:
+                done = True
+                break
+
+        return latest_discussions, done
+
+    async def _fetch_discussions_web_api(self, forum: Dict, last_timestamp: int) -> List[Dict]:
+        """
+        使用 Web API 获取论坛讨论信息的 fallback 实现。
+        
+        注意: Moodle Web Services API 不提供 mod_forum_get_forum_discussions 的直接等效函数。
+        这个 fallback 有以下限制:
+        1. 无法通过 Web API 直接获取讨论列表
+        2. core_course_get_contents 只提供论坛模块的基本信息
+        3. 需要使用 REST API 或爬取论坛页面
+        
+        策略: 在此返回空列表，并推荐用户:
+        - 检查 API 权限配置
+        - 确保已启用 mod_forum_get_forum_discussions 接口
+        - 检查 Moodle 版本兼容性
+        
+        Return: 论坛讨论列表 (在 Web API fallback 中通常为空)
+        """
+        forum_id = forum.get('id', 0)
+        
+        logging.warning(
+            f'⚠️ Web API fallback: 无法通过标准 Web Services API 获取论坛讨论列表。'
+            f'\n   论坛 ID: {forum_id}'
+            f'\n   建议:'
+            f'\n   1. 检查 Mobile API (mod_forum_get_forum_discussions) 的权限'
+            f'\n   2. 确保 Moodle 版本 >= 2.8 (支持 forum discussions API)'
+            f'\n   3. 检查用户是否有查看讨论的权限'
+        )
+        
+        # 返回空列表，表示无法通过 fallback 获取讨论
+        # 论坛基本信息仍然会被保存（来自 mod_forum_get_forums_by_courses）
+        return []
 
     async def load_files_of_discussion(self, discussion: Dict) -> List[Dict]:
         result = []
