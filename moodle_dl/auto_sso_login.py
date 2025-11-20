@@ -232,6 +232,96 @@ async def _launch_playwright_browser(playwright_obj, preferred_browser: str, hea
         )
 
 
+async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str, timeout: int) -> tuple:
+    """
+    原子函数: 导航到 Moodle 并等待重定向完成
+    
+    职责: 单一 - 仅负责导航和等待
+    
+    Args:
+        page: Playwright 页面对象
+        moodle_domain: Moodle 域名
+        moodle_url: 完整的 Moodle URL
+        timeout: 超时时间（毫秒）
+        
+    Returns:
+        元组 (visited_sso, current_url, page_content)
+    """
+    logging.info(f'🔗 正在访问 Moodle: {moodle_url}')
+    logging.info('   等待 SSO 自动登录完成...')
+    logging.info('   💡 原理：只要 SSO cookies 有效，将完全自动化完成登录')
+
+    try:
+        # 使用 domcontentloaded 而不是 load - 只等DOM加载，不等所有资源
+        # 这样可以避免被第三方tracking scripts阻塞（Google Analytics等）
+        # 对于SSO重定向来说，DOM加载完成就足够了
+        await page.goto(moodle_url, wait_until='domcontentloaded', timeout=timeout)
+
+        # 等待 SSO 重定向完成（原子函数）
+        visited_sso = await _wait_for_sso_redirect(page, moodle_domain)
+
+        # 获取最终状态
+        current_url = page.url
+        page_content = await page.content()
+
+        logging.info(f'📍 最终URL: {current_url}')
+        logging.debug(f'🔍 是否经历过 SSO 重定向: {visited_sso}')
+
+        return visited_sso, current_url, page_content
+
+    except Exception as e:
+        logging.error(f'❌ 导航出错: {e}')
+        return False, page.url, ''
+
+
+async def _check_final_login_status(page_content: str, current_url: str, visited_sso: bool) -> int:
+    """
+    原子函数: 检查最终的登录状态
+    
+    职责: 单一 - 仅检查登录是否成功
+    
+    Args:
+        page_content: 页面 HTML 内容
+        current_url: 当前 URL
+        visited_sso: 是否经历过 SSO 重定向
+        
+    Returns:
+        登录状态码:
+        1 - 登录成功（找到 logout 链接或访问过 SSO）
+        0 - 登录状态未确定
+        -1 - 在登录页面或有错误
+    """
+    # 检查是否在登录页面
+    if '/login' in current_url.lower() or 'accounts.microsoft' in current_url or 'accounts.google' in current_url:
+        logging.warning('⚠️  仍然在登录/认证页面，登录可能失败')
+        return -1
+    
+    # 检查错误标志
+    error_indicators = [
+        'Sign in to your account',
+        'Invalid login',
+        'Authentication failed',
+        'Your session has expired',
+        '401',
+        '403',
+        'Unauthorized',
+    ]
+    
+    for indicator in error_indicators:
+        if indicator in page_content:
+            logging.warning(f'⚠️  页面中检测到错误指示: {indicator}')
+            return -1
+    
+    # 检查成功标志
+    if 'login/logout.php' in page_content or visited_sso:
+        logging.debug('✅ 检测到登录成功标志')
+        return 1
+    
+    # 状态未确定
+    logging.debug('⚠️  无法确定登录状态')
+    return 0
+
+
 async def _save_session_cookies(context, auth_manager) -> bool:
     """
     原子函数: 提取并保存 cookies 到数据库
@@ -502,42 +592,26 @@ async def auto_login_with_sso(
             # 创建浏览器上下文（原子函数）
             context = await _setup_browser_context(browser, storage_state)
 
-            # 4. 访问 Moodle 主页，触发 SSO 登录
+            # 4. 访问 Moodle 主页，触发 SSO 登录（原子函数）
             page = await context.new_page()
             moodle_url = f'https://{moodle_domain}/' if not moodle_domain.startswith('http') else moodle_domain
 
-            logging.info(f'🔗 正在访问 Moodle: {moodle_url}')
-            logging.info('   等待 SSO 自动登录完成...')
-            logging.info('   💡 原理：只要 SSO cookies 有效，将完全自动化完成登录')
-
             try:
-                # 使用 domcontentloaded 而不是 load - 只等DOM加载，不等所有资源
-                # 这样可以避免被第三方tracking scripts阻塞（Google Analytics等）
-                # 对于SSO重定向来说，DOM加载完成就足够了
-                response = await page.goto(moodle_url, wait_until='domcontentloaded', timeout=timeout)
+                # 导航并等待重定向完成（原子函数）
+                visited_sso, current_url, page_content = await _navigate_to_moodle_and_wait(
+                    page, moodle_domain, moodle_url, timeout
+                )
 
-                # 等待 SSO 重定向完成（原子函数）
-                visited_sso = await _wait_for_sso_redirect(page, moodle_domain)
+                # 检查登录状态（原子函数）
+                login_status = await _check_final_login_status(page_content, current_url, visited_sso)
 
-                # 最终检查
-                current_url = page.url
-                page_content = await page.content()
-
-                logging.info(f'📍 最终URL: {current_url}')
-                logging.debug(f'🔍 是否经历过 SSO 重定向: {visited_sso}')
-
-                # 检查是否在登录/认证页面（原子函数：检查登录状态）
-                if await _is_on_login_page(current_url, page):
+                if login_status == -1:
+                    # 登录失败
                     await browser.close()
                     return False
 
-                # 检查页面内容中的错误标志（原子函数）
-                if await _check_login_errors(page_content, visited_sso):
-                    await browser.close()
-                    return False
-
-                # 检查是否已登录（查找 logout 链接）
-                if 'login/logout.php' in page_content or visited_sso:
+                elif login_status == 1:
+                    # 登录成功
                     if visited_sso:
                         Log.success('✅ SSO 自动登录成功！（经历完整 SSO 重定向）')
                     else:
@@ -550,7 +624,7 @@ async def auto_login_with_sso(
                     return save_success
 
                 else:
-                    # 无法确定登录状态（原子函数）
+                    # 登录状态未确定（原子函数）
                     await _handle_uncertain_login_status(current_url, page_content)
                     await browser.close()
                     return False
