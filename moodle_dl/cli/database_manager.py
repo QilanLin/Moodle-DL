@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import os
+import sqlite3
+import time
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
@@ -198,3 +200,55 @@ class DatabaseManager:
                     os.remove(files[file_index].saved_to)
 
         self.state_recorder.batch_delete_files_from_db(files_to_delete)
+
+    def reset_all_downloaded_files(self):
+        """
+        将数据库中所有"已下载"的文件改回为"未下载"状态，
+        这样重新运行 "moodle-dl" 时就可以重新下载这些文件。
+        
+        这个功能对于以下情况很有用：
+        - 想要重新下载所有文件
+        - 下载过程中断，想要重新开始
+        - 某些文件下载有问题，想要重新下载
+        """
+        stored_files = self.state_recorder.get_stored_files()
+        
+        if len(stored_files) <= 0:
+            print('数据库中没有存储的文件。无需操作。')
+            return
+        
+        files_to_reset = []
+        
+        for course in stored_files:
+            for course_file in course.files:
+                # 只重置已下载的文件（saved_to 不为空）
+                if course_file.saved_to and course_file.saved_to.strip():
+                    files_to_reset.append(course_file)
+        
+        if len(files_to_reset) <= 0:
+            print('没有已下载的文件需要重置。')
+            return
+        
+        print(f'准备重置 {len(files_to_reset)} 个已下载文件为未下载状态...')
+        
+        # 重置文件状态：清除 saved_to 路径，但不删除文件记录
+        conn = sqlite3.connect(self.state_recorder.db_file)
+        cursor = conn.cursor()
+        
+        try:
+            for file_to_reset in files_to_reset:
+                cursor.execute(
+                    """UPDATE files
+                    SET saved_to = NULL, time_stamp = ?, modified = 0, moved = 0, notified = 0
+                    WHERE file_id = ?""",
+                    (int(time.time()), file_to_reset.file_id)
+                )
+            
+            conn.commit()
+            print(f'✅ 成功重置 {len(files_to_reset)} 个文件为未下载状态')
+            
+        except Exception as e:
+            print(f'❌ 重置文件状态时出错: {e}')
+            conn.rollback()
+        finally:
+            conn.close()

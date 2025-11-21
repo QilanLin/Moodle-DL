@@ -69,6 +69,8 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
         DatabaseManager(config, opts).delete_old_files()
     elif opts.manage_database:
         DatabaseManager(config, opts).interactively_manage_database()
+    elif opts.reset_downloaded_files:
+        DatabaseManager(config, opts).reset_all_downloaded_files()
     elif opts.new_token:
         MoodleWizard(config, opts).interactively_acquire_token(use_stored_url=True)
     elif opts.retry_failed:
@@ -512,6 +514,28 @@ def get_parser():
         help=(
             'Delete old copies of files. It allows you to delete entries from the database'
             + ' and from local file system.'
+        ),
+    )
+    group.add_argument(
+        '-rdf',
+        '--reset-downloaded-files',
+        dest='reset_downloaded_files',
+        default=False,
+        action='store_true',
+        help=(
+            'Reset all downloaded files to "not downloaded" status in database. '
+            + 'This allows you to re-download all files on next run.'
+        ),
+    )
+    group.add_argument(
+        '-zdcf',
+        '--重置下载文件',
+        dest='reset_downloaded_files_cn',
+        default=False,
+        action='store_true',
+        help=(
+            '重置数据库中所有"已下载"的文件为"未下载"状态，'
+            + '这样重新运行 "moodle-dl" 时就可以重新下载这些文件。'
         ),
     )
 

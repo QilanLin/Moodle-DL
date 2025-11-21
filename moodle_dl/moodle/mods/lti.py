@@ -40,8 +40,12 @@ class LtiMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        # LTI module is always enabled
-        return not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted)
+        # LTI module is always enabled for LTI files and cookie_mod files (including kalvidres)
+        # This ensures that cookie_mod-kalvidres files are not filtered out by forum module
+        return not (
+            (file.module_modname.endswith(cls.MOD_NAME) and file.deleted) or
+            (file.module_modname.startswith('cookie_mod-') and file.deleted)
+        )
 
     def _get_launch_container_name(self, launch_container: int) -> str:
         """Get human-readable name for launch container mode"""

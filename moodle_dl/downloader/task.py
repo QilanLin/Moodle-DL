@@ -1614,7 +1614,7 @@ class Task:
                             from moodle_dl.config import ConfigHelper
                             
                             if self.file.file_id is not None:
-                                config = ConfigHelper(self.opts.global_opts.moodle_path)
+                                config = ConfigHelper(self.opts.global_opts)
                                 database = StateRecorder(config, self.opts)
                                 database.mark_download_complete(self.file.file_id, dest_path)
                         except Exception as cleanup_err:
@@ -1702,7 +1702,7 @@ class Task:
             from moodle_dl.database import StateRecorder
             from moodle_dl.config import ConfigHelper
             
-            config = ConfigHelper(self.opts.global_opts.moodle_path)
+            config = ConfigHelper(self.opts.global_opts)
             database = StateRecorder(config, self.opts)
             
             # 获取或创建 file_id
@@ -1764,7 +1764,7 @@ class Task:
             from moodle_dl.database import StateRecorder
             from moodle_dl.config import ConfigHelper
             
-            config = ConfigHelper(self.opts.global_opts.moodle_path)
+            config = ConfigHelper(self.opts.global_opts)
             database = StateRecorder(config, self.opts)
             
             file_id = self.file.file_id
