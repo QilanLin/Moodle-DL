@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import copy
 import html
 import json
@@ -10,6 +11,7 @@ from typing import Dict, List, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -60,11 +62,16 @@ class BookMod(MoodleMod):
             return result
 
         logging.info('🔍 [DEBUG] Calling mod_book_get_books_by_courses API...')
-        books = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_book_get_books_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('books', [])
+            books = response.get('books', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Book 模块失败: {e}，尝试使用 Web API fallback...")
+            books = await self._fetch_books_web_api(courses, core_contents)
 
         logging.info(f'🔍 [DEBUG] API returned {len(books)} books')
 
@@ -1162,8 +1169,13 @@ class BookMod(MoodleMod):
         # URL 解码并提取 entry_id（仅用于文件命名）
         # URL 可能包含 %2F (/) 等编码字符
         decoded_url = urllib.parse.unquote(url)
-        entry_id_match = re.search(r'entryid[/%]([^/%&]+)', decoded_url)
+        # After decoding, match '/' only (not '%' which would match encoded slashes)
+        # But also handle cases where URL might still contain encoded characters (double encoding)
+        entry_id_match = re.search(r'entryid/([^/&?]+)', decoded_url) or re.search(r'entryid%2F([^/%&?]+)', decoded_url)
         entry_id = entry_id_match.group(1) if entry_id_match else ''
+        # Additional decode if entry_id contains encoded characters (double encoding)
+        if entry_id:
+            entry_id = urllib.parse.unquote(entry_id)
 
         if entry_id:
             logging.debug(f'✅ Extracted entry_id from Kaltura URL: {entry_id}')
@@ -1210,11 +1222,14 @@ class BookMod(MoodleMod):
             # URL 解码后再提取 entry_id（修复 %2F 编码问题）
             # 例如：entryid%2F1_xxx → entryid/1_xxx
             decoded_src = urllib.parse.unquote(iframe_src)
-            entry_id_match = re.search(r'entryid[/%]([^/%&]+)', decoded_src)
+            # After decoding, match '/' only (not '%' which would match encoded slashes)
+            # But also handle cases where URL might still contain encoded characters (double encoding)
+            entry_id_match = re.search(r'entryid/([^/&?]+)', decoded_src) or re.search(r'entryid%2F([^/%&?]+)', decoded_src)
             if not entry_id_match:
                 continue
-
             entry_id = entry_id_match.group(1)
+            # Additional decode if entry_id contains encoded characters (double encoding)
+            entry_id = urllib.parse.unquote(entry_id)
 
             # 查找相对路径
             if entry_id not in entry_id_to_path:
@@ -1241,3 +1256,51 @@ class BookMod(MoodleMod):
 
         logging.info(f'✅ Converted {len(matches)} Kaltura iframe(s) to linked video tags in print book')
         return modified_html
+
+    async def _fetch_books_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Book 模块信息。
+        
+        这是 mod_book_get_books_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 book 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 book 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Book 模块信息...')
+        
+        books = []
+        
+        # 从 core_contents 中提取 book 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'book')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 book 模块转换为 Mobile API 的格式
+                book = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Book'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'numbering': 0,
+                    'navstyle': 0,
+                    'customtitles': 0,
+                    'revision': 0,
+                    'timecreated': module.get('timecreated', 0),
+                    'timemodified': module.get('timemodified', 0),
+                }
+                books.append(book)
+        
+        if not books:
+            logging.warning('⚠️ Web API fallback 未找到任何 Book 模块')
+            raise ValueError('Web API 未能检索任何 Book 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(books)} 个 Book 模块')
+        return books

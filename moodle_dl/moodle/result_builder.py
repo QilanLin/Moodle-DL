@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import hashlib
 import html
 import logging
@@ -404,22 +405,71 @@ class ResultBuilder:
             elif url_parts.hostname == self.moodle_domain:
                 location['module_modname'] = 'cookie_mod-description-' + original_module_modname
 
-            # Special handling for Kaltura LTI launch URLs
-            # These are embedded Kaltura videos accessed via LTI (Learning Tools Interoperability)
-            # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
+            # Special handling for Kaltura URLs (multiple formats)
+            # These are embedded Kaltura videos that should be downloaded as kalvidres
             kaltura_converted = False
+            
+            # Format 1: Kaltura LTI launch URLs
+            # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
             if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
                 # Extract entry_id from the source parameter
                 # URL format: ...source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2F...%2Fentryid%2F1_uwhesokp%2F...
-                entry_id_match = re.search(r'entryid[/%]([^/%&]+)', url)
+                # Note: URL has already been decoded by urlparse.unquote(), so we match '/' only
+                # But we also handle cases where URL might still contain encoded characters (double encoding)
+                entry_id_match = re.search(r'entryid/([^/&?]+)', url) or re.search(r'entryid%2F([^/%&?]+)', url)
                 if entry_id_match:
                     entry_id = entry_id_match.group(1)
+                    # Additional decode if entry_id contains encoded characters
+                    entry_id = urlparse.unquote(entry_id)
                     # Convert to kalvidres URL format (same as standalone kalvidres modules)
                     # This allows the video to be downloaded using the existing kalvidres handler
                     url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
                     location['module_modname'] = 'cookie_mod-kalvidres'
                     kaltura_converted = True
                     logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
+            
+            # Format 2: Direct Kaltura browseandembed URLs
+            # Format: .../browseandembed/index/media/entryid/1_xxxxx/...
+            elif 'browseandembed' in url_parts.path and 'entryid' in url:
+                # Note: URL has already been decoded, so we match '/' only
+                # But we also handle cases where URL might still contain encoded characters (double encoding)
+                entry_id_match = re.search(r'entryid/([^/&?]+)', url) or re.search(r'entryid%2F([^/%&?]+)', url)
+                if entry_id_match:
+                    entry_id = entry_id_match.group(1)
+                    # Additional decode if entry_id contains encoded characters
+                    entry_id = urlparse.unquote(entry_id)
+                    # Normalize to standard kalvidres URL format
+                    if url_parts.hostname == self.moodle_domain:
+                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+                    else:
+                        # External Kaltura domain, keep original URL
+                        pass
+                    location['module_modname'] = 'cookie_mod-kalvidres'
+                    kaltura_converted = True
+                    logging.info(f'🎬 Converted Kaltura browseandembed URL to kalvidres format: entry_id={entry_id}')
+            
+            # Format 3: Kaltura URLs containing kaltura domain or entryid pattern
+            # This catches other Kaltura URL formats that might be embedded in descriptions
+            elif ('kaltura' in url.lower() or 'entryid' in url.lower()) and not kaltura_converted:
+                # Check if this looks like a Kaltura video URL
+                # Note: URL has already been decoded, so we match '/' first, then try encoded version
+                entry_id_match = re.search(r'entryid/([^/&?]+)', url, re.IGNORECASE) or re.search(r'entryid%2F([^/%&?]+)', url, re.IGNORECASE)
+                if entry_id_match:
+                    entry_id = entry_id_match.group(1)
+                    # Additional decode if entry_id contains encoded characters
+                    entry_id = urlparse.unquote(entry_id)
+                    # Try to normalize to standard format if it's from the same domain
+                    if url_parts.hostname == self.moodle_domain or 'kaf.' in url_parts.hostname:
+                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+                    location['module_modname'] = 'cookie_mod-kalvidres'
+                    kaltura_converted = True
+                    logging.info(f'🎬 Converted Kaltura URL to kalvidres format: entry_id={entry_id}, original_url={url[:80]}...')
+            
+            # Special handling for HelixMedia URLs (similar to Kaltura)
+            # Format: /mod/helixmedia/view.php?id=...
+            if not kaltura_converted and 'helixmedia' in url.lower() and '/mod/helixmedia/view.php' in url:
+                location['module_modname'] = 'cookie_mod-helixmedia'
+                logging.info(f'🎬 Detected HelixMedia URL in description: {url[:80]}...')
 
             # Determine filename based on URL type
             if url.startswith('data:'):

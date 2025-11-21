@@ -1,7 +1,8 @@
+# -*- coding: utf-8 -*-
 import base64
 import logging
 import re
-from typing import List, Tuple
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from moodle_dl.config import ConfigHelper
@@ -25,7 +26,7 @@ class MoodleService:
         self.config = config
         self.opts = opts
 
-    def obtain_login_token(self, username: str, password: str, moodle_url: MoodleURL) -> str:
+    def obtain_login_token(self, username: str, password: str, moodle_url: MoodleURL) -> Tuple[str, Optional[str]]:
         "Send the login credentials to the Moodle-System and extracts the resulting Login-Token"
         login_data = {'username': username, 'password': password, 'service': 'moodle_mobile_app'}
         response = RequestHelper(self.config, self.opts, moodle_url, None).get_login(login_data)
@@ -37,10 +38,12 @@ class MoodleService:
 
         if 'privatetoken' not in response:
             return response.get('token', ''), None
-        return response.get('token', ''), response.get('privatetoken', '')
+        # Safely get privatetoken, handle None case
+        privatetoken = response.get('privatetoken', '')
+        return response.get('token', ''), privatetoken if privatetoken else None
 
     @staticmethod
-    def extract_token(address: str) -> str:
+    def extract_token(address: str) -> Optional[Tuple[str, Optional[str]]]:
         """
         Extracts a token from a returned URL
         See https://github.com/moodle/moodle/blob/master/admin/tool/mobile/launch.php for details
@@ -96,12 +99,18 @@ class MoodleService:
         return courses
 
     def get_user_id_and_version(self, core_handler: CoreHandler) -> Tuple[int, int]:
-        user_id, version = self.config.get_userid_and_version()
-        if user_id is None or version is None:
+        user_id_raw, version = self.config.get_userid_and_version()
+        if user_id_raw is None or version is None:
             logging.info('正在下载账户信息')
             user_id, version = core_handler.fetch_userid_and_version()
             logging.debug('检测到 Moodle 版本：%d', version)
         else:
+            # Convert user_id from str to int (config returns str, but we need int)
+            try:
+                user_id = int(user_id_raw) if isinstance(user_id_raw, str) else user_id_raw
+            except (ValueError, TypeError):
+                logging.warning(f'无法将 user_id "{user_id_raw}" 转换为 int，尝试从服务器获取')
+                user_id, version = core_handler.fetch_userid_and_version()
             core_handler.version = version
         return user_id, version
 
@@ -141,7 +150,7 @@ class MoodleService:
         
         return changes
     
-    async def _initialize_handlers(self) -> tuple:
+    async def _initialize_handlers(self) -> Tuple[RequestHelper, CoreHandler, int, int]:
         """
         初始化所有必需的处理器（RequestHelper, CoreHandler）。
         
@@ -280,7 +289,8 @@ class MoodleService:
             if options is not None:
                 course.overwrite_name_with = options.get('overwrite_name_with', None)
                 course.create_directory_structure = options.get('create_directory_structure', True)
-                course.excluded_sections = options.get("excluded_sections", [])
+                excluded_sections_raw = options.get("excluded_sections", [])
+                course.excluded_sections = ConfigHelper.normalize_id_list(excluded_sections_raw)
 
         return courses
 

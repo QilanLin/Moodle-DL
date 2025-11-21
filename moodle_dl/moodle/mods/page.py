@@ -1,8 +1,11 @@
+# -*- coding: utf-8 -*-
 import json
+import logging
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -56,11 +59,16 @@ class PageMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        pages = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_page_get_pages_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('pages', [])
+            pages = response.get('pages', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Page 模块失败: {e}，尝试使用 Web API fallback...")
+            pages = await self._fetch_pages_web_api(courses, core_contents)
 
         result = {}
         for page in pages:
@@ -144,3 +152,51 @@ class PageMod(MoodleMod):
             )
 
         return result
+
+    async def _fetch_pages_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Page 模块信息。
+        
+        这是 mod_page_get_pages_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 page 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 page 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Page 模块信息...')
+        
+        pages = []
+        
+        # 从 core_contents 中提取 page 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'page')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 page 模块转换为 Mobile API 的格式
+                page = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Page'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'content': '',
+                    'contentformat': 1,
+                    'display': self.DISPLAY_AUTO,
+                    'displayoptions': '',
+                    'revision': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                pages.append(page)
+        
+        if not pages:
+            logging.warning('⚠️ Web API fallback 未找到任何 Page 模块')
+            raise ValueError('Web API 未能检索任何 Page 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(pages)} 个 Page 模块')
+        return pages

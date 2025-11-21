@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from datetime import datetime
@@ -5,6 +6,7 @@ from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -21,11 +23,16 @@ class DataMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        databases = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_data_get_databases_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('databases', [])
+            databases = response.get('databases', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Database 模块失败: {e}，尝试使用 Web API fallback...")
+            databases = await self._fetch_databases_web_api(courses, core_contents)
 
         result = {}
         for database in databases:
@@ -180,14 +187,18 @@ class DataMod(MoodleMod):
                 },
                 'group_id': entry.get('groupid', 0),
                 'timestamps': {
-                    'created': entry.get('timecreated', 0),
-                    'created_readable': datetime.fromtimestamp(entry.get('timecreated', 0)).strftime('%Y-%m-%d %H:%M:%S')
-                    if entry.get('timecreated', 0) > 0
-                    else 'N/A',
-                    'modified': entry.get('timemodified', 0),
-                    'modified_readable': datetime.fromtimestamp(entry.get('timemodified', 0)).strftime('%Y-%m-%d %H:%M:%S')
-                    if entry.get('timemodified', 0) > 0
-                    else 'N/A',
+                    'created': entry.get('timecreated', 0) or 0,
+                    'created_readable': (
+                        datetime.fromtimestamp(entry.get('timecreated', 0) or 0).strftime('%Y-%m-%d %H:%M:%S')
+                        if entry.get('timecreated', 0) and entry.get('timecreated', 0) > 0
+                        else 'N/A'
+                    ),
+                    'modified': entry.get('timemodified', 0) or 0,
+                    'modified_readable': (
+                        datetime.fromtimestamp(entry.get('timemodified', 0) or 0).strftime('%Y-%m-%d %H:%M:%S')
+                        if entry.get('timemodified', 0) and entry.get('timemodified', 0) > 0
+                        else 'N/A'
+                    ),
                 },
                 'status': {
                     'approved': entry.get('approved', False),
@@ -279,3 +290,75 @@ class DataMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch fields for database {database_id}: {e}")
             return []
+
+    async def _fetch_databases_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Database 模块信息。
+        
+        这是 mod_data_get_databases_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 data 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 database 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Database 模块信息...')
+        
+        databases = []
+        
+        # 从 core_contents 中提取 data 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'data')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 data 模块转换为 Mobile API 的格式
+                database = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Database'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'comments': 0,
+                    'timeavailablefrom': 0,
+                    'timeavailableto': 0,
+                    'timeviewfrom': 0,
+                    'timeviewto': 0,
+                    'requiredentries': 0,
+                    'requiredentriestoview': 0,
+                    'maxentries': 0,
+                    'rssarticles': 0,
+                    'singletemplate': '',
+                    'listtemplate': '',
+                    'listtemplateheader': '',
+                    'listtemplatefooter': '',
+                    'addtemplate': '',
+                    'rsstemplate': '',
+                    'rsstitletemplate': '',
+                    'csstemplate': '',
+                    'jstemplate': '',
+                    'asearchtemplate': '',
+                    'approval': 0,
+                    'manageapproved': 0,
+                    'scale': 0,
+                    'assessed': 0,
+                    'assesstimestart': 0,
+                    'assesstimefinish': 0,
+                    'defaultsort': 0,
+                    'defaultsortdir': 0,
+                    'editany': 0,
+                    'notification': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                databases.append(database)
+        
+        if not databases:
+            logging.warning('⚠️ Web API fallback 未找到任何 Database 模块')
+            raise ValueError('Web API 未能检索任何 Database 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(databases)} 个 Database 模块')
+        return databases

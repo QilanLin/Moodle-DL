@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -55,19 +56,17 @@ class UrlMod(MoodleMod):
         if not self.config.get_download_urls():
             return result
 
-        # Get all URLs for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_url_get_urls_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             urls = response.get('urls', [])
-        except RequestRejectedError:
-            logging.debug("No access to URL modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting URL modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 URL 模块失败: {e}，尝试使用 Web API fallback...")
+            urls = await self._fetch_urls_web_api(courses, core_contents)
 
         for url_mod in urls:
             course_id = url_mod.get('course', 0)
@@ -176,7 +175,10 @@ class UrlMod(MoodleMod):
                 if '=' in pair:
                     key, value = pair.split('=', 1)
                     # Try to convert to appropriate type
-                    if value.isdigit():
+                    # Safely handle None or empty value
+                    if not value:
+                        options[key] = value
+                    elif value.isdigit():
                         options[key] = int(value)
                     elif value.lower() in ('true', 'false'):
                         options[key] = value.lower() == 'true'
@@ -211,7 +213,10 @@ class UrlMod(MoodleMod):
                     if '=' in pair:
                         key, value = pair.split('=', 1)
                         # URL decode and type conversion
-                        if value.isdigit():
+                        # Safely handle None or empty value
+                        if not value:
+                            parsed[key] = value
+                        elif value.isdigit():
                             parsed[key] = int(value)
                         elif value.lower() in ('true', 'false'):
                             parsed[key] = value.lower() == 'true'
@@ -234,3 +239,58 @@ class UrlMod(MoodleMod):
             'format': 'unknown',
             'raw': parameters,
         }
+
+    async def _fetch_urls_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 URL 模块信息。
+        
+        这是 mod_url_get_urls_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 url 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 url 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 URL 模块信息...')
+        
+        urls = []
+        
+        # 从 core_contents 中提取 url 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'url')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 从 contents 中提取 externalurl
+                externalurl = ''
+                contents = module.get('contents', [])
+                for content in contents:
+                    if content.get('type') == 'url':
+                        externalurl = content.get('fileurl', '')
+                        break
+                
+                # 将 Web API 的 url 模块转换为 Mobile API 的格式
+                url = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'URL'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'externalurl': externalurl,
+                    'display': self.DISPLAY_AUTO,
+                    'displayoptions': '',
+                    'parameters': '',
+                    'timemodified': module.get('timemodified', 0),
+                }
+                urls.append(url)
+        
+        if not urls:
+            logging.warning('⚠️ Web API fallback 未找到任何 URL 模块')
+            raise ValueError('Web API 未能检索任何 URL 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(urls)} 个 URL 模块')
+        return urls

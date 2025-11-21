@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -217,19 +218,17 @@ class ImscpMod(MoodleMod):
         if not self.config.get_download_imscps():
             return result
 
-        # Get all IMSCP packages for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_imscp_get_imscps_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             imscps = response.get('imscps', [])
-        except RequestRejectedError:
-            logging.debug("No access to IMSCP modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting IMSCP modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 IMS CP 模块失败: {e}，尝试使用 Web API fallback...")
+            imscps = await self._fetch_imscps_web_api(courses, core_contents)
 
         for imscp in imscps:
             course_id = imscp.get('course', 0)

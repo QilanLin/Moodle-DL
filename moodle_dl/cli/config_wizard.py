@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import os
 import shutil
 import sys
@@ -22,10 +23,16 @@ class ConfigWizard:
         )
 
     def get_user_id_and_version(self) -> Tuple[int, int]:
-        user_id, version = self.config.get_userid_and_version()
-        if user_id is None or version is None:
+        user_id_raw, version = self.config.get_userid_and_version()
+        if user_id_raw is None or version is None:
             user_id, version = self.core_handler.fetch_userid_and_version()
         else:
+            # Convert user_id from str to int (config returns str, but we need int)
+            try:
+                user_id = int(user_id_raw) if isinstance(user_id_raw, str) else user_id_raw
+            except (ValueError, TypeError):
+                logging.warning(f'无法将 user_id "{user_id_raw}" 转换为 int，尝试从服务器获取')
+                user_id, version = self.core_handler.fetch_userid_and_version()
             self.core_handler.version = version
         return user_id, version
 
@@ -37,8 +44,8 @@ class ConfigWizard:
         # 配置步骤菜单 - 与 interactively_acquire_config 中的步骤定义保持一致
         steps = [
             ('选择要下载的课程', None),
-            ('设置课程选项', None),
             ('指定额外课程（教师/TA）', None),
+            ('设置课程选项', None),
             ('配置要下载的模块类型', None),
         ]
         return len(steps)
@@ -60,8 +67,8 @@ class ConfigWizard:
         # 配置步骤菜单
         steps = [
             ('选择要下载的课程', lambda: self._select_courses_to_download(courses)),
-            ('设置课程选项', lambda: self._set_options_of_courses(courses)),
             ('指定额外课程（教师/TA）', self._interactively_add_manually_specified_courses),
+            ('设置课程选项', lambda: self._set_options_of_courses(courses)),
             ('配置要下载的模块类型', self._select_modules_to_download),
         ]
 
@@ -301,7 +308,13 @@ class ConfigWizard:
         defaults = []
         for i, section in enumerate(sections):
             section_id = section.get("id")
-            choices.append(f"{int(section_id):5}\t{section.get('name')}")
+            # Safely convert section_id to int, handle None case
+            try:
+                section_id_int = int(section_id) if section_id is not None else 0
+            except (ValueError, TypeError):
+                section_id_int = 0
+                logging.warning(f'无法将 section_id "{section_id}" 转换为 int，使用默认值 0')
+            choices.append(f"{section_id_int:5}\t{section.get('name', 'Unnamed Section')}")
 
             if MoodleService.should_download_section(section_id, excluded):
                 defaults.append(i)
@@ -322,8 +335,43 @@ class ConfigWizard:
         """
         Let the user set special options for every single course
         """
+        # 合并手动指定的课程到课程列表中
+        manually_specified_ids = self.config.get_manually_specified_course_ids()
+        if manually_specified_ids:
+            # 为手动指定的课程创建 Course 对象
+            from moodle_dl.moodle.course_validator import validate_course_with_web_api
+            
+            enrolled_course_ids = {course.id for course in courses}
+            for course_id in manually_specified_ids:
+                # 如果课程已经在 enrolled 列表中，跳过
+                if course_id in enrolled_course_ids:
+                    continue
+                
+                # 通过 API 获取课程信息
+                try:
+                    course_info = validate_course_with_web_api(
+                        self.config,
+                        self.opts,
+                        course_id,
+                        check_content=False,
+                        request_helper=self.core_handler.client
+                    )
+                    if course_info:
+                        # 创建 Course 对象并添加到列表
+                        course = Course(
+                            course_info.get('id', course_id),
+                            course_info.get('fullname', f'Course {course_id}')
+                        )
+                        courses.append(course)
+                except Exception as e:
+                    Log.warning(f'无法获取手动课程 {course_id} 的信息: {e}')
+                    # 即使无法获取信息，也创建一个基本的 Course 对象
+                    course = Course(course_id, f'Course {course_id}')
+                    courses.append(course)
+        
         download_course_ids = self.config.get_download_course_ids()
         dont_download_course_ids = self.config.get_dont_download_course_ids()
+        download_public_course_ids = self.config.get_download_public_course_ids()
 
         # Determine filter mode based on which property exists in config
         use_whitelist = None
@@ -351,7 +399,13 @@ class ConfigWizard:
             choices.append('None')
 
             for course in courses:
-                if MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids, use_whitelist):
+                # 检查课程是否应该被下载（包括手动指定的课程）
+                should_show = (
+                    MoodleService.should_download_course(course.id, download_course_ids, dont_download_course_ids, use_whitelist)
+                    or course.id in download_public_course_ids  # 手动指定的课程也应该显示
+                )
+                
+                if should_show:
                     current_course_settings = options_of_courses.get(str(course.id), None)
 
                     # create default settings
@@ -527,6 +581,7 @@ class ConfigWizard:
                 continue
             
             # 验证和添加每个课程 ID
+            success_count = 0
             for course_id in course_ids_to_add:
                 try:
                     # 检查是否已存在
@@ -540,13 +595,15 @@ class ConfigWizard:
                         self.config,
                         self.opts,
                         course_id,
-                        check_content=False
+                        check_content=False,
+                        request_helper=self.core_handler.client
                     )
                     
                     if course_info:
                         course_name = course_info.get('fullname', 'N/A')
                         Log.success(f'✅ 课程 {course_id} ({course_name}) 验证成功')
                         new_ids.append(course_id)
+                        success_count += 1
                     else:
                         Log.error(
                             f'❌ 无法访问课程 {course_id}\n'
@@ -560,11 +617,30 @@ class ConfigWizard:
                     Log.error(f'验证课程 {course_id} 时出错: {str(e)}')
             
             print('')
+            
+            # 如果成功添加了至少一个课程，询问是否继续添加更多
+            if success_count > 0:
+                continue_adding = Cutie.prompt_yes_or_no(
+                    Log.blue_str('是否继续添加更多课程？'),
+                    default_is_yes=False,
+                )
+                if not continue_adding:
+                    break
+                print('')
         
         # 保存新添加的课程 ID
         if new_ids:
             all_ids = manually_specified_ids + new_ids
             self.config.set_manually_specified_course_ids(all_ids)
+            
+            # 同时将新添加的课程添加到 download_public_course_ids
+            # 这样它们就会在设置课程选项时显示
+            download_public_course_ids = self.config.get_download_public_course_ids()
+            for course_id in new_ids:
+                if course_id not in download_public_course_ids:
+                    download_public_course_ids.append(course_id)
+            self.config.set_property('download_public_course_ids', download_public_course_ids)
+            
             Log.success(f'已添加 {len(new_ids)} 个手动课程，总计 {len(all_ids)} 个')
         
         print('')

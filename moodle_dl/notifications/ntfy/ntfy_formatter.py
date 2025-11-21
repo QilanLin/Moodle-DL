@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from typing import Optional, TypedDict
 
 from moodle_dl.types import Course, File

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 配置验证框架
 
@@ -105,6 +106,36 @@ class ConfigValidator:
         'restricted_filenames': [],
         'include_noncourse_files': False,
         'notifications': {},
+        # Cookie 和浏览器相关
+        'preferred_browser': '',
+        'download_also_with_cookie': False,
+        'download_linked_files': False,
+        # 手动指定的课程
+        'manually_specified_course_ids': [],
+        # 扁平化的下载选项（向后兼容，新配置应使用 download_options）
+        'download_submissions': None,
+        'download_quizzes': None,
+        'download_lessons': None,
+        'download_workshops': None,
+        'download_books': None,
+        'download_scorms': None,
+        'download_h5pactivities': None,
+        'download_imscps': None,
+        'download_urls': None,
+        'download_labels': None,
+        'download_forums': None,
+        'download_wikis': None,
+        'download_glossaries': None,
+        'download_databases': None,
+        'download_chats': None,
+        'download_feedbacks': None,
+        'download_surveys': None,
+        'download_choices': None,
+        'download_calendars': None,
+        'download_bigbluebuttonbns': None,
+        'download_qbanks': None,
+        'download_descriptions': None,
+        'download_links_in_descriptions': None,
     }
     
     # 下载选项字段（应该都是布尔值）

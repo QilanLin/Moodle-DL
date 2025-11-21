@@ -1,8 +1,9 @@
+# -*- coding: utf-8 -*-
 import logging
 import sqlite3
 import time
 from sqlite3 import Error
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.types import Course, File, MoodleDlOpts
@@ -1336,7 +1337,7 @@ class StateRecorder:
         finally:
             conn.close()
 
-    def get_incomplete_download(self, file_id: int, file_path: str) -> dict:
+    def get_incomplete_download(self, file_id: int, file_path: str) -> Optional[Dict[str, Any]]:
         """
         获取未完成的下载信息
         
@@ -1421,7 +1422,7 @@ class StateRecorder:
         finally:
             conn.close()
 
-    def get_incomplete_downloads_for_retry(self, max_attempts: int = 5) -> list:
+    def get_incomplete_downloads_for_retry(self, max_attempts: int = 5) -> List[Dict[str, Any]]:
         """
         获取可以重试的不完整下载列表（按最后更新时间排序）
         

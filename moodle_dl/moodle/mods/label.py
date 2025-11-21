@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -48,19 +49,17 @@ class LabelMod(MoodleMod):
         if not self.config.get_download_labels():
             return result
 
-        # Get all labels for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_label_get_labels_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             labels = response.get('labels', [])
-        except RequestRejectedError:
-            logging.debug("No access to Label modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting Label modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Label 模块失败: {e}，尝试使用 Web API fallback...")
+            labels = await self._fetch_labels_web_api(courses, core_contents)
 
         for label in labels:
             course_id = label.get('course', 0)
@@ -117,3 +116,46 @@ class LabelMod(MoodleMod):
             )
 
         return result
+
+    async def _fetch_labels_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Label 模块信息。
+        
+        这是 mod_label_get_labels_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 label 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 label 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Label 模块信息...')
+        
+        labels = []
+        
+        # 从 core_contents 中提取 label 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'label')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 label 模块转换为 Mobile API 的格式
+                label = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Label'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                labels.append(label)
+        
+        if not labels:
+            logging.warning('⚠️ Web API fallback 未找到任何 Label 模块')
+            raise ValueError('Web API 未能检索任何 Label 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(labels)} 个 Label 模块')
+        return labels

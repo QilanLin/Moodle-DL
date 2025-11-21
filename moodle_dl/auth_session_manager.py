@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 认证会话管理器 - Authentication Session Manager
 
@@ -14,11 +15,11 @@ import logging
 import sqlite3
 import time
 import uuid
-from typing import List, Optional, Dict
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 
 
-def normalize_playwright_cookie(cookie: dict) -> dict:
+def normalize_playwright_cookie(cookie: Dict[str, Any]) -> Dict[str, Any]:
     """
     标准化 Playwright cookie 格式（防御性编程）
     

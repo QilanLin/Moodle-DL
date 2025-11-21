@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -52,13 +54,17 @@ class ChatMod(MoodleMod):
         if not self.config.get_download_chats():
             return result
 
-        # Get all chats via API
-        response = await self.client.async_post(
-            'mod_chat_get_chats_by_courses',
-            self.get_data_for_mod_entries_endpoint(courses),
-        )
-
-        chats = response.get('chats', [])
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
+                'mod_chat_get_chats_by_courses',
+                self.get_data_for_mod_entries_endpoint(courses),
+            )
+            chats = response.get('chats', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Chat 模块失败: {e}，尝试使用 Web API fallback...")
+            chats = await self._fetch_chats_web_api(courses, core_contents)
 
         for chat in chats:
             course_id = chat.get('course', 0)
@@ -214,3 +220,51 @@ class ChatMod(MoodleMod):
             # Return empty list if sessions can't be fetched
 
         return sessions_result
+
+    async def _fetch_chats_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Chat 模块信息。
+        
+        这是 mod_chat_get_chats_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 chat 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 chat 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Chat 模块信息...')
+        
+        chats = []
+        
+        # 从 core_contents 中提取 chat 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'chat')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 chat 模块转换为 Mobile API 的格式
+                chat = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Chat'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'chatmethod': 'ajax',
+                    'keepdays': 0,
+                    'studentlogs': 0,
+                    'chattime': 0,
+                    'schedule': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                chats.append(chat)
+        
+        if not chats:
+            logging.warning('⚠️ Web API fallback 未找到任何 Chat 模块')
+            raise ValueError('Web API 未能检索任何 Chat 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(chats)} 个 Chat 模块')
+        return chats

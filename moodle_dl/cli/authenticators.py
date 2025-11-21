@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 认证器体系 - 处理所有 token 获取流程（普通登录、SSO 登录等）
 
@@ -883,7 +884,14 @@ class SSOAuthenticator(BaseAuthenticator):
                 return None, None
 
             # 解析 token
-            token, private_token = MoodleService.extract_token(token_address)
+            token_result = MoodleService.extract_token(token_address)
+            
+            if token_result is None:
+                Log.error('❌ 无效的 token URL')
+                logging.error(f'无法从 URL 提取 token: {token_address}')
+                return None, None
+            
+            token, private_token = token_result
 
             if not token:
                 Log.error('❌ 无效的 token URL')

@@ -18,7 +18,7 @@ import time
 import unicodedata
 from functools import cache
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import readchar
 import requests
@@ -971,6 +971,108 @@ class Log:
         print(Log.cyan_str(log_string))
 
 
+class TerminalMenuRenderer:
+    """Utility class to render paginated terminal menus reliably."""
+
+    def __init__(self, options_count: int, reserved_lines: int = 3, extra_lines: int = 1):
+        self.options_count = options_count
+        self.reserved_lines = reserved_lines
+        self.extra_lines = extra_lines
+        self.max_lines = options_count + extra_lines
+        self.lines_printed = 0
+        self.shift = 0
+
+    def move_cursor_to_start(self) -> None:
+        """Move cursor back to the menu start, matching original behavior."""
+        if self.lines_printed > 0:
+            # Do not override print's default newline handling; terminals expect it here
+            print(f'\033[{self.lines_printed}A')
+
+    def calculate_view_height(self) -> int:
+        console_lines = shutil.get_terminal_size().lines
+        return max(0, min(console_lines - self.reserved_lines, self.max_lines))
+
+    def calculate_data_bottom(self, view_height: int) -> Tuple[int, bool]:
+        """Return (bottom index, should_print_above_indicator)."""
+        max_shift = max(0, (self.max_lines - 1) - (view_height - 2))
+        if self.shift > max_shift:
+            self.shift = max_shift
+        if self.shift < 0:
+            self.shift = 0
+
+        data_bottom = self.shift + (view_height - 3)
+        should_print_above_indicator = False
+        if self.shift == 0:
+            data_bottom += 1
+        else:
+            should_print_above_indicator = True
+
+        if data_bottom > self.options_count:
+            data_bottom = self.options_count
+        if data_bottom < 0:
+            data_bottom = 0
+
+        return data_bottom, should_print_above_indicator
+
+    def print_above_indicator(self) -> None:
+        if self.shift > 0:
+            print(f'\033[K{self.shift} more lines above...')
+
+    @staticmethod
+    def _char_display_width(char: str) -> int:
+        """Approximate terminal cell width for a single character."""
+        if not char:
+            return 0
+        if unicodedata.combining(char):
+            return 0
+        # Treat full-width & wide characters as width 2, otherwise 1
+        if unicodedata.east_asian_width(char) in ('F', 'W'):
+            return 2
+        return 1
+
+    def truncate_option_text(self, option: str, max_width: Optional[int] = None) -> str:
+        """Truncate option text so it fits into the terminal width without wrapping."""
+        console_columns = shutil.get_terminal_size().columns - 5 if max_width is None else max_width
+        console_columns = max(console_columns, 0)
+        printable_option = option.expandtabs().replace('\n', ' ').replace('\r', ' ')
+
+        width = 0
+        truncated_chars: List[str] = []
+        ellipsis = '..'
+        ellipsis_width = sum(self._char_display_width(char) for char in ellipsis)
+
+        for char in printable_option:
+            char_width = self._char_display_width(char)
+            if width + char_width > console_columns:
+                break
+            truncated_chars.append(char)
+            width += char_width
+        else:
+            return ''.join(truncated_chars)
+
+        # Need to truncate; make room for ellipsis if possible
+        if console_columns >= ellipsis_width:
+            while truncated_chars and width + ellipsis_width > console_columns:
+                removed_char = truncated_chars.pop()
+                width -= self._char_display_width(removed_char)
+            truncated_chars.append(ellipsis)
+        return ''.join(truncated_chars)
+
+    def print_option_line(self, prefix: str, option: str) -> None:
+        truncated = self.truncate_option_text(option)
+        print(f'\033[K{prefix}{truncated}')
+
+    def print_bottom_indicator(self, data_bottom: int, bottom_text: Optional[str], error_message: str) -> None:
+        if data_bottom == self.options_count:
+            if bottom_text:
+                print(f'{bottom_text} {error_message}\033[K')
+            elif error_message:
+                print(f'{error_message}\033[K')
+        else:
+            more_lines = self.options_count - data_bottom
+            print(f'{more_lines} more lines below... {error_message}\033[K')
+
+
 class Cutie:
     """
     Command-line User Tools for simpler Input
@@ -1215,76 +1317,33 @@ class Cutie:
         if ticked_indices is None:
             ticked_indices = []
         max_index = len(options) - (1 if hide_confirm else 0)
-        max_lines = len(options) + 2  # Last two line are for confirm / error / bottom-indicator + empty line
+        renderer = TerminalMenuRenderer(len(options), reserved_lines, extra_lines=2)
         error_message = ''
 
-        # Lines that were output in the previous interation
-        lines_printed = 0
-        # By how many entries is the list shifted
-        shift = 0
-
         while True:
-            print(f'\033[{lines_printed}A')
+            renderer.move_cursor_to_start()
+            view_height = renderer.calculate_view_height()
+            data_bottom, should_print_above = renderer.calculate_data_bottom(view_height)
 
-            console_lines = shutil.get_terminal_size().lines
-            # Extra empty line for correct terminal behavior
-            view_hight = max(0, min(console_lines - reserved_lines, max_lines))
-            # View consists of
-            # (top-indicator)
-            # entries
-            # (bottom-indicator / error / confirm)
-            # empty line
+            if should_print_above:
+                renderer.print_above_indicator()
 
-            #  Darstellbaren Einträge =  view_hight - bottom-indicator/confirm/error - top-indicator
-            if shift > (max_lines - 1) - (view_hight - 2):
-                shift = (max_lines - 1) - (view_hight - 2)
-
-            # Darstellbaren Einträge normal =  view_hight - top-indicator - bottom-indicator/confirm/error - empty line
-            data_bottom = shift + (view_hight - 3)
-            if shift == 0:
-                # we do not need to print "x more lines above...", so we have one more entry line
-                data_bottom += 1
-            else:
-                print(f'\033[K{shift} more lines above...')
-
-            if data_bottom > len(options):
-                data_bottom = len(options)
-
-            for i in range(shift, data_bottom):
+            for i in range(renderer.shift, data_bottom):
                 option = options[i]
-                console_columns = shutil.get_terminal_size().columns - 5
-                printable_option = option.expandtabs().replace('\n', ' ').replace('\r', ' ')
-                if len(printable_option) > console_columns:
-                    printable_option = printable_option[: (console_columns - 2)] + '..'
-
-                prefix = ''
                 if i in caption_indices:
                     prefix = caption_prefix
                 elif i == cursor_index:
-                    if i in ticked_indices:
-                        prefix = selected_ticked_prefix
-                    else:
-                        prefix = selected_unticked_prefix
+                    prefix = selected_ticked_prefix if i in ticked_indices else selected_unticked_prefix
                 else:
-                    if i in ticked_indices:
-                        prefix = deselected_ticked_prefix
-                    else:
-                        prefix = deselected_unticked_prefix
-                print(f'\033[K{prefix}{printable_option}')
+                    prefix = deselected_ticked_prefix if i in ticked_indices else deselected_unticked_prefix
+                renderer.print_option_line(prefix, option)
 
-            if data_bottom == len(options):
-                # we do not need to print "x more lines below...", instead we print the confirm label or an error
-                if hide_confirm:
-                    print(f'{error_message}\033[K')
-                else:
-                    if cursor_index == max_index:
-                        print(f'{selected_confirm_label} {error_message}\033[K')
-                    else:
-                        print(f'{deselected_confirm_label} {error_message}\033[K')
-            else:
-                print(f'{len(options) - data_bottom} more lines below... {error_message}\033[K')
+            bottom_text = None
+            if data_bottom == len(options) and not hide_confirm:
+                bottom_text = selected_confirm_label if cursor_index == max_index else deselected_confirm_label
 
-            lines_printed = view_hight
+            renderer.print_bottom_indicator(data_bottom, bottom_text, error_message)
+            renderer.lines_printed = view_height
 
             error_message = ''
             keypress = readchar.readkey()
@@ -1294,11 +1353,8 @@ class Cutie:
                     new_index -= 1
                     if new_index not in caption_indices:
                         cursor_index = new_index
-                        if cursor_index < shift:
-                            if shift == 2:
-                                shift = 0
-                            else:
-                                shift = cursor_index
+                        if cursor_index < renderer.shift:
+                            renderer.shift = 0 if renderer.shift == 2 else cursor_index
                         break
             elif keypress in Cutie.DefaultKeys.down:
                 new_index = cursor_index
@@ -1307,7 +1363,7 @@ class Cutie:
                     if new_index not in caption_indices:
                         cursor_index = new_index
                         if cursor_index >= data_bottom and data_bottom != len(options):
-                            shift = cursor_index - (view_hight - 4)
+                            renderer.shift = cursor_index - (view_height - 4)
                         break
             elif keypress in Cutie.DefaultKeys.select:
                 if cursor_index in ticked_indices:

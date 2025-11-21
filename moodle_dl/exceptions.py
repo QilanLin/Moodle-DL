@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Moodle-DL 异常类型定义
 

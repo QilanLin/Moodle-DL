@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -49,13 +51,17 @@ class SurveyMod(MoodleMod):
         if not self.config.get_download_surveys():
             return result
 
-        # Get all surveys via API
-        response = await self.client.async_post(
-            'mod_survey_get_surveys_by_courses',
-            self.get_data_for_mod_entries_endpoint(courses),
-        )
-
-        surveys = response.get('surveys', [])
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
+                'mod_survey_get_surveys_by_courses',
+                self.get_data_for_mod_entries_endpoint(courses),
+            )
+            surveys = response.get('surveys', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Survey 模块失败: {e}，尝试使用 Web API fallback...")
+            surveys = await self._fetch_surveys_web_api(courses, core_contents)
 
         for survey in surveys:
             course_id = survey.get('course', 0)
@@ -167,3 +173,51 @@ class SurveyMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch questions for survey {survey_id}: {e}")
             return []
+
+    async def _fetch_surveys_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Survey 模块信息。
+        
+        这是 mod_survey_get_surveys_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 survey 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 survey 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Survey 模块信息...')
+        
+        surveys = []
+        
+        # 从 core_contents 中提取 survey 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'survey')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 survey 模块转换为 Mobile API 的格式
+                survey = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Survey'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'template': 0,
+                    'days': 0,
+                    'questions': '',
+                    'surveydone': 0,
+                    'timecreated': module.get('timecreated', 0),
+                    'timemodified': module.get('timemodified', 0),
+                }
+                surveys.append(survey)
+        
+        if not surveys:
+            logging.warning('⚠️ Web API fallback 未找到任何 Survey 模块')
+            raise ValueError('Web API 未能检索任何 Survey 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(surveys)} 个 Survey 模块')
+        return surveys

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import xmpp
 
 from moodle_dl.utils import check_verbose

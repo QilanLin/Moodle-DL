@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 from typing import Dict, List
 
@@ -21,11 +22,16 @@ class QuizMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        quizzes = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_quiz_get_quizzes_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('quizzes', [])
+            quizzes = response.get('quizzes', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Quiz 模块失败: {e}，尝试使用 Web API fallback...")
+            quizzes = await self._fetch_quizzes_web_api(courses, core_contents)
 
         result = {}
         for quiz in quizzes:
@@ -283,3 +289,75 @@ class QuizMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch combined review options for quiz {quiz_id}: {e}")
             return {}
+
+    async def _fetch_quizzes_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Quiz 模块信息。
+        
+        这是 mod_quiz_get_quizzes_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 quiz 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 quiz 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Quiz 模块信息...')
+        
+        quizzes = []
+        
+        # 从 core_contents 中提取 quiz 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'quiz')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 quiz 模块转换为 Mobile API 的格式
+                quiz = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Quiz'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'timeopen': 0,
+                    'timeclose': 0,
+                    'timelimit': 0,
+                    'overduehandling': 'autosubmit',
+                    'graceperiod': 0,
+                    'preferredbehaviour': 'deferredfeedback',
+                    'canredoquestions': 0,
+                    'attempts': 0,
+                    'attemptonlast': 0,
+                    'grademethod': 1,
+                    'decimalpoints': 2,
+                    'questiondecimalpoints': -1,
+                    'reviewattempt': 0,
+                    'reviewcorrectness': 0,
+                    'reviewmarks': 0,
+                    'reviewspecificfeedback': 0,
+                    'reviewgeneralfeedback': 0,
+                    'reviewrightanswer': 0,
+                    'reviewoverallfeedback': 0,
+                    'questionsperpage': 1,
+                    'navmethod': 'free',
+                    'shuffleanswers': 1,
+                    'sumgrades': 0,
+                    'grade': 0,
+                    'browsersecurity': '-',
+                    'allowofflineattempts': 0,
+                    'autosaveperiod': 0,
+                    'hasfeedback': 0,
+                    'hasquestions': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                quizzes.append(quiz)
+        
+        if not quizzes:
+            logging.warning('⚠️ Web API fallback 未找到任何 Quiz 模块')
+            raise ValueError('Web API 未能检索任何 Quiz 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(quizzes)} 个 Quiz 模块')
+        return quizzes

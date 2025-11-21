@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Unit tests for atomized retry_failed_downloads functions
 

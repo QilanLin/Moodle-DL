@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import html
 import json
 import logging
@@ -69,19 +70,17 @@ class LtiMod(MoodleMod):
         result = {}
 
         # LTI module is always enabled - no configuration check needed
-        # Get all LTI tools for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_lti_get_ltis_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             ltis = response.get('ltis', [])
-        except RequestRejectedError:
-            logging.debug("No access to LTI modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting LTI modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 LTI 模块失败: {e}，尝试使用 Web API fallback...")
+            ltis = await self._fetch_ltis_web_api(courses, core_contents)
 
         for lti in ltis:
             course_id = lti.get('course', 0)
@@ -325,3 +324,70 @@ class LtiMod(MoodleMod):
 </html>
 '''
         return form_html
+
+    async def _fetch_ltis_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 LTI 模块信息。
+        
+        这是 mod_lti_get_ltis_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 lti 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 lti 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 LTI 模块信息...')
+        
+        ltis = []
+        
+        # 从 core_contents 中提取 lti 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'lti')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 从 contents 中提取 toolurl
+                toolurl = ''
+                contents = module.get('contents', [])
+                for content in contents:
+                    if content.get('type') == 'url':
+                        toolurl = content.get('fileurl', '')
+                        break
+                
+                # 将 Web API 的 lti 模块转换为 Mobile API 的格式
+                lti = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'LTI'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'toolurl': toolurl,
+                    'securetoolurl': '',
+                    'instructorchoicesendname': 0,
+                    'instructorchoicesendemailaddr': 0,
+                    'instructorchoiceallowroster': 0,
+                    'instructorchoiceallowsetting': 0,
+                    'instructorcustomparameters': '',
+                    'instructorchoiceacceptgrades': 0,
+                    'grade': 0,
+                    'launchcontainer': self.LAUNCH_CONTAINER_DEFAULT,
+                    'resourcekey': '',
+                    'password': '',
+                    'debuglaunch': 0,
+                    'showtitlelaunch': 0,
+                    'showdescriptionlaunch': 0,
+                    'servicesalt': '',
+                    'timemodified': module.get('timemodified', 0),
+                }
+                ltis.append(lti)
+        
+        if not ltis:
+            logging.warning('⚠️ Web API fallback 未找到任何 LTI 模块')
+            raise ValueError('Web API 未能检索任何 LTI 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(ltis)} 个 LTI 模块')
+        return ltis

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 认证迁移脚本：将现有 cookies.txt 和 token 数据迁移到数据库
 

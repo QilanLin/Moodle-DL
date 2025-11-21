@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 URL Helper 单元测试
 

@@ -1,14 +1,15 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import logging
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import List
+from typing import Any, Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.task import Task
-from moodle_dl.types import Course, DlEvent, DownloadStatus, MoodleDlOpts, TaskState
+from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
 from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
 
 
@@ -39,7 +40,7 @@ class DownloadService:
         thread_pool = ThreadPoolExecutor(max_workers=self.opts.max_parallel_yt_dlp)
         return dl_options, thread_pool
 
-    def _load_incomplete_downloads_map(self) -> dict:
+    def _load_incomplete_downloads_map(self) -> Dict[int, Dict[str, Any]]:
         """Load incomplete downloads from database and create a lookup map.
         
         Returns:
@@ -52,7 +53,9 @@ class DownloadService:
             incomplete_files_map[file_id] = incomplete
         return incomplete_files_map
 
-    def _create_task(self, course_file, course, dl_options, thread_pool, api_source='mobile') -> Task:
+    def _create_task(
+        self, course_file: File, course: Course, dl_options: DownloadOptions, thread_pool: ThreadPoolExecutor, api_source: str = 'mobile'
+    ) -> Task:
         """Create a single Task object.
         
         Args:
@@ -77,7 +80,7 @@ class DownloadService:
         task.api_source = api_source
         return task
 
-    def _is_incomplete_download(self, course_file, incomplete_files_map) -> bool:
+    def _is_incomplete_download(self, course_file: File, incomplete_files_map: Dict[int, Dict[str, Any]]) -> bool:
         """Check if a file is an incomplete download that needs to be resumed.
         
         Args:
@@ -89,7 +92,7 @@ class DownloadService:
         """
         return course_file.file_id and course_file.file_id in incomplete_files_map
 
-    def _log_incomplete_download(self, course_file, incomplete_files_map):
+    def _log_incomplete_download(self, course_file: File, incomplete_files_map: Dict[int, Dict[str, Any]]) -> None:
         """Log information about detected incomplete download.
         
         Args:
@@ -311,10 +314,11 @@ class DownloadService:
     ) -> List[Task]:
         """Create tasks for manually specified courses using Web API.
         
-        注意：当前是功能框架，文件列表为空。完整实现需要：
+        完整实现包括：
         1. 从 core_course_get_contents 获取 sections
         2. 从 sections 的 modules 生成 File 对象
-        3. 与 ResultBuilder.add_files_to_courses() 逻辑保持一致
+        3. 应用课程选项（自定义名称、目录结构、排除章节）
+        4. 创建下载任务
         
         Args:
             course_ids: List of manually specified course IDs
@@ -330,14 +334,18 @@ class DownloadService:
         if not course_ids:
             return web_api_tasks
         
-        logging.info(
-            f'⚠️  手动课程支持仍在开发中 - '
-            f'当前框架已就位，但文件列表生成功能需要进一步实现'
-        )
-        
         try:
             from moodle_dl.moodle.course_validator import CourseValidator
-            validator = CourseValidator(self.config, self.opts)
+            from moodle_dl.moodle.request_helper import RequestHelper
+            
+            # 创建 RequestHelper 并传递给 CourseValidator
+            request_helper = RequestHelper(
+                self.config, 
+                self.opts,
+                self.config.get_moodle_URL(),
+                self.config.get_token()
+            )
+            validator = CourseValidator(self.config, self.opts, request_helper)
             
             for course_id in course_ids:
                 try:
@@ -359,6 +367,10 @@ class DownloadService:
                     course = self._build_course_from_web_api_data(
                         course_id, course_info, course_data
                     )
+                    
+                    # Apply course options (overwrite_name_with, create_directory_structure, excluded_sections)
+                    # 这确保用户在配置向导中设置的选项会被正确应用
+                    self._apply_course_options_to_manually_specified_course(course)
                     
                     # Create tasks for course files
                     for course_file in course.files:
@@ -389,7 +401,7 @@ class DownloadService:
         
         return web_api_tasks
     
-    def _fetch_course_data_from_web_api(self, course_id: int) -> dict:
+    def _fetch_course_data_from_web_api(self, course_id: int) -> Dict[str, Any]:
         """Fetch course data from web API (core_course_get_contents).
         
         获取课程内容（sections 和 modules）。
@@ -402,21 +414,20 @@ class DownloadService:
         """
         try:
             from moodle_dl.moodle.request_helper import RequestHelper
-            request_helper = RequestHelper(self.config, self.opts)
-            
-            args = {
-                'wstoken': self.config.get_token(),
-                'wsfunction': 'core_course_get_contents',
-                'courseid': course_id,
-                'moodlewsrestformat': 'json'
-            }
-            
-            response = request_helper.get_URL(
-                f'https://{self.config.get_moodle_domain()}/webservice/rest/server.php',
-                args
+            request_helper = RequestHelper(
+                self.config,
+                self.opts,
+                self.config.get_moodle_URL(),
+                self.config.get_token()
             )
             
-            # 将响应包装为课程数据格式
+            # 使用 RequestHelper.post() 方法调用 Moodle Web Service API
+            # post() 方法会自动处理 wstoken、wsfunction 和 moodlewsrestformat
+            data = {'courseid': course_id}
+            response = request_helper.post('core_course_get_contents', data)
+            
+            # post() 方法返回的是解析后的 JSON 字典
+            # core_course_get_contents 返回的是 sections 列表
             if response and isinstance(response, list):
                 return {
                     'id': course_id,
@@ -446,13 +457,10 @@ class DownloadService:
         from moodle_dl.types import Course, File
         
         # 创建 Course 对象
+        # Course 构造函数签名: __init__(self, _id: int, fullname: str, files: List[File] = None)
         course = Course(
-            id=course_id,
+            _id=course_id,
             fullname=course_info.get('fullname', f'Course {course_id}'),
-            shortname=course_info.get('shortname', f'C{course_id}'),
-            visible=course_info.get('visible', 1),
-            startdate=course_info.get('startdate', 0),
-            enddate=course_info.get('enddate', 0),
         )
         
         # 从 sections 中提取文件
@@ -552,6 +560,56 @@ class DownloadService:
             return True
         
         return False
+    
+    @staticmethod
+    def _filter_files_by_excluded_sections(files: List[File], excluded_sections: List[int]) -> List[File]:
+        """
+        根据排除的章节过滤文件列表。
+        
+        只负责过滤逻辑，不修改原始文件列表。
+        
+        Args:
+            files: 原始文件列表
+            excluded_sections: 要排除的章节 ID 列表
+            
+        Returns:
+            List[File]: 过滤后的文件列表
+        """
+        if not excluded_sections:
+            return files
+        return [file for file in files if file.section_id not in excluded_sections]
+    
+    def _apply_course_options_to_manually_specified_course(self, course: Course):
+        """Apply course options to a manually specified course.
+        
+        从配置中读取课程选项并应用到 Course 对象。
+        这确保用户在配置向导中设置的选项（如自定义名称、目录结构、排除章节）会被正确应用。
+        
+        Args:
+            course: Course object to apply options to
+        """
+        options_of_courses = self.config.get_options_of_courses()
+        options = options_of_courses.get(str(course.id), None)
+        
+        if options is not None:
+            # 应用自定义名称
+            course.overwrite_name_with = options.get('overwrite_name_with', None)
+            
+            # 应用目录结构设置
+            course.create_directory_structure = options.get('create_directory_structure', True)
+            
+            # 应用排除的章节
+            excluded_sections_raw = options.get('excluded_sections', [])
+            excluded_sections = ConfigHelper.normalize_id_list(excluded_sections_raw)
+            course.excluded_sections = excluded_sections
+            
+            # 如果设置了排除章节，过滤文件列表
+            if excluded_sections:
+                course.files = self._filter_files_by_excluded_sections(course.files, excluded_sections)
+                logging.debug(
+                    f'课程 {course.id}: 已排除 {len(excluded_sections)} 个章节，'
+                    f'剩余 {len(course.files)} 个文件'
+                )
 
     def get_failed_tasks(self) -> List[Task]:
         "Return a list of failed downloads."

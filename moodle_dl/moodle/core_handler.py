@@ -1,7 +1,8 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import json
 import math
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from moodle_dl.moodle.request_helper import RequestHelper
 from moodle_dl.types import Course
@@ -18,28 +19,34 @@ class CoreHandler:
         # oldest supported Moodle version
         self.version = 2011120500
 
-    def fetch_userid_and_version(self) -> str:
+    def fetch_userid_and_version(self) -> Tuple[int, int]:
         """
         Ask the Moodle system for the user id.
-        @return: the userid
+        @return: Tuple of (userid as int, version as int)
         """
         result = self.client.post('core_webservice_get_site_info')
 
         if 'userid' not in result:
             raise RuntimeError('Error could not receive your user ID!')
-        userid = result.get('userid', '')
+        userid_raw = result.get('userid')
+
+        # Validate userid is not None or empty
+        if userid_raw is None or userid_raw == '':
+            raise RuntimeError(f'Invalid userid received from API: {userid_raw}')
 
         version = result.get('version', '2011120500')
 
         try:
+            # Convert userid to int
+            userid = int(userid_raw)
             version = int(version.split('.')[0])
-        except Exception as e:
-            raise RuntimeError(f'Error could not parse version string: "{version}" Error: {e}')
+        except (ValueError, TypeError) as e:
+            raise RuntimeError(f'Error could not parse userid "{userid_raw}" or version string "{version}": {e}')
 
         self.version = version
         return userid, version
 
-    def fetch_courses(self, userid: str) -> List[Course]:
+    def fetch_courses(self, userid: int) -> List[Course]:
         """
         Queries the Moodle system for all courses the user
         is enrolled in.
@@ -56,7 +63,7 @@ class CoreHandler:
             # We could also extract here the course summary and intro files
         return results
 
-    def fetch_all_visible_courses(self, log_all_courses_to: str = None) -> List[Course]:
+    def fetch_all_visible_courses(self, log_all_courses_to: Optional[str] = None) -> List[Course]:
         """
         Queries the Moodle system for all courses available on the system and returns:
         @return: A list of all visible courses

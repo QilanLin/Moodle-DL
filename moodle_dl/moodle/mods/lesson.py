@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 import re
@@ -23,11 +24,16 @@ class LessonMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        lessons = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_lesson_get_lessons_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('lessons', [])
+            lessons = response.get('lessons', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Lesson 模块失败: {e}，尝试使用 Web API fallback...")
+            lessons = await self._fetch_lessons_web_api(courses, core_contents)
 
         result = {}
         for lesson in lessons:
@@ -389,3 +395,62 @@ class LessonMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch access information for lesson {lesson_id}: {e}")
             return {}
+
+    async def _fetch_lessons_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Lesson 模块信息。
+        
+        这是 mod_lesson_get_lessons_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 lesson 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 lesson 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Lesson 模块信息...')
+        
+        lessons = []
+        
+        # 从 core_contents 中提取 lesson 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'lesson')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 lesson 模块转换为 Mobile API 的格式
+                lesson = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Lesson'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'practice': 0,
+                    'modattempts': 0,
+                    'usepassword': 0,
+                    'grade': 0,
+                    'custom': 1,
+                    'ongoing': 0,
+                    'usemaxgrade': 0,
+                    'maxanswers': 4,
+                    'maxattempts': 5,
+                    'timelimit': 0,
+                    'retake': 1,
+                    'review': 0,
+                    'nextpagedefault': 0,
+                    'feedback': 0,
+                    'minquestions': 0,
+                    'maxpages': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                lessons.append(lesson)
+        
+        if not lessons:
+            logging.warning('⚠️ Web API fallback 未找到任何 Lesson 模块')
+            raise ValueError('Web API 未能检索任何 Lesson 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(lessons)} 个 Lesson 模块')
+        return lessons

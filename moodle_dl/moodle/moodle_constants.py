@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 course_events_section_id = -2
 course_events_module_id = -2
 moodle_event_header = '''

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 统一的Cookies管理模块
 
@@ -12,7 +13,7 @@ v2 改进：使用数据库存储 cookies 而不是文本文件
 
 import importlib.util
 import os
-from typing import Optional, Tuple, List, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from moodle_dl.utils import Log
 
@@ -434,7 +435,7 @@ def create_cookie_manager_from_client(client, config) -> CookieManager:
     return CookieManager(config, moodle_domain, cookies_path, db_file)
 
 
-def convert_netscape_cookies_to_playwright(cookies_path: str) -> list:
+def convert_netscape_cookies_to_playwright(cookies_path: str) -> List[Dict[str, Any]]:
     """
     将Netscape格式的cookies转换为Playwright格式
 

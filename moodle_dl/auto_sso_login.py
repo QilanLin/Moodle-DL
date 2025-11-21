@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 自动 SSO 登录模块 - 使用 Playwright 有头浏览器
 

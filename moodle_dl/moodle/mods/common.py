@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import json
 import logging
@@ -68,19 +69,36 @@ class MoodleMod(metaclass=ABCMeta):
     async def fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        if self.version < self.MOD_MIN_VERSION:
-            # 将版本代码转换为可读的 Moodle 版本号
-            required_version = MOODLE_VERSION_MAP.get(self.MOD_MIN_VERSION, str(self.MOD_MIN_VERSION))
-            logging.warning(
-                '⚠️  跳过 %s：当前 Moodle 版本不支持此模块（需要 Moodle %s 或更高版本）',
-                self.MOD_PLURAL_NAME,
-                required_version,
-            )
+        """
+        获取模块条目，支持 Mobile API 和 Web API fallback。
+        
+        策略：
+        1. 总是尝试调用 real_fetch_mod_entries（即使版本低于 MOD_MIN_VERSION）
+        2. real_fetch_mod_entries 应该先尝试 Mobile API，失败时尝试 Web API fallback
+        3. 只有当两者都失败时，才返回空字典
+        """
+        try:
+            result = await self.real_fetch_mod_entries(courses, core_contents)
+            if result:
+                logging.info('已加载所有%s', self.MOD_PLURAL_NAME)
+            return result
+        except Exception as e:
+            # 如果 real_fetch_mod_entries 抛出异常，检查是否是版本问题
+            if self.version < self.MOD_MIN_VERSION:
+                # 将版本代码转换为可读的 Moodle 版本号
+                required_version = MOODLE_VERSION_MAP.get(self.MOD_MIN_VERSION, str(self.MOD_MIN_VERSION))
+                logging.warning(
+                    '⚠️  跳过 %s：当前 Moodle 版本不支持此模块（需要 Moodle %s 或更高版本），且 Web API fallback 也失败',
+                    self.MOD_PLURAL_NAME,
+                    required_version,
+                )
+            else:
+                logging.warning(
+                    '⚠️  跳过 %s：Mobile API 和 Web API fallback 都失败: %s',
+                    self.MOD_PLURAL_NAME,
+                    str(e),
+                )
             return {}
-
-        result = await self.real_fetch_mod_entries(courses, core_contents)
-        logging.info('已加载所有%s', self.MOD_PLURAL_NAME)
-        return result
 
     def get_indexed_ids_of_mod_instances(self, mod_instances: Dict[int, Dict[int, Dict]]):
         """
@@ -239,6 +257,41 @@ class MoodleMod(metaclass=ABCMeta):
                 if module.get('id', 0) == module_id:
                     return module
         return {}
+
+    @staticmethod
+    def extract_modules_from_core_contents(
+        courses: List[Course],
+        core_contents: Dict[int, List[Dict]],
+        modname: str
+    ) -> Dict[int, List[Dict]]:
+        """
+        从 core_contents 中提取指定类型的模块（Web API fallback 通用方法）。
+        
+        Args:
+            courses: 课程列表
+            core_contents: core_course_get_contents 返回的内容
+            modname: 模块名称（如 'assign', 'forum', 'wiki' 等）
+            
+        Returns:
+            Dict[int, List[Dict]]: 按课程 ID 索引的模块列表
+        """
+        result = {}
+        for course in courses:
+            course_id = course.id
+            if course_id not in core_contents:
+                continue
+            
+            modules = []
+            sections = core_contents[course_id]
+            for section in sections:
+                for module in section.get('modules', []):
+                    if module.get('modname') == modname:
+                        modules.append(module)
+            
+            if modules:
+                result[course_id] = modules
+        
+        return result
 
     @staticmethod
     def add_module(result: Dict, course_id: int, module_id: int, module: Dict):

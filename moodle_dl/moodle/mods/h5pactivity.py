@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from datetime import datetime
@@ -50,19 +51,17 @@ class H5PActivityMod(MoodleMod):
         if not self.config.get_download_h5pactivities():
             return result
 
-        # Get all H5P activities for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_h5pactivity_get_h5pactivities_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             h5pactivities = response.get('h5pactivities', [])
-        except RequestRejectedError:
-            logging.debug("No access to H5P activities or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting H5P activities: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 H5P Activity 模块失败: {e}，尝试使用 Web API fallback...")
+            h5pactivities = await self._fetch_h5pactivities_web_api(courses, core_contents)
 
         for h5p in h5pactivities:
             course_id = h5p.get('course', 0)

@@ -1,13 +1,15 @@
+# -*- coding: utf-8 -*-
 import asyncio
 import json
 import logging
 import os
 import urllib
 from time import sleep
-from typing import Dict
+from typing import Any, Dict, List, Optional, Union
 
 import aiohttp
 import requests
+from requests import Response
 from requests.exceptions import RequestException
 
 from moodle_dl.config import ConfigHelper
@@ -114,7 +116,7 @@ class RequestHelper:
 
         return response, session
 
-    async def async_post(self, function: str, data: Dict[str, str] = None, timeout: int = 60) -> Dict:
+    async def async_post(self, function: str, data: Optional[Dict[str, Any]] = None, timeout: int = 60) -> Dict[str, Any]:
         """
         Sends async a POST request to the REST endpoint of the Moodle system
         使用指数退避的智能重试机制
@@ -207,7 +209,7 @@ class RequestHelper:
 
         return resp_json
 
-    def post(self, function: str, data: Dict[str, str] = None, timeout: int = 60) -> Dict:
+    def post(self, function: str, data: Optional[Dict[str, Any]] = None, timeout: int = 60) -> Dict[str, Any]:
         """
         Sends a POST request to the REST endpoint of the Moodle system
         使用指数退避的智能重试机制
@@ -265,7 +267,7 @@ class RequestHelper:
 
         return json_result
 
-    def log_response(self, function: str, data: Dict[str, str], url: str, json_result: Dict):
+    def log_response(self, function: str, data: Dict[str, Any], url: str, json_result: Dict[str, Any]) -> None:
         if self.opts.log_responses and function not in ['tool_mobile_get_autologin_key']:
             with open(self.log_responses_to, 'a', encoding='utf-8') as response_log_file:
                 response_log_file.write(f'URL: {url}\n')
@@ -301,7 +303,7 @@ class RequestHelper:
 
         return data
 
-    def get_login(self, data: Dict[str, str]) -> object:
+    def get_login(self, data: Dict[str, str]) -> Dict[str, Any]:
         """
         Sends a POST request to the login endpoint of the Moodle system to
         obtain a token in JSON format.
@@ -326,7 +328,7 @@ class RequestHelper:
         return self._initial_parse(response, f'{self.url_base}login/token.php', data)
 
     @staticmethod
-    def _check_response_code(response):
+    def _check_response_code(response: Response) -> None:
         """
         检查 HTTP 响应状态码，并根据状态码抛出相应的异常
         """
@@ -352,7 +354,7 @@ class RequestHelper:
             + f'\nResponse: {response.text}'
         )
 
-    def _initial_parse(self, response, url: str, data: Dict) -> object:
+    def _initial_parse(self, response: Response, url: str, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         首次解析 REST 请求的结果，检查已知错误
 
@@ -377,7 +379,7 @@ class RequestHelper:
         self.check_json_for_moodle_error(resp_json, url, data)
         return resp_json
 
-    def log_failed_request(self, url: str, data: Dict):
+    def log_failed_request(self, url: str, data: Optional[Dict[str, Any]]) -> None:
         if data is not None and isinstance(data, dict):
             data = data.copy()
             for censor in ['privatetoken', 'password', 'wstoken']:
@@ -385,7 +387,7 @@ class RequestHelper:
                     data[censor] = 'censored'
         logging.debug('Details about the failed request:\nURL: %s\nBody: %s', url, data)
 
-    def check_json_for_moodle_error(self, resp_json: Dict, url: str, data: Dict):
+    def check_json_for_moodle_error(self, resp_json: Dict[str, Any], url: str, data: Dict[str, Any]) -> None:
         """
         检查 Moodle API 响应中的错误，并抛出相应的异常类型
         """
@@ -431,23 +433,23 @@ class RequestHelper:
             )
 
     @staticmethod
-    def recursive_urlencode(data):
+    def recursive_urlencode(data: Dict[str, Any]) -> str:
         """URL-encode a multidimensional dictionary.
         @param data: the data to be encoded
         @return: the url encoded data
         """
 
-        def recursion(data, base=None):
+        def recursion(data: Dict[str, Any], base: Optional[List[str]] = None) -> List[str]:
             if base is None:
                 base = []
-            pairs = []
+            pairs: List[str] = []
 
             for key, value in data.items():
                 new_base = base + [key]
-                if hasattr(value, 'values'):
+                if hasattr(value, 'values') and isinstance(value, dict):
                     pairs += recursion(value, new_base)
                 else:
-                    new_pair = None
+                    new_pair: str
                     if len(new_base) > 1:
                         first = urllib.parse.quote(new_base.pop(0))
                         rest = map(urllib.parse.quote, new_base)

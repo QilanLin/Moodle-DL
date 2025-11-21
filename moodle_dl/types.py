@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import threading
 from dataclasses import dataclass, field
 from enum import Enum

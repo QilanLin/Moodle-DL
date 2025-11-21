@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import determine_ext, int_or_none, url_or_none
 

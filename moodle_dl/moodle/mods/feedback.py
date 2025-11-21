@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -51,13 +53,17 @@ class FeedbackMod(MoodleMod):
         if not self.config.get_download_feedbacks():
             return result
 
-        # Get all feedbacks via API
-        response = await self.client.async_post(
-            'mod_feedback_get_feedbacks_by_courses',
-            self.get_data_for_mod_entries_endpoint(courses),
-        )
-
-        feedbacks = response.get('feedbacks', [])
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
+                'mod_feedback_get_feedbacks_by_courses',
+                self.get_data_for_mod_entries_endpoint(courses),
+            )
+            feedbacks = response.get('feedbacks', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Feedback 模块失败: {e}，尝试使用 Web API fallback...")
+            feedbacks = await self._fetch_feedbacks_web_api(courses, core_contents)
 
         for feedback in feedbacks:
             course_id = feedback.get('course', 0)
@@ -230,3 +236,56 @@ class FeedbackMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch analysis for feedback {feedback_id}: {e}")
             return {}
+
+    async def _fetch_feedbacks_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Feedback 模块信息。
+        
+        这是 mod_feedback_get_feedbacks_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 feedback 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 feedback 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Feedback 模块信息...')
+        
+        feedbacks = []
+        
+        # 从 core_contents 中提取 feedback 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'feedback')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 feedback 模块转换为 Mobile API 的格式
+                feedback = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Feedback'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'multiple_submit': 0,
+                    'anonymous': 0,
+                    'email_notification': 0,
+                    'autonumbering': 0,
+                    'site_after_submit': '',
+                    'page_after_submit': '',
+                    'page_after_submitformat': 1,
+                    'publish_stats': 0,
+                    'timeopen': 0,
+                    'timeclose': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                feedbacks.append(feedback)
+        
+        if not feedbacks:
+            logging.warning('⚠️ Web API fallback 未找到任何 Feedback 模块')
+            raise ValueError('Web API 未能检索任何 Feedback 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(feedbacks)} 个 Feedback 模块')
+        return feedbacks

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -50,12 +51,16 @@ class GlossaryMod(MoodleMod):
         if not self.config.get_download_glossaries():
             return result
 
-        # Get all glossaries for the courses
-        glossaries = (
-            await self.client.async_post(
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
                 'mod_glossary_get_glossaries_by_courses', self.get_data_for_mod_entries_endpoint(courses)
             )
-        ).get('glossaries', [])
+            glossaries = response.get('glossaries', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Glossary 模块失败: {e}，尝试使用 Web API fallback...")
+            glossaries = await self._fetch_glossaries_web_api(courses, core_contents)
 
         for glossary in glossaries:
             course_id = glossary.get('course', 0)
@@ -434,3 +439,66 @@ class GlossaryMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch date info for glossary {glossary_id}: {e}")
             return {'api_available': False, 'error': str(e)}
+
+    async def _fetch_glossaries_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Glossary 模块信息。
+        
+        这是 mod_glossary_get_glossaries_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 glossary 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 glossary 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Glossary 模块信息...')
+        
+        glossaries = []
+        
+        # 从 core_contents 中提取 glossary 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'glossary')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 glossary 模块转换为 Mobile API 的格式
+                glossary = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Glossary'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'allowduplicatedentries': 0,
+                    'displayformat': 'dictionary',
+                    'mainglossary': 0,
+                    'showspecial': 1,
+                    'showalphabet': 1,
+                    'showall': 1,
+                    'allowcomments': 0,
+                    'usedynalink': 0,
+                    'defaultapproval': 1,
+                    'approvaldisplayformat': 'default',
+                    'globalglossary': 0,
+                    'entbypage': 10,
+                    'editalways': 0,
+                    'rsstype': 0,
+                    'rssarticles': 0,
+                    'assessed': 0,
+                    'assesstimestart': 0,
+                    'assesstimefinish': 0,
+                    'scale': 0,
+                    'timecreated': module.get('timecreated', 0),
+                    'timemodified': module.get('timemodified', 0),
+                }
+                glossaries.append(glossary)
+        
+        if not glossaries:
+            logging.warning('⚠️ Web API fallback 未找到任何 Glossary 模块')
+            raise ValueError('Web API 未能检索任何 Glossary 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(glossaries)} 个 Glossary 模块')
+        return glossaries

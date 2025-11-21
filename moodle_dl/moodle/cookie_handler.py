@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 import os
 from typing import Dict
@@ -97,9 +98,16 @@ class CookieHandler:
         return True
 
     def check_and_fetch_cookies(self, privatetoken: str, userid: str) -> bool:
-        if os.path.exists(self.cookies_path):
+        # 防御性编程：检查 cookies_path 是否为 None
+        # 如果 cookies_path 为 None，说明使用数据库存储 cookies，直接测试 cookies
+        if self.cookies_path is not None and os.path.exists(self.cookies_path):
             if self.test_cookies():
                 logging.debug('Cookies are still valid')
+                return True
+        elif self.cookies_path is None:
+            # 使用数据库存储 cookies，直接测试 cookies（从数据库读取）
+            if self.test_cookies():
+                logging.debug('Cookies are still valid (from database)')
                 return True
 
             logging.info('Moodle cookie has expired, an attempt is made to generate a new cookie.')

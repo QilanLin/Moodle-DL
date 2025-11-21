@@ -1,9 +1,11 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
+from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools as PT
 
@@ -77,13 +79,17 @@ class ResourceMod(MoodleMod):
         if not self.config.get_download_resources():
             return result
 
-        # Get all resources via API
-        response = await self.client.async_post(
-            'mod_resource_get_resources_by_courses',
-            self.get_data_for_mod_entries_endpoint(courses),
-        )
-
-        resources = response.get('resources', [])
+        # 首先尝试使用 Mobile API
+        try:
+            response = await self.client.async_post(
+                'mod_resource_get_resources_by_courses',
+                self.get_data_for_mod_entries_endpoint(courses),
+            )
+            resources = response.get('resources', [])
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Resource 模块失败: {e}，尝试使用 Web API fallback...")
+            resources = await self._fetch_resources_web_api(courses, core_contents)
 
         for resource in resources:
             course_id = resource.get('course', 0)
@@ -313,3 +319,67 @@ class ResourceMod(MoodleMod):
             'audio/mpeg': 'MP3 audio',
         }
         return descriptions.get(mimetype, mimetype)
+
+    async def _fetch_resources_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Resource 模块信息。
+        
+        这是 mod_resource_get_resources_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 resource 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 resource 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Resource 模块信息...')
+        
+        resources = []
+        
+        # 从 core_contents 中提取 resource 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'resource')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 从 contents 中提取文件信息
+                contentfiles = []
+                contents = module.get('contents', [])
+                for content in contents:
+                    if content.get('type') == 'file':
+                        contentfiles.append({
+                            'filename': content.get('filename', ''),
+                            'filepath': content.get('filepath', '/'),
+                            'filesize': content.get('filesize', 0),
+                            'fileurl': content.get('fileurl', ''),
+                            'timemodified': content.get('timemodified', 0),
+                            'mimetype': content.get('mimetype', ''),
+                            'isexternalfile': content.get('isexternalfile', False),
+                            'repositorytype': content.get('repositorytype', ''),
+                        })
+                
+                # 将 Web API 的 resource 模块转换为 Mobile API 的格式
+                resource = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Resource'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'contentfiles': contentfiles,
+                    'display': self.DISPLAY_AUTO,
+                    'displayoptions': '',
+                    'filterfiles': 0,
+                    'revision': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                resources.append(resource)
+        
+        if not resources:
+            logging.warning('⚠️ Web API fallback 未找到任何 Resource 模块')
+            raise ValueError('Web API 未能检索任何 Resource 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(resources)} 个 Resource 模块')
+        return resources

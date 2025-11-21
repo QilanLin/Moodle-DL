@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from typing import List
 
 from yt_dlp.extractor.common import InfoExtractor

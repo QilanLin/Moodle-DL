@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -21,8 +22,8 @@ class ChoiceMod(MoodleMod):
     - Available options (voting choices)
     - Results and statistics export
     - User responses tracking
+    
     """
-
     MOD_NAME = 'choice'
     MOD_PLURAL_NAME = 'choices'
     MOD_MIN_VERSION = 2015111600  # 3.0
@@ -33,10 +34,6 @@ class ChoiceMod(MoodleMod):
     RESULTS_AFTER_CLOSE = 2  # Show results after choice is closed
     RESULTS_ALWAYS = 3  # Always show results
 
-    # Display mode constants
-    DISPLAY_HORIZONTAL = 1
-    DISPLAY_VERTICAL = 2
-
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
         return config.get_download_choices() or (
@@ -44,20 +41,18 @@ class ChoiceMod(MoodleMod):
         )
 
     def _get_show_results_name(self, show_results: int) -> str:
-        """Get human-readable name for showresults setting"""
         names = {
             self.RESULTS_NOT: 'Never',
-            self.RESULTS_AFTER_ANSWER: 'After answer',
-            self.RESULTS_AFTER_CLOSE: 'After close',
+            self.RESULTS_AFTER_ANSWER: 'After answering',
+            self.RESULTS_AFTER_CLOSE: 'After choice is closed',
             self.RESULTS_ALWAYS: 'Always',
         }
         return names.get(show_results, 'Unknown')
 
     def _get_display_mode_name(self, display: int) -> str:
-        """Get human-readable name for display mode"""
         names = {
-            self.DISPLAY_HORIZONTAL: 'Horizontal',
-            self.DISPLAY_VERTICAL: 'Vertical',
+            0: 'Horizontal',
+            1: 'Vertical',
         }
         return names.get(display, 'Unknown')
 
@@ -78,19 +73,17 @@ class ChoiceMod(MoodleMod):
         if not self.config.get_download_choices():
             return result
 
-        # Get all choices for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_choice_get_choices_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             choices = response.get('choices', [])
-        except RequestRejectedError:
-            logging.debug("No access to Choice modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting Choice modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 Choice 模块失败: {e}，尝试使用 Web API fallback...")
+            choices = await self._fetch_choices_web_api(courses, core_contents)
 
         for choice in choices:
             course_id = choice.get('course', 0)
@@ -282,3 +275,58 @@ class ChoiceMod(MoodleMod):
             lines.append("")
 
         return '\n'.join(lines)
+
+    async def _fetch_choices_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 Choice 模块信息。
+        
+        这是 mod_choice_get_choices_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 choice 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 choice 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Choice 模块信息...')
+        
+        choices = []
+        
+        # 从 core_contents 中提取 choice 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'choice')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 choice 模块转换为 Mobile API 的格式
+                choice = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Choice'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'publish': False,
+                    'showresults': 0,
+                    'display': 0,
+                    'allowupdate': False,
+                    'allowmultiple': False,
+                    'limitanswers': False,
+                    'showunanswered': False,
+                    'includeinactive': False,
+                    'timeopen': 0,
+                    'timeclose': 0,
+                    'timecreated': module.get('timecreated', 0),
+                    'timemodified': module.get('timemodified', 0),
+                    'completionsubmit': False,
+                }
+                choices.append(choice)
+        
+        if not choices:
+            logging.warning('⚠️ Web API fallback 未找到任何 Choice 模块')
+            raise ValueError('Web API 未能检索任何 Choice 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(choices)} 个 Choice 模块')
+        return choices

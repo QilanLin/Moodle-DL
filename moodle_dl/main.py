@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import argparse
 import asyncio
 import logging
@@ -6,6 +7,7 @@ import sys
 import traceback
 from logging.handlers import RotatingFileHandler
 from shutil import which
+from typing import Dict, List, Optional, Union
 
 import colorlog
 import requests  # noqa: F401 pylint: disable=unused-import
@@ -31,9 +33,10 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.download_service import DownloadService
 from moodle_dl.downloader.fake_download_service import FakeDownloadService
+from moodle_dl.downloader.task import Task
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.notifications import get_all_notify_services
-from moodle_dl.types import MoodleDlOpts
+from moodle_dl.types import Course, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import ProcessLock, check_debug
 from moodle_dl.version import __version__
@@ -47,7 +50,7 @@ class ReRaiseOnError(logging.StreamHandler):
             raise record.exception
 
 
-def choose_task(config: ConfigHelper, opts: MoodleDlOpts):
+def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
     if opts.add_all_visible_courses:
         ConfigWizard(config, opts).interactively_add_all_visible_courses()
     elif opts.change_notification_mail:
@@ -74,19 +77,20 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts):
         run_main(config, opts)
 
 
-def _initialize_retry_database() -> StateRecorder:
+def _initialize_retry_database(config: ConfigHelper, opts: MoodleDlOpts) -> StateRecorder:
     """Initialize database for retry operation.
+    
+    Args:
+        config: ConfigHelper instance
+        opts: MoodleDlOpts instance
     
     Returns:
         StateRecorder instance
     """
-    from moodle_dl.config import ConfigHelper
-    from moodle_dl.types import MoodleDlOpts
-    
     return StateRecorder(config, opts)
 
 
-def _get_failed_download_statistics(database: StateRecorder) -> dict:
+def _get_failed_download_statistics(database: StateRecorder) -> Dict[int, Dict]:
     """Get summary of failed downloads from database.
     
     Args:
@@ -98,7 +102,7 @@ def _get_failed_download_statistics(database: StateRecorder) -> dict:
     return database.get_failed_files_summary()
 
 
-def _print_failed_statistics_header(summary: dict):
+def _print_failed_statistics_header(summary: Dict[int, Dict]) -> None:
     """Print header and summary statistics of failed downloads.
     
     Args:
@@ -113,7 +117,7 @@ def _print_failed_statistics_header(summary: dict):
     logging.info('=' * 60)
 
 
-def _print_failed_statistics_details(summary: dict):
+def _print_failed_statistics_details(summary: Dict[int, Dict]) -> None:
     """Print detailed statistics for each course.
     
     Args:
@@ -129,7 +133,7 @@ def _print_failed_statistics_details(summary: dict):
     logging.info('')
 
 
-def _load_failed_files_as_courses(database: StateRecorder) -> list:
+def _load_failed_files_as_courses(database: StateRecorder) -> List[Course]:
     """Load failed files from database and convert to Course objects.
     
     Args:
@@ -158,7 +162,7 @@ def _load_failed_files_as_courses(database: StateRecorder) -> list:
     return courses
 
 
-def _reset_failed_files_for_retry(database: StateRecorder, courses: list):
+def _reset_failed_files_for_retry(database: StateRecorder, courses: List[Course]) -> None:
     """Reset status of all failed files to pending for retry.
     
     Args:
@@ -171,7 +175,9 @@ def _reset_failed_files_for_retry(database: StateRecorder, courses: list):
             database.reset_failed_file_for_retry(file, course.id)
 
 
-def _create_downloader(courses: list, config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder):
+def _create_downloader(
+    courses: List[Course], config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder
+) -> Union[DownloadService, FakeDownloadService]:
     """Create appropriate downloader instance based on options.
     
     Args:
@@ -189,7 +195,7 @@ def _create_downloader(courses: list, config: ConfigHelper, opts: MoodleDlOpts, 
         return DownloadService(courses, config, opts, database)
 
 
-def _print_retry_results(new_failed_downloads: list):
+def _print_retry_results(new_failed_downloads: List[Task]) -> None:
     """Print results of retry operation.
 
     Args:
@@ -380,9 +386,27 @@ def setup_logger(opts: MoodleDlOpts):
 
 def get_parser():
     def _dir_path(path):
-        if os.path.isdir(path):
-            return path
-        raise argparse.ArgumentTypeError(f'"{str(path)}" is not a valid path. Make sure the directory exists.')
+        # Handle relative paths safely, even if current working directory doesn't exist
+        try:
+            # If path is absolute, use it directly
+            if os.path.isabs(path):
+                abs_path = path
+            else:
+                # For relative paths, try to get current working directory
+                # If that fails (e.g., directory was deleted), use home directory as fallback
+                try:
+                    cwd = os.getcwd()
+                except (OSError, FileNotFoundError):
+                    # Current working directory doesn't exist, use home directory
+                    cwd = os.path.expanduser('~')
+                abs_path = os.path.normpath(os.path.join(cwd, path))
+            
+            # Check if the resolved path exists and is a directory
+            if os.path.isdir(abs_path):
+                return abs_path
+            raise argparse.ArgumentTypeError(f'"{str(path)}" is not a valid path. Make sure the directory exists.')
+        except (OSError, ValueError) as e:
+            raise argparse.ArgumentTypeError(f'"{str(path)}" is not a valid path: {e}')
 
     parser = argparse.ArgumentParser(
         description=('Moodle-DL helps you download all the course files from your Moodle account.')

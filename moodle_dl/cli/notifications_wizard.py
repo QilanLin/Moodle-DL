@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 from getpass import getpass
 
 from moodle_dl.config import ConfigHelper

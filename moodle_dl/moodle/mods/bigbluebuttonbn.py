@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 from typing import Dict, List
@@ -73,19 +74,17 @@ class BigbluebuttonbnMod(MoodleMod):
         if not self.config.get_download_bigbluebuttonbns():
             return result
 
-        # Get all BBB instances for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_bigbluebuttonbn_get_bigbluebuttonbns_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             bbbs = response.get('bigbluebuttonbns', [])
-        except RequestRejectedError:
-            logging.debug("No access to BigBlueButton modules or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting BigBlueButton modules: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 BigBlueButton 模块失败: {e}，尝试使用 Web API fallback...")
+            bbbs = await self._fetch_bigbluebuttonbns_web_api(courses, core_contents)
 
         for bbb in bbbs:
             course_id = bbb.get('course', 0)
@@ -283,3 +282,52 @@ class BigbluebuttonbnMod(MoodleMod):
             )
 
         return result
+
+    async def _fetch_bigbluebuttonbns_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 BigBlueButton 模块信息。
+        
+        这是 mod_bigbluebuttonbn_get_bigbluebuttonbns_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 bigbluebuttonbn 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 bigbluebuttonbn 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 BigBlueButton 模块信息...')
+        
+        bbbs = []
+        
+        # 从 core_contents 中提取 bigbluebuttonbn 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'bigbluebuttonbn')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 bigbluebuttonbn 模块转换为 Mobile API 的格式
+                bbb = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'BigBlueButton'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'meetingid': '',
+                    'openingtime': 0,
+                    'closingtime': 0,
+                    'timecreated': module.get('timecreated', 0),
+                    'timemodified': module.get('timemodified', 0),
+                    'type': 0,
+                    'recordings': [],
+                }
+                bbbs.append(bbb)
+        
+        if not bbbs:
+            logging.warning('⚠️ Web API fallback 未找到任何 BigBlueButton 模块')
+            raise ValueError('Web API 未能检索任何 BigBlueButton 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(bbbs)} 个 BigBlueButton 模块')
+        return bbbs

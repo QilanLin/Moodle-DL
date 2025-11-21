@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import urllib
 
 from requests.exceptions import RequestException

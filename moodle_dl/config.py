@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import json
 import logging
 import os
@@ -91,6 +92,60 @@ class ConfigHelper:
         """An Exception which gets thrown if config could not be loaded."""
 
         pass
+
+    @staticmethod
+    def normalize_id_list(ids: List[Any]) -> List[int]:
+        """
+        将 ID 列表标准化为 int 列表。
+        
+        通用的类型转换函数，可用于任何类型的 ID 列表（课程 ID、章节 ID 等）。
+        只负责类型转换，确保返回的始终是 int 列表。
+        处理字符串、混合类型、None 值等情况。
+        
+        防御性编程：
+        - 如果输入为 None，返回空列表
+        - 如果输入不是列表，尝试转换为列表
+        - 过滤 None 值
+        - 跳过无法转换为 int 的值（记录警告）
+        
+        Args:
+            ids: 原始 ID 列表（可能是 int、str 或混合类型），也可以是 None
+            
+        Returns:
+            List[int]: 标准化后的 int 列表（None 值和无效值被过滤）
+            
+        Example:
+            >>> ConfigHelper.normalize_id_list([1, "2", None, 3])
+            [1, 2, 3]
+            >>> ConfigHelper.normalize_id_list(None)
+            []
+            >>> ConfigHelper.normalize_id_list(["1", "abc", "2"])
+            [1, 2]  # 'abc' 被跳过
+        """
+        # 防御性编程：处理 None 输入
+        if ids is None:
+            return []
+        
+        # 防御性编程：确保输入是列表
+        if not isinstance(ids, list):
+            logging.warning(f'normalize_id_list 收到非列表类型: {type(ids)}，尝试转换')
+            try:
+                ids = [ids] if ids is not None else []
+            except Exception:
+                return []
+        
+        # 类型转换，跳过 None 和无法转换的值
+        result = []
+        for cid in ids:
+            if cid is None:
+                continue
+            try:
+                result.append(int(cid))
+            except (ValueError, TypeError):
+                logging.debug(f'normalize_id_list 跳过无效的 ID 值: {cid} (类型: {type(cid)})')
+                continue
+        
+        return result
 
     def __init__(self, opts: MoodleDlOpts):
         self._whole_config: Dict[str, Any] = {}
@@ -509,13 +564,15 @@ class ConfigHelper:
     def get_do_not_ask_to_save_userid_and_version(self) -> bool:
         return self.get_property_or('do_not_ask_to_save_userid_and_version', False)
 
-    def get_download_course_ids(self) -> str:
-        # return a stored list of course ids hat should be downloaded
-        return self.get_property_or('download_course_ids', [])
+    def get_download_course_ids(self) -> List[int]:
+        """获取应该下载的课程 ID 列表"""
+        ids = self.get_property_or('download_course_ids', [])
+        return self.normalize_id_list(ids)
 
-    def get_download_public_course_ids(self) -> str:
-        # return a stored list of public course ids hat should be downloaded
-        return self.get_property_or('download_public_course_ids', [])
+    def get_download_public_course_ids(self) -> List[int]:
+        """获取应该下载的公开课程 ID 列表"""
+        ids = self.get_property_or('download_public_course_ids', [])
+        return self.normalize_id_list(ids)
     
     def get_manually_specified_course_ids(self) -> List[int]:
         """
@@ -607,9 +664,10 @@ class ConfigHelper:
         # return a stored dictionary of options for courses
         return self.get_property_or('options_of_courses', {})
 
-    def get_dont_download_course_ids(self) -> List:
-        # return a stored list of ids that should not be downloaded
-        return self.get_property_or('dont_download_course_ids', [])
+    def get_dont_download_course_ids(self) -> List[int]:
+        """获取不应该下载的课程 ID 列表"""
+        ids = self.get_property_or('dont_download_course_ids', [])
+        return self.normalize_id_list(ids)
 
     def get_download_linked_files(self) -> bool:
         # return if linked files should be downloaded

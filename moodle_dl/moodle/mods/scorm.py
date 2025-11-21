@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import logging
 from typing import Dict, List
 
@@ -49,19 +50,17 @@ class ScormMod(MoodleMod):
         if not self.config.get_download_scorms():
             return result
 
-        # Get all SCORM activities for the courses
+        # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(
                 'mod_scorm_get_scorms_by_courses',
                 self.get_data_for_mod_entries_endpoint(courses),
             )
             scorms = response.get('scorms', [])
-        except RequestRejectedError:
-            logging.debug("No access to SCORM activities or WS not available")
-            return result
-        except Exception as e:
-            logging.debug("Error getting SCORM activities: %s", str(e))
-            return result
+        except (RequestRejectedError, Exception) as e:
+            # Mobile API 失败，尝试 Web API fallback
+            logging.debug(f"Mobile API 获取 SCORM 模块失败: {e}，尝试使用 Web API fallback...")
+            scorms = await self._fetch_scorms_web_api(courses, core_contents)
 
         for scorm in scorms:
             course_id = scorm.get('course', 0)
@@ -380,3 +379,72 @@ class ScormMod(MoodleMod):
             'type': 'description',
             'timemodified': 0,
         }
+
+    async def _fetch_scorms_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取 SCORM 模块信息。
+        
+        这是 mod_scorm_get_scorms_by_courses 的 fallback 实现。
+        通过 core_course_get_contents 获取 scorm 模块信息。
+        
+        Return: 转换为与 Mobile API 相同格式的 scorm 列表
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 SCORM 模块信息...')
+        
+        scorms = []
+        
+        # 从 core_contents 中提取 scorm 模块
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'scorm')
+        
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+            
+            for module in modules_by_course[course_id]:
+                # 将 Web API 的 scorm 模块转换为 Mobile API 的格式
+                scorm = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'SCORM'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'scormtype': 'local',
+                    'reference': '',
+                    'sha1hash': '',
+                    'version': '',
+                    'maxgrade': 0,
+                    'grademethod': 0,
+                    'whatgrade': 0,
+                    'maxattempt': 0,
+                    'forcecompleted': 0,
+                    'forcenewattempt': 0,
+                    'lastattemptlock': 0,
+                    'masteryoverride': 0,
+                    'displayattemptstatus': 0,
+                    'displaycoursestructure': 0,
+                    'updatefreq': 0,
+                    'popup': 0,
+                    'width': 0,
+                    'height': 0,
+                    'skipview': 0,
+                    'hidebrowse': 0,
+                    'hidetoc': 0,
+                    'nav': 0,
+                    'navpositionleft': 0,
+                    'navpositiontop': 0,
+                    'auto': 0,
+                    'autocommit': 0,
+                    'timemodified': module.get('timemodified', 0),
+                }
+                scorms.append(scorm)
+        
+        if not scorms:
+            logging.warning('⚠️ Web API fallback 未找到任何 SCORM 模块')
+            raise ValueError('Web API 未能检索任何 SCORM 模块信息')
+        
+        logging.debug(f'✅ Web API fallback 成功获取 {len(scorms)} 个 SCORM 模块')
+        return scorms
