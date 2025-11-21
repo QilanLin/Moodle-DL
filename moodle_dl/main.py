@@ -69,7 +69,7 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
         DatabaseManager(config, opts).delete_old_files()
     elif opts.manage_database:
         DatabaseManager(config, opts).interactively_manage_database()
-    elif opts.reset_downloaded_files:
+    elif opts.reset_downloaded_files or opts.reset_downloaded_files_cn:
         DatabaseManager(config, opts).reset_all_downloaded_files()
     elif opts.new_token:
         MoodleWizard(config, opts).interactively_acquire_token(use_stored_url=True)

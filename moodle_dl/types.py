@@ -276,6 +276,8 @@ class MoodleDlOpts:
     change_notification_xmpp: bool
     manage_database: bool
     delete_old_files: bool
+    reset_downloaded_files: bool
+    reset_downloaded_files_cn: bool
     log_responses: bool
     add_all_visible_courses: bool
     retry_failed: bool
