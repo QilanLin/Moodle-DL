@@ -567,6 +567,28 @@ class ResultBuilder:
             content_filepath = content.get('filepath', '/') or '/'
             content_fileurl = content.get('fileurl', '')
 
+            if content_type == 'directory_placeholder':
+                placeholder_filename = content_filename or '__empty_chapter__'
+                placeholder_file = File(
+                    **location,
+                    content_filepath=content_filepath,
+                    content_filename=placeholder_filename,
+                    content_fileurl='',
+                    content_filesize=0,
+                    content_timemodified=content.get('timemodified', 0),
+                    content_type='directory_placeholder',
+                    content_isexternalfile=False,
+                )
+                files.append(placeholder_file)
+
+                nested_contents = content.get('contents', [])
+                if nested_contents:
+                    logging.debug(
+                        f'   📁 Directory placeholder "{placeholder_filename}" contains {len(nested_contents)} nested items'
+                    )
+                    files += self._handle_files(nested_contents, **location)
+                continue
+
             # 对于资源模块 (resource)，优先使用网页显示的标题 (module_name) 作为文件名
             # 这样下载的文件名与 Moodle 网页上看到的标题一致
             # 例如: "[Mandatory] Week 1 - Recorded Lecture 1 Handouts.pdf" 而不是 "Software_Testing_Week_1_...pdf" 或 "1.pdf"

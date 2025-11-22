@@ -1196,7 +1196,12 @@ class Task:
             # 阶段 1: 检查元数据文件
             if await self._handle_metadata_file():
                 return True
-            
+
+            # 目录占位符：只需要确保目录存在，无需下载文件
+            if self.file.content_type == 'directory_placeholder':
+                await self._handle_directory_placeholder()
+                return True
+
             # 阶段 2: 准备下载环境
             if not await self._prepare_download():
                 return False
@@ -1212,6 +1217,15 @@ class Task:
             # 阶段 4: 错误处理
             await self._handle_error(dl_err)
             return False
+
+    async def _handle_directory_placeholder(self):
+        """
+        处理目录占位符：仅创建对应的章节文件夹，不生成任何文件。
+        """
+        PT.make_dirs(self.destination)
+        self.file.saved_to = self.destination
+        logging.debug('[%d] Created empty chapter folder placeholder at %s', self.task_id, self.destination)
+        self.report_success()
     
     async def _handle_metadata_file(self) -> bool:
         """

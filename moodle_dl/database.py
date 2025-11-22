@@ -365,14 +365,24 @@ class StateRecorder:
             url_diff = file1.content_fileurl != file2.content_fileurl
             time_diff = file1.content_timemodified != file2.content_timemodified
             size_diff = file1.content_filesize != file2.content_filesize
+            module_id_diff = file1.module_id != file2.module_id
             logging.debug(f'[files_are_different] cookie_mod comparison:')
-            logging.debug(f'  file1: url={file1.content_fileurl[:80]}..., time={file1.content_timemodified}, size={file1.content_filesize}')
-            logging.debug(f'  file2: url={file2.content_fileurl[:80]}..., time={file2.content_timemodified}, size={file2.content_filesize}')
-            logging.debug(f'  url_diff={url_diff}, time_diff={time_diff}, size_diff={size_diff}')
+            logging.debug(f'  file1: url={file1.content_fileurl[:80]}..., time={file1.content_timemodified}, size={file1.content_filesize}, module_id={file1.module_id}')
+            logging.debug(f'  file2: url={file2.content_fileurl[:80]}..., time={file2.content_timemodified}, size={file2.content_filesize}, module_id={file2.module_id}')
+            logging.debug(f'  url_diff={url_diff}, time_diff={time_diff}, size_diff={size_diff}, module_id_diff={module_id_diff}')
 
+        # For cookie_mod files (especially kalvidres), URL or module_id difference means different files
+        # This is important because Kaltura videos may have same time=0, size=0 but different URLs/module_ids
+        if file1.content_type == 'cookie_mod' or file2.content_type == 'cookie_mod':
+            if file1.content_fileurl != file2.content_fileurl or file1.module_id != file2.module_id:
+                result = True
+            elif file1.content_filesize != file2.content_filesize:
+                result = True
+            else:
+                result = False
         # Not sure if this would be a good idea
         #  or file1.module_name != file2.module_name)
-        if file1.content_filesize != file2.content_filesize or (
+        elif file1.content_filesize != file2.content_filesize or (
             file1.content_fileurl != file2.content_fileurl and file1.content_timemodified != file2.content_timemodified
         ):
             result = True

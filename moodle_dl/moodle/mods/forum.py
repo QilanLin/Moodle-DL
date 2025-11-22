@@ -19,7 +19,9 @@ class ForumMod(MoodleMod):
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
         # 下载条件: 检查是否启用了论坛下载
-        return config.get_download_forums()
+        # 与其他模块保持一致：如果文件不是 forum 模块的，或者文件已删除，则返回 True
+        # 这样其他模块的文件（如 cookie_mod-kalvidres）不会被错误过滤
+        return config.get_download_forums() or (not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted))
 
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]

@@ -239,7 +239,7 @@ class DatabaseManager:
             for file_to_reset in files_to_reset:
                 cursor.execute(
                     """UPDATE files
-                    SET saved_to = NULL, time_stamp = ?, modified = 0, moved = 0, notified = 0
+                    SET saved_to = '', time_stamp = ?, modified = 0, moved = 0, notified = 0
                     WHERE file_id = ?""",
                     (int(time.time()), file_to_reset.file_id)
                 )

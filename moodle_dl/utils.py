@@ -352,8 +352,23 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
             if len(cookie_list) != self._ENTRY_LEN:
                 raise http.cookiejar.LoadError('invalid length %d' % len(cookie_list))
             cookie = self._CookieFileEntry(*cookie_list)
-            if cookie.expires_at and not cookie.expires_at.isdigit():
-                raise http.cookiejar.LoadError('invalid expires at %s' % cookie.expires_at)
+            # 允许 -1 作为有效的 expires 值（表示会话 cookie，浏览器关闭时过期）
+            # 也允许空字符串（表示会话 cookie）
+            # 但是 Netscape cookie 格式中，会话 cookie 应该使用空字符串或 0
+            # 所以我们需要将 -1 转换为空字符串，以便 _really_load 能够正确解析
+            if cookie.expires_at == '-1' or cookie.expires_at == '':
+                # 将 -1 或空字符串转换为空字符串（Netscape 格式的会话 cookie）
+                cookie_list[4] = ''  # expires_at 是第 5 个字段（索引 4）
+                line = '\t'.join(cookie_list)
+            elif cookie.expires_at:
+                # 检查是否为有效的数字（包括负数，但不包括 -1）
+                try:
+                    expires_int = int(cookie.expires_at)
+                    if expires_int < 0 and expires_int != -1:
+                        # 负数（除了 -1）被视为无效
+                        raise http.cookiejar.LoadError('invalid expires at %s' % cookie.expires_at)
+                except ValueError:
+                    raise http.cookiejar.LoadError('invalid expires at %s' % cookie.expires_at)
             return line
 
         cf = io.StringIO()

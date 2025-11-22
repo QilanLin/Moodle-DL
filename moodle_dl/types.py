@@ -266,40 +266,40 @@ class MoodleURL:
 
 @dataclass
 class MoodleDlOpts:
-    init: bool
-    config: bool
-    new_token: bool
-    change_notification_mail: bool
-    change_notification_telegram: bool
-    change_notification_discord: bool
-    change_notification_ntfy: bool
-    change_notification_xmpp: bool
-    manage_database: bool
-    delete_old_files: bool
-    reset_downloaded_files: bool
-    reset_downloaded_files_cn: bool
-    log_responses: bool
-    add_all_visible_courses: bool
-    retry_failed: bool
-    sso: bool
-    username: str
-    password: str
-    token: str
-    path: str
-    max_parallel_api_calls: int
-    max_parallel_downloads: int
-    max_parallel_yt_dlp: int
-    download_chunk_size: int
-    ignore_ytdl_errors: bool
-    without_downloading_files: bool
-    max_path_length_workaround: bool
-    allow_insecure_ssl: bool
-    use_all_ciphers: bool
-    skip_cert_verify: bool
-    verbose: bool
-    quiet: bool
-    log_to_file: bool
-    log_file_path: str
+    init: bool = False
+    config: bool = False
+    new_token: bool = False
+    change_notification_mail: bool = False
+    change_notification_telegram: bool = False
+    change_notification_discord: bool = False
+    change_notification_ntfy: bool = False
+    change_notification_xmpp: bool = False
+    manage_database: bool = False
+    delete_old_files: bool = False
+    reset_downloaded_files: bool = False
+    reset_downloaded_files_cn: bool = False
+    log_responses: bool = False
+    add_all_visible_courses: bool = False
+    retry_failed: bool = False
+    sso: bool = False
+    username: str = ''
+    password: str = ''
+    token: str = ''
+    path: str = '.'
+    max_parallel_api_calls: int = 10
+    max_parallel_downloads: int = 5
+    max_parallel_yt_dlp: int = 5
+    download_chunk_size: int = 102400
+    ignore_ytdl_errors: bool = False
+    without_downloading_files: bool = False
+    max_path_length_workaround: bool = False
+    allow_insecure_ssl: bool = False
+    use_all_ciphers: bool = False
+    skip_cert_verify: bool = False
+    verbose: bool = False
+    quiet: bool = False
+    log_to_file: bool = False
+    log_file_path: str = ''
 
 
 class TaskState(Enum):

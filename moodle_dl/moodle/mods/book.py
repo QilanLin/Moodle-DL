@@ -158,10 +158,11 @@ class BookMod(MoodleMod):
                             contents_by_chapter[chapter_id] = []
                         contents_by_chapter[chapter_id].append(content)
 
-                # 🆕 Step 1.2: Process each chapter (sorted by ID for consistent ordering)
+                # 🆕 Step 1.2: Process each chapter (follow TOC order, fallback to content order)
+                ordered_chapter_ids = self._get_ordered_chapter_ids(book_toc, contents_by_chapter)
                 chapter_count = 0
-                for chapter_id in sorted(contents_by_chapter.keys()):
-                    chapter_contents_list = contents_by_chapter[chapter_id]
+                for chapter_id in ordered_chapter_ids:
+                    chapter_contents_list = contents_by_chapter.get(chapter_id, [])
                     chapter_count += 1
 
                     logging.debug(f'   📁 Processing chapter {chapter_id}: {len(chapter_contents_list)} file(s)')
@@ -179,37 +180,41 @@ class BookMod(MoodleMod):
                             chapter_attachments.append(content)
                             logging.debug(f'      Found attachment: {filename}')
 
-                    if not chapter_html_content:
-                        logging.warning(f'   ⚠️ Chapter {chapter_id} has no index.html, skipping')
-                        continue
-
                     # 🆕 从TOC获取章节标题，用于创建文件夹名
                     chapter_title = self._get_chapter_title_from_toc(chapter_id, book_toc)
                     # 格式化文件夹名：添加序号并清理路径 (is_file=False 表示这是文件夹)
                     chapter_folder_name = PT.to_valid_name(f'{chapter_count:02d} - {chapter_title}', is_file=False)
                     logging.info(f'   📁 Chapter {chapter_count}: {chapter_folder_name} ({len(chapter_attachments)} attachment(s))')
 
-                    # Copy chapter_html_content to modify it
-                    chapter_content = copy.deepcopy(chapter_html_content)
+                    if chapter_html_content:
+                        # Copy chapter_html_content to modify it
+                        chapter_content = copy.deepcopy(chapter_html_content)
 
-                    # 修改type为'html'，这样result_builder会自动提取URL
-                    chapter_content['type'] = 'html'
-                    # 设置filepath为章节文件夹
-                    chapter_content['filepath'] = f'/{chapter_folder_name}/'
+                        # 修改type为'html'，这样result_builder会自动提取URL
+                        chapter_content['type'] = 'html'
+                        # 设置filepath为章节文件夹
+                        chapter_content['filepath'] = f'/{chapter_folder_name}/'
 
-                    # ⚠️ CRITICAL: 下载完整的HTML内容（包含视频）
-                    chapter_fileurl = chapter_content.get('fileurl', '')
-                    if chapter_fileurl:
-                        logging.debug(f'      🔽 Fetching HTML from: {chapter_fileurl[:80]}...')
-                        fetched_html = await self._fetch_chapter_html(chapter_fileurl)
-                        if fetched_html:
-                            chapter_content['html'] = fetched_html
-                            logging.debug(f'      ✅ Fetched {len(fetched_html)} chars')
+                        # ⚠️ CRITICAL: 下载完整的HTML内容（包含视频）
+                        chapter_fileurl = chapter_content.get('fileurl', '')
+                        if chapter_fileurl:
+                            logging.debug(f'      🔽 Fetching HTML from: {chapter_fileurl[:80]}...')
+                            fetched_html = await self._fetch_chapter_html(chapter_fileurl)
+                            if fetched_html:
+                                chapter_content['html'] = fetched_html
+                                logging.debug(f'      ✅ Fetched {len(fetched_html)} chars')
+                            else:
+                                chapter_content['html'] = chapter_content.get('content', '')
+                                logging.warning(f'      ⚠️ Failed to fetch HTML')
                         else:
                             chapter_content['html'] = chapter_content.get('content', '')
-                            logging.warning(f'      ⚠️ Failed to fetch HTML')
                     else:
-                        chapter_content['html'] = chapter_content.get('content', '')
+                        logging.warning(
+                            f'   ⚠️ Chapter {chapter_id} has no index.html/content entries, generating empty folder placeholder'
+                        )
+                        chapter_content = self._create_empty_chapter_placeholder(
+                            chapter_id, chapter_folder_name, chapter_title
+                        )
 
                     # Initialize 'contents' array for additional files (videos + attachments)
                     if 'contents' not in chapter_content:
@@ -414,6 +419,47 @@ class BookMod(MoodleMod):
             if subitems:
                 chapters.extend(self._get_flat_toc_list(subitems))
         return chapters
+
+    def _get_ordered_chapter_ids(self, toc: List[Dict], contents_by_chapter: Dict[str, List[Dict]]) -> List[str]:
+        """
+        根据目录顺序返回章节 ID 列表，若 TOC 缺失则回退到内容中的章节顺序。
+        """
+        ordered_ids: List[str] = []
+        seen: set = set()
+
+        flat_toc = self._get_flat_toc_list(toc) if toc else []
+        for entry in flat_toc:
+            href = entry.get('href', '') or ''
+            href = href.lstrip('/')
+            chapter_id = href.split('/', 1)[0]
+            if chapter_id and chapter_id not in seen:
+                ordered_ids.append(chapter_id)
+                seen.add(chapter_id)
+
+        # Append any remaining chapter IDs that were not present in the TOC (or if TOC is empty)
+        for chapter_id in sorted(contents_by_chapter.keys()):
+            if chapter_id not in seen:
+                ordered_ids.append(chapter_id)
+
+        return ordered_ids
+
+    def _create_empty_chapter_placeholder(
+        self, chapter_id: str, chapter_folder_name: str, chapter_title: str
+    ) -> Dict:
+        """
+        为没有内容的章节创建一个占位条目，以便仍然创建文件夹结构。
+        """
+        placeholder_name = PT.to_valid_name(f'__empty_chapter_{chapter_id}__', is_file=True)
+        return {
+            'filename': placeholder_name,
+            'filepath': f'/{chapter_folder_name}/',
+            'type': 'directory_placeholder',
+            'filesize': 0,
+            'timemodified': int(time.time()),
+            'description': f'Placeholder for empty chapter "{chapter_title}"',
+            'no_search_for_urls': True,
+            'contents': [],
+        }
 
     async def _fetch_chapter_html(self, fileurl: str) -> str:
         """

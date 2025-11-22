@@ -51,6 +51,9 @@ class FakeDownloadService:
                     elif file.content_type == 'html':
                         file.saved_to = str(Path(save_destination) / (filename + '.html'))
 
+                    elif file.content_type == 'directory_placeholder':
+                        file.saved_to = str(Path(save_destination))
+
                     elif file.module_modname.startswith('url'):
                         file.saved_to = str(Path(save_destination) / (filename + '.desktop'))
                         if os.name == 'nt' or platform.system() == "Darwin":
