@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
+from moodle_dl.downloader.progress_tracker import ProgressTracker
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
 from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
@@ -28,6 +29,9 @@ class DownloadService:
 
         self.status = DownloadStatus()
         self.all_tasks = self.gen_all_tasks()
+        
+        # 🆕 增强的进度追踪器
+        self.progress_tracker = ProgressTracker()
 
     def _configure_task_settings(self) -> tuple:
         """Configure task settings and create thread pool.
@@ -271,39 +275,49 @@ class DownloadService:
                 await asyncio.sleep(delay)
 
         status_logger_task.cancel()
+        
+        # 🆕 显示下载总结
+        if self.status.files_to_download > 0:
+            self._display_download_summary()
 
     async def log_download_status(self):
-        last_bytes_downloaded = 0
-        last_status_timestamp = time.time()
+        """
+        记录下载进度状态（使用增强的进度追踪器）
+        """
         while True:
-            # Print every 2 sec the current status
+            # 每 2 秒打印一次当前状态
             await asyncio.sleep(2)
 
-            percentage = None
-            if self.status.bytes_to_download != 0:
-                percentage = int(self.status.bytes_downloaded * 100 / self.status.bytes_to_download)
-                if percentage > 100 or percentage < 0:
-                    percentage = None
-            if percentage is None:
-                percentage = ' NA%'
-            else:
-                percentage = f'{percentage:3}%'
-
-            speed = calc_speed(last_status_timestamp, time.time(), self.status.bytes_downloaded - last_bytes_downloaded)
-            last_status_timestamp = time.time()
-            last_bytes_downloaded = self.status.bytes_downloaded
-
-            message_line = (
-                f'总计: {percentage}'
-                + f' {format_bytes(self.status.bytes_downloaded):>5} / {format_bytes(self.status.bytes_to_download):<5}'
-                + f' | 完成: {(self.status.files_downloaded + self.status.files_failed):>5}'
-                + f' / {self.status.files_to_download:<5}'
-                + f' | 速度: {format_speed(speed)}'
+            # 更新进度追踪器
+            self.progress_tracker.update(
+                downloaded_bytes=self.status.bytes_downloaded,
+                total_bytes=self.status.bytes_to_download,
+                completed=self.status.files_downloaded,
+                failed=self.status.files_failed,
+                total=self.status.files_to_download,
+                skipped=0  # 目前 DownloadStatus 没有跳过计数，可以后续添加
             )
-            if self.status.files_failed > 0:
-                message_line += f' | 失败: {self.status.files_failed}'
-
-            logging.info(message_line)
+            
+            # 获取进度信息
+            progress_line = self.progress_tracker.get_progress_line()
+            statistics_line = self.progress_tracker.get_statistics_line()
+            
+            # 显示进度
+            logging.info(progress_line)
+            
+            # 如果有统计信息，也显示
+            if statistics_line:
+                logging.info(f"   {statistics_line}")
+    
+    def _display_download_summary(self):
+        """
+        显示下载完成的总结信息
+        """
+        summary = self.progress_tracker.get_summary()
+        
+        # 使用 info 级别输出，确保用户能看到
+        for line in summary.split('\n'):
+            logging.info(line)
 
     def _create_tasks_for_manually_specified_courses(
         self,

@@ -15,7 +15,46 @@ class StateRecorder:
     Saves the state and provides utilities to detect changes in the current
     state against the previous.
     
-    包含查询优化和缓存机制，提高数据库访问性能。
+    📊 DATABASE SCHEMA & STATE TRACKING:
+    
+    Key Tables:
+    1. files: Main file repository with download status tracking
+       - saved_to: File path (empty = not downloaded)
+       - download_status: 'pending', 'success', or 'failed'
+       - consecutive_failures: Failed retry count
+       - last_failed_reason: Detailed error message
+       
+    2. incomplete_downloads: Resumable download state (v9+)
+       - Stores partial download information
+       - Supports HTTP Range-based resume
+       - Includes ETag/Last-Modified for integrity
+    
+    3. auth_sessions: Session management (v9+)
+       - Token storage
+       - Session expiration tracking
+       - Multiple auth method support
+    
+    4. cookie_store: Cookie management (v9+)
+       - Secure cookie storage in database (not files)
+       - Session-based organization
+       - Automatic cleanup support
+    
+    📈 OPTIMIZATION FEATURES:
+    - Query caching with TTL (5 minutes)
+    - Database indexing for common queries
+    - Foreign key constraints for data integrity
+    - Transaction support for consistency
+    
+    🔄 STATE TRANSITIONS:
+    File State Flow:
+      pending → (download starts) → success (✅ file saved)
+            ↓
+            └→ failed (❌ error occurred)
+               ├→ retry < 5: eligible for auto-retry
+               ├→ retry ≥ 5: needs manual intervention
+               └→ success (✅ eventually succeeds)
+    
+    Database Version: 9 (with incomplete_downloads support)
     """
     
     # 🆕 查询缓存配置

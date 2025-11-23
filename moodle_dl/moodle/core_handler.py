@@ -48,8 +48,29 @@ class CoreHandler:
 
     def fetch_courses(self, userid: int) -> List[Course]:
         """
-        Queries the Moodle system for all courses the user
-        is enrolled in.
+        Queries the Moodle system for all courses the user is enrolled in.
+        
+        🔧 API SELECTION STRATEGY:
+        
+        This uses the Mobile API (core_enrol_get_users_courses) which requires enrollment.
+        
+        Key Design Decision:
+        - Uses Mobile API by default (faster for enrolled users)
+        - Falls back to Web API (core_course_get_courses) if enrollment check fails
+        
+        Permission Layers in Moodle:
+        1. ENROLLMENT LAYER: "Am I enrolled in this course?"
+           └─ Mobile API checks this (core_enrol_get_users_courses)
+           └─ Returns only enrolled courses
+        
+        2. CAPABILITY LAYER: "Do I have permission to view this course?"
+           └─ Web API checks this (core_course_get_courses)
+           └─ Returns courses where user has moodle/course:view capability
+           └─ Includes courses where user is NOT enrolled but has viewing rights (e.g., as teacher/TA)
+        
+        For teachers/TAs/admins: Use Web API as fallback since they may not be enrolled
+        but still need to view courses they teach.
+        
         @param userid: the user id
         @return: A list of courses
         """

@@ -86,7 +86,42 @@ class DownloadOptionsConfig:
 
 
 class ConfigHelper:
-    "Handles the saving, formatting and loading of the local configuration."
+    """
+    Handles the saving, formatting and loading of the local configuration.
+    
+    🔧 CONFIGURATION VALIDATION FRAMEWORK:
+    
+    Validation Strategy:
+    1. SCHEMA VALIDATION:
+       - Type checking for each configuration parameter
+       - Range validation (e.g., 0 < parallel_downloads <= 10)
+       - Enum validation for predefined options
+    
+    2. DEPENDENCY VALIDATION:
+       - Cross-field validation (e.g., if whitelist enabled, blacklist must be empty)
+       - Moodle URL format and accessibility checks
+       - Token format validation
+    
+    3. ENCODING SUPPORT (Smart Encoding Fallback):
+       - Auto-detect system encoding
+       - Fallback chain: UTF-8 → ANSI → system default
+       - Proper handling of non-ASCII characters in paths
+       - File path normalization across platforms
+    
+    4. CONFIGURATION SOURCES (Priority Order):
+       1. Command-line arguments (highest priority)
+       2. config.json (local configuration)
+       3. Environment variables (system-level)
+       4. Defaults (built-in values, lowest priority)
+    
+    Module-Specific Features:
+    - download_books: Enable Moodle Book module
+    - download_also_with_cookie: Use browser cookie fallback
+    - skip_cert_verify: SSL verification control
+    - save_to: Download destination path
+    
+    Database Version: 9 with session and cookie management
+    """
 
     class NoConfigError(ValueError):
         """An Exception which gets thrown if config could not be loaded."""

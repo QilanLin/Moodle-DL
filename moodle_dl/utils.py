@@ -987,7 +987,32 @@ class Log:
 
 
 class TerminalMenuRenderer:
-    """Utility class to render paginated terminal menus reliably."""
+    """
+    Utility class to render paginated terminal menus reliably.
+    
+    🔧 TERMINAL RENDERING IMPLEMENTATION NOTES:
+    
+    This class handles ANSI cursor movement and screen clearing for interactive terminal menus.
+    It was designed to fix issues with repeated menu items when using arrow keys/spacebar.
+    
+    Key Fixes Applied:
+    1. ANSI Escape Sequences: Uses \033[K (clear to end of line) and \033[nA (move cursor up)
+    2. Print Buffering: Removed flush=True from print statements to avoid terminal rendering bugs
+    3. Cursor Movement: Coordinated cursor positioning without flushing output prematurely
+    4. Unicode Handling: Proper handling of wide characters and combining characters
+    
+    Terminal Control Codes Used:
+    - \033[K: Clear from cursor to end of line
+    - \033[nA: Move cursor up n lines
+    - \033[0m: Reset all attributes
+    - \033[1m: Bold
+    - \033[32m: Green foreground
+    
+    ⚠️ Important: Never use flush=True with ANSI cursor commands, as it can cause
+    visual glitches when terminal buffering is interfered with.
+    
+    References: ANSI/VT100 escape sequences standard
+    """
 
     def __init__(self, options_count: int, reserved_lines: int = 3, extra_lines: int = 1):
         self.options_count = options_count

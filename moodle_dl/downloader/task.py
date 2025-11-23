@@ -47,7 +47,50 @@ from moodle_dl.utils import (
 
 
 class Task:
-    "Task is responsible to download or create a file"
+    """
+    Task is responsible to download or create a file.
+    
+    📥 DOWNLOAD IMPLEMENTATION FEATURES:
+    
+    1. RESUME/RESUMABLE DOWNLOAD (断点续传):
+       - Supports HTTP Range requests for resumable downloads
+       - Checks server's Accept-Ranges header
+       - Stores incomplete download state in database (incomplete_downloads table)
+       - Verifies file integrity using ETag and Last-Modified headers
+       - Automatically resumes from last checkpoint on network interruption
+       
+       Flow:
+         1. Check if server supports Range requests (Accept-Ranges: bytes)
+         2. On download failure, save progress to incomplete_downloads table:
+            - downloaded_bytes: How many bytes were downloaded
+            - total_bytes: Expected file size
+            - etag/last_modified: For integrity verification
+         3. On retry, check incomplete_downloads and resume if conditions met:
+            - Server still supports Range requests
+            - File hasn't been modified (check ETag/Last-Modified)
+            - Retry attempts < limit
+       
+    2. MULTI-LAYER ERROR HANDLING:
+       - Graceful handling of network failures
+       - Automatic retry with exponential backoff
+       - Fallback to alternative download methods (external downloader, yt-dlp)
+       - Smart status tracking for debugging
+    
+    3. SPECIAL FILE TYPES:
+       - HTML files: Saved as HTML content
+       - Description files: Converted to Markdown
+       - External URLs: Created as .desktop/.URL shortcuts
+       - Kaltura videos: yt-dlp based extraction
+       - Book modules: Playwright-based rendering
+    
+    4. OPTIMIZATION:
+       - Chunked download with configurable chunk size
+       - Concurrent downloads with semaphore control
+       - Progress tracking per file
+       - Proper resource cleanup on error
+    
+    Reference: RFC 7233 HTTP Range Requests specification
+    """
     CHUNK_SIZE = 102400  # default: 1024 * 100 = 100kb; will be overwritten with download_chunk_size
     MAX_DL_RETRIES = 3
 

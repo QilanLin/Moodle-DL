@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import logging
 import os
 import shutil
 import sys
@@ -57,8 +58,13 @@ class ConfigWizard:
         """
         courses = []
         try:
+            Log.info('正在获取用户信息...')
             user_id, _ = self.get_user_id_and_version()
+            
+            Log.info('正在从 Moodle 服务器获取课程列表...')
+            Log.cyan('(如果您有很多课程或网络较慢，这可能需要几秒到几十秒)')
             courses = self.core_handler.fetch_courses(user_id)
+            Log.success(f'已获取 {len(courses)} 个课程')
 
         except (RequestRejectedError, ValueError, RuntimeError, ConnectionError) as error:
             Log.error(f'与 Moodle 系统通信时出错！({error})')
@@ -144,10 +150,17 @@ class ConfigWizard:
         courses = []
         all_visible_courses = []
         try:
+            Log.info('正在获取用户信息...')
             user_id, _ = self.get_user_id_and_version()
+            
+            Log.info('正在获取已注册的课程列表...')
             courses = self.core_handler.fetch_courses(user_id)
+            Log.success(f'已获取 {len(courses)} 个已注册课程')
+            
+            Log.info('正在获取所有可见课程列表（这可能需要几分钟）...')
             log_all_courses_to = PT.make_path(self.config.get_misc_files_path(), 'all_courses.json')
             all_visible_courses = self.core_handler.fetch_all_visible_courses(log_all_courses_to)
+            Log.success(f'已获取 {len(all_visible_courses)} 个可见课程')
 
         except (RequestRejectedError, ValueError, RuntimeError, ConnectionError) as error:
             Log.error(f'Error while communicating with the Moodle System! ({error})')
