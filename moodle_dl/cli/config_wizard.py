@@ -553,11 +553,8 @@ class ConfigWizard:
         Log.info(
             '如果你是某些课程的教师或助教，你可能没有以学生身份注册这些课程。\n'
             '但你仍然可以通过提供课程 ID 来下载这些课程的内容。\n'
-            '\n支持的输入格式：\n'
-            '  • 单个 ID: 137304\n'
-            '  • 多个 ID（空格）: 137304 137305 137306\n'
-            '  • 多个 ID（逗号）: 137304,137305,137306\n'
-            '  • 完整 URL: https://keats.kcl.ac.uk/course/view.php?id=137304'
+            '\n单个 ID 如 137304，多个 ID（空格）如 137304 137305，多个 ID（逗号）如 137304,137305，'
+            '完整 URL 如 https://keats.kcl.ac.uk/course/view.php?id=137304'
         )
         
         manually_specified_ids = self.config.get_manually_specified_course_ids()
