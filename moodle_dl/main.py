@@ -126,7 +126,7 @@ def _print_failed_statistics_details(summary: Dict[int, Dict]) -> None:
         summary: Dictionary with failed files information
     """
     for course_id, info in summary.items():
-        logging.info(f"课程 ID {course_id} ({info['course_name']}):")
+        logging.info(f"课程 ID {course_id} ({info['course_fullname']}):")
         logging.info(f"  - 失败文件数：{info['failed_count']}")
         logging.info(f"  - 总失败次数：{info['total_failures']}")
         logging.info(f"  - 最大连续失败：{info['max_consecutive']}")

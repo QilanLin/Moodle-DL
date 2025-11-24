@@ -134,8 +134,8 @@ class Task:
         ⚠️ 核心原则：保留原始文件名，只添加前缀。
 
         示例:
-            position=0, original="lecture.pdf" → "01 lecture.pdf"
-            position=4, original="01-intro.pdf" → "05 01-intro.pdf" (保留原名中的 "01-")
+            position=0, original="lecture.pdf" → "*01* lecture.pdf"
+            position=4, original="01-intro.pdf" → "*05* 01-intro.pdf" (保留原名中的 "01-")
             position=None → "lecture.pdf" (无索引)
 
         @param file: File 对象
@@ -154,8 +154,8 @@ class Task:
         else:
             index_str = f"{position + 1:03d}"
 
-        # 添加索引前缀（使用空格），保留原始文件名
-        indexed_filename = f"{index_str} {original_filename}"
+        # 添加索引前缀（使用星号包围索引，使用空格分隔），保留原始文件名
+        indexed_filename = f"*{index_str}* {original_filename}"
 
         return indexed_filename
 
@@ -656,11 +656,18 @@ class Task:
         # 对于其他 HTML 页面（如 YouTube/Tumblr 等公开平台），不下载网页源码，只创建快捷方式
         if infos.is_html:
             logging.debug(
-                '[%d] 检测到 HTML 页面（%s），跳过下载，将创建快捷方式',
+                '[%d] 检测到 HTML 页面（%s），跳过下载，将保留/重新创建快捷方式',
                 self.task_id,
                 urlparse.urlparse(url_to_download).hostname,
             )
-            raise ValueError('HTML 页面不需要下载，只需创建快捷方式即可访问')
+            # 如果之前删除了快捷方式文件（delete_if_successful=True），需要重新创建
+            # 如果没有删除（delete_if_successful=False），快捷方式文件已存在，无需操作
+            # 由于我们不知道调用者是否删除了文件，统一重新创建快捷方式
+            if delete_if_successful:
+                # 快捷方式已被删除，需要重新创建
+                await self.create_shortcut()
+            # 正常返回，不抛出异常
+            return
 
         logging.debug('[%d] Downloading URL directly', self.task_id)
 
