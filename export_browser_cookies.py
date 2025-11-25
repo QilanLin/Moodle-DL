@@ -115,10 +115,10 @@ def find_browser_cookie_path(browser_name: str) -> str:
     # 
     browser_paths = {
         'zen': {
-            'Darwin': '~/Library/Application Support/zen/Profiles/*.default*/cookies.sqlite',
-            'Linux': ['~/.zen/Profiles/*.default*/cookies.sqlite',
-                     '~/.var/app/app.zen_browser.zen/zen/Profiles/*.default*/cookies.sqlite'],  # Flatpak
-            'Windows': os.path.join(os.getenv('APPDATA', ''), 'zen', 'Profiles', '*.default*', 'cookies.sqlite')
+            'Darwin': '~/Library/Application Support/Zen/Profiles/*/cookies.sqlite',
+            'Linux': ['~/.zen/Profiles/*/cookies.sqlite',
+                     '~/.var/app/app.zen_browser.zen/zen/Profiles/*/cookies.sqlite'],  # Flatpak
+            'Windows': os.path.join(os.getenv('APPDATA', ''), 'Zen', 'Profiles', '*', 'cookies.sqlite')
         },
         'waterfox': {
             'Darwin': '~/Library/Application Support/Waterfox/Profiles/*.default*/cookies.sqlite',

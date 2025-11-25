@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import glob
 import logging
 import os
 import re
@@ -65,6 +66,65 @@ def extract_all_cookies_from_browser(
         return []
 
 
+def _find_browser_cookie_path(browser_name: str) -> Optional[str]:
+    """
+    查找需要自定义路径的浏览器的 cookie 文件路径
+    
+    @param browser_name: 浏览器名称（zen, waterfox, arc 等）
+    @return: cookie 文件路径，如果找不到则返回 None
+    """
+    import platform
+    import glob
+    
+    system = platform.system()
+    
+    # 需要自定义路径的浏览器配置
+    browser_paths = {
+        'zen': {
+            'Darwin': '~/Library/Application Support/Zen/Profiles/*/cookies.sqlite',
+            'Linux': ['~/.zen/Profiles/*/cookies.sqlite',
+                     '~/.var/app/app.zen_browser.zen/zen/Profiles/*/cookies.sqlite'],  # Flatpak
+            'Windows': os.path.join(os.getenv('APPDATA', ''), 'Zen', 'Profiles', '*', 'cookies.sqlite')
+        },
+        'waterfox': {
+            'Darwin': '~/Library/Application Support/Waterfox/Profiles/*.default*/cookies.sqlite',
+            'Linux': '~/.waterfox/Profiles/*.default*/cookies.sqlite',
+            'Windows': os.path.join(os.getenv('APPDATA', ''), 'Waterfox', 'Profiles', '*.default*', 'cookies.sqlite')
+        },
+        'arc': {
+            'Darwin': '~/Library/Application Support/Arc/User Data/*/Cookies',
+            'Linux': None,  # Arc 不支持 Linux
+            'Windows': os.path.join(os.getenv('LOCALAPPDATA', ''), 'Arc', 'User Data', '*', 'Cookies')
+        },
+    }
+    
+    if browser_name.lower() not in browser_paths:
+        return None
+    
+    paths = browser_paths[browser_name.lower()].get(system)
+    
+    if not paths:
+        return None
+    
+    # 处理列表（Flatpak 等可能有多个路径）
+    if isinstance(paths, list):
+        for path_pattern in paths:
+            expanded = os.path.expanduser(path_pattern)
+            matches = glob.glob(expanded)
+            if matches:
+                # 返回最新的 profile
+                return max(matches, key=os.path.getmtime)
+    else:
+        # 单个路径
+        expanded = os.path.expanduser(paths)
+        matches = glob.glob(expanded)
+        if matches:
+            # 返回最新的 profile
+            return max(matches, key=os.path.getmtime)
+    
+    return None
+
+
 def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
     """
     从浏览器数据库中读取所有 cookies（不过滤）
@@ -76,19 +136,37 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
         import browser_cookie3
 
         # 获取浏览器的 cookie jar
+        # 对于需要自定义路径的浏览器（Zen, Waterfox, Arc），使用 Firefox/Chrome 方法但指定路径
         browser_methods = {
-            'chrome': browser_cookie3.chrome,
-            'firefox': browser_cookie3.firefox,
-            'edge': browser_cookie3.edge,
-            'brave': browser_cookie3.brave,
-            'safari': browser_cookie3.safari,
+            'chrome': (browser_cookie3.chrome, False),
+            'firefox': (browser_cookie3.firefox, False),
+            'edge': (browser_cookie3.edge, False),
+            'brave': (browser_cookie3.brave, False),
+            'safari': (browser_cookie3.safari, False),
+            # 需要自定义路径的浏览器（使用 Firefox/Chrome 方法但指定 cookie 文件路径）
+            'zen': (browser_cookie3.firefox, True),  # Zen 是 Firefox 内核
+            'waterfox': (browser_cookie3.firefox, True),  # Waterfox 是 Firefox 分支
+            'arc': (browser_cookie3.chrome, True),  # Arc 是 Chrome 内核
         }
 
-        if browser_name not in browser_methods:
+        if browser_name.lower() not in browser_methods:
             logging.warning(f'⚠️  不支持的浏览器: {browser_name}')
             return []
 
-        cj = browser_methods[browser_name]()
+        method, needs_custom_path = browser_methods[browser_name.lower()]
+        
+        if needs_custom_path:
+            # 需要自定义路径的浏览器
+            cookie_path = _find_browser_cookie_path(browser_name)
+            if not cookie_path:
+                logging.warning(f'⚠️  无法找到 {browser_name} 浏览器的 cookie 文件')
+                logging.info('   请确保浏览器已安装并已登录')
+                return []
+            logging.debug(f'   使用 cookie 文件: {cookie_path}')
+            cj = method(cookie_file=cookie_path)
+        else:
+            # 标准浏览器，使用默认路径
+            cj = method()
 
         all_cookies = []
         for cookie in cj:
