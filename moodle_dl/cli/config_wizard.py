@@ -393,7 +393,7 @@ class ConfigWizard:
         elif self.config.has_property('dont_download_course_ids'):
             use_whitelist = False  # Blacklist mode
 
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '你可以为每个课程设置特殊选项。\n'
             + '可以设置这些选项：\n'
@@ -549,7 +549,7 @@ class ConfigWizard:
         from moodle_dl.moodle.course_validator import validate_course_with_web_api
         import re
         
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '如果你是某些课程的教师或助教，你可能没有以学生身份注册这些课程。\n'
             '但你仍然可以通过提供课程 ID 来下载这些课程的内容。\n'
@@ -707,7 +707,7 @@ class ConfigWizard:
         """
         让用户一次性选择所有要下载的模块类型（整合的多选步骤）
         """
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             'Moodle-DL 支持下载 26 种不同类型的模块。你可以选择要下载哪些类型。\n'
             + '使用空格键勾选/取消，回车键确认选择。\n'
@@ -824,7 +824,7 @@ class ConfigWizard:
         """
         download_descriptions = self.config.get_download_descriptions()
 
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '在 Moodle 课程中，可以为各种资源添加描述，'
             + '例如文件、任务、作业或纯文本。'
@@ -852,7 +852,7 @@ class ConfigWizard:
         """
         download_links_in_descriptions = self.config.get_download_links_in_descriptions()
 
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '在文件、章节、作业或课程的描述中，老师可以添加网页、'
             + '文件或视频的链接。这些链接可以指向 Moodle 内部页面或外部网页。'
@@ -872,7 +872,7 @@ class ConfigWizard:
         """
         download_linked_files = self.config.get_download_linked_files()
 
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '在 Moodle 课程中，老师也可以链接到外部文件。'
             + '这可以是音频、视频、文本或其他任何内容。'
@@ -903,7 +903,7 @@ class ConfigWizard:
         """
         自动启用 cookie 下载功能，并引导用户从浏览器导出 cookies 和 API token。
         """
-        self.section_seperator()
+        self.section_separator()
         Log.info(
             '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
             + '还有一些 Moodle 插件（如 kalvidres）无法在 Moodle 应用中显示，'
@@ -1186,6 +1186,6 @@ class ConfigWizard:
         except Exception:
             return False
 
-    def section_seperator(self):
-        """Print a seperator line."""
+    def section_separator(self):
+        """Print a separator line."""
         print('\n' + '-' * shutil.get_terminal_size().columns + '\n')
