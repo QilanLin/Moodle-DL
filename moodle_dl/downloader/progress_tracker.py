@@ -3,9 +3,15 @@
 增强的下载进度追踪器
 
 提供详细的下载统计信息，包括：
-- 速度和 ETA
+- 速度和 ETA（智能预测）
 - 成功/失败/跳过文件数
 - 清晰的进度显示
+
+ETA 计算采用智能混合算法：
+- 指数移动平均（EMA）平滑速度波动
+- 文件数量辅助预测（后期更准确）
+- 初期静默期避免不准确显示
+- ETA 平滑处理避免剧烈波动
 """
 
 import time
@@ -18,11 +24,32 @@ class ProgressTracker:
     增强的进度追踪器，用于显示详细的下载统计
     
     功能：
-    - 实时速度计算
-    - 预计剩余时间（ETA）
+    - 实时速度计算（EMA 平滑）
+    - 智能预计剩余时间（ETA）
     - 详细的文件统计（成功、失败、跳过）
     - 友好的格式化输出
+    
+    ETA 算法：
+    - 使用 EMA 平滑速度，快速反映趋势但不剧烈波动
+    - 结合文件数量预测，提高后期准确性
+    - 初期 10 秒静默期，避免连接建立期的不准确
+    - ETA 变化平滑处理，避免用户困惑
     """
+    
+    # EMA 平滑因子（0.1-0.5，越大对当前速度越敏感）
+    EMA_ALPHA = 0.3
+    
+    # 初期静默期（秒），这段时间内不显示 ETA
+    WARMUP_SECONDS = 10
+    
+    # 最小完成文件数，达到此数量后才启用文件数量辅助预测
+    MIN_FILES_FOR_FILE_BASED_ETA = 5
+    
+    # ETA 平滑因子（避免 ETA 剧烈波动）
+    ETA_SMOOTH_ALPHA = 0.5
+    
+    # 最大显示时间（秒），超过此值显示为 ">1天"
+    MAX_ETA_SECONDS = 86400
     
     def __init__(self):
         """初始化进度追踪器"""
@@ -41,8 +68,12 @@ class ProgressTracker:
         self.downloaded_bytes = 0
         
         # 速度统计
-        self.current_speed = 0.0  # bytes/sec
-        self.average_speed = 0.0  # bytes/sec
+        self.current_speed = 0.0  # bytes/sec（瞬时速度）
+        self.average_speed = 0.0  # bytes/sec（全局平均速度）
+        self.ema_speed = 0.0      # bytes/sec（EMA 平滑速度，用于 ETA）
+        
+        # ETA 平滑
+        self.last_eta = None  # 上次计算的 ETA（用于平滑处理）
         
     def update(self, downloaded_bytes: int, total_bytes: int,
                completed: int, failed: int, total: int, skipped: int = 0):
@@ -69,13 +100,25 @@ class ProgressTracker:
         self.total_bytes = total_bytes
         self.downloaded_bytes = downloaded_bytes
         
-        # 计算速度
+        # 计算瞬时速度
         time_diff = current_time - self.last_update_time
         if time_diff > 0:
             bytes_diff = downloaded_bytes - self.last_bytes_downloaded
             self.current_speed = calc_speed(self.last_update_time, current_time, bytes_diff)
             
-        # 计算平均速度
+            # 更新 EMA 平滑速度
+            if self.current_speed is not None and self.current_speed > 0:
+                if self.ema_speed == 0:
+                    # 首次设置
+                    self.ema_speed = self.current_speed
+                else:
+                    # EMA 更新: new = α * current + (1-α) * old
+                    self.ema_speed = (
+                        self.EMA_ALPHA * self.current_speed + 
+                        (1 - self.EMA_ALPHA) * self.ema_speed
+                    )
+            
+        # 计算全局平均速度（用于总结统计）
         total_time = current_time - self.start_time
         if total_time > 0:
             self.average_speed = downloaded_bytes / total_time
@@ -102,25 +145,117 @@ class ProgressTracker:
             
         return percentage
     
+    def _get_elapsed_seconds(self) -> float:
+        """获取已经过的秒数"""
+        return time.time() - self.start_time
+    
+    def _get_eta_by_speed(self) -> Optional[float]:
+        """
+        基于 EMA 速度计算 ETA
+        
+        Returns:
+            预计剩余秒数（浮点数），如果无法计算则返回 None
+        """
+        # 先检查是否已完成（优先级高于速度检查）
+        remaining_bytes = self.total_bytes - self.downloaded_bytes
+        if remaining_bytes <= 0:
+            return 0.0
+        
+        # 速度为 0 时无法计算
+        if self.ema_speed <= 0:
+            return None
+            
+        return remaining_bytes / self.ema_speed
+    
+    def _get_eta_by_files(self) -> Optional[float]:
+        """
+        基于文件数量计算 ETA
+        
+        假设剩余文件的平均处理时间与已完成文件相同
+        
+        Returns:
+            预计剩余秒数（浮点数），如果无法计算则返回 None
+        """
+        processed_files = self.completed_files + self.failed_files + self.skipped_files
+        
+        # 先检查是否已完成（优先级高于其他检查）
+        remaining_files = self.total_files - processed_files
+        if remaining_files <= 0:
+            return 0.0
+        
+        # 文件数量不足时无法可靠预测
+        if processed_files < self.MIN_FILES_FOR_FILE_BASED_ETA:
+            return None
+            
+        elapsed = self._get_elapsed_seconds()
+        if elapsed <= 0:
+            return None
+            
+        avg_time_per_file = elapsed / processed_files
+        return remaining_files * avg_time_per_file
+    
     def get_eta_seconds(self) -> Optional[int]:
         """
         获取预计剩余时间（秒）
         
+        使用智能混合算法：
+        1. 初期静默期（前 10 秒）不显示 ETA
+        2. 基于 EMA 速度计算 ETA
+        3. 如果文件数量足够，混合文件数量预测
+        4. 平滑处理避免剧烈波动
+        
         Returns:
             预计剩余秒数，如果无法计算则返回 None
         """
-        if self.average_speed <= 0:
+        # 初期静默期，不显示 ETA
+        elapsed = self._get_elapsed_seconds()
+        if elapsed < self.WARMUP_SECONDS:
             return None
-            
-        remaining_bytes = self.total_bytes - self.downloaded_bytes
-        if remaining_bytes <= 0:
-            return 0
-            
-        eta_seconds = int(remaining_bytes / self.average_speed)
         
-        # 限制最大显示时间（避免显示过大的值）
-        if eta_seconds > 86400:  # 超过 24 小时
+        # 计算基于速度的 ETA
+        eta_by_speed = self._get_eta_by_speed()
+        if eta_by_speed is None:
             return None
+        
+        # 计算最终 ETA
+        final_eta = eta_by_speed
+        
+        # 如果文件数量足够，混合文件数量预测
+        eta_by_files = self._get_eta_by_files()
+        if eta_by_files is not None:
+            # 动态权重：完成比例越高，文件数量权重越高
+            processed_files = self.completed_files + self.failed_files + self.skipped_files
+            progress = processed_files / self.total_files if self.total_files > 0 else 0
+            
+            # 权重范围：0.2 ~ 0.6（完成比例越高，文件数量权重越高）
+            file_weight = min(0.6, 0.2 + progress * 0.6)
+            speed_weight = 1 - file_weight
+            
+            final_eta = speed_weight * eta_by_speed + file_weight * eta_by_files
+        
+        # 平滑处理：避免 ETA 剧烈波动
+        if self.last_eta is not None and self.last_eta > 0:
+            # 如果变化超过 50%，平滑处理
+            change_ratio = abs(final_eta - self.last_eta) / self.last_eta
+            if change_ratio > 0.5:
+                final_eta = (
+                    self.ETA_SMOOTH_ALPHA * final_eta + 
+                    (1 - self.ETA_SMOOTH_ALPHA) * self.last_eta
+                )
+        
+        # 更新上次 ETA
+        self.last_eta = final_eta
+        
+        # 转换为整数
+        eta_seconds = int(final_eta)
+        
+        # 限制最大显示时间
+        if eta_seconds > self.MAX_ETA_SECONDS:
+            return None
+        
+        # 避免负值
+        if eta_seconds < 0:
+            return 0
             
         return eta_seconds
     
@@ -135,7 +270,10 @@ class ProgressTracker:
             格式化的时间字符串
         """
         if eta_seconds is None:
-            return "未知"
+            # 检查是否在初期静默期
+            if self._get_elapsed_seconds() < self.WARMUP_SECONDS:
+                return "计算中..."
+            return ">1天"
         
         if eta_seconds < 60:
             return f"{eta_seconds}秒"
@@ -172,8 +310,9 @@ class ProgressTracker:
         processed_files = self.completed_files + self.failed_files
         files_info = f"{processed_files:>5} / {self.total_files:<5}"
         
-        # 速度
-        speed_info = format_speed(self.current_speed)
+        # 速度（使用 EMA 速度，更稳定）
+        display_speed = self.ema_speed if self.ema_speed > 0 else self.current_speed
+        speed_info = format_speed(display_speed)
         
         # 基础进度行
         progress_line = (
@@ -207,8 +346,8 @@ class ProgressTracker:
         
         # ETA
         eta_seconds = self.get_eta_seconds()
-        if eta_seconds is not None and eta_seconds > 0:
-            eta_str = self.format_eta(eta_seconds)
+        eta_str = self.format_eta(eta_seconds)
+        if eta_str:
             stats_parts.append(f"⏱ 剩余: {eta_str}")
         
         if not stats_parts:
@@ -308,4 +447,3 @@ class SimpleProgressBar:
         percentage_str = f"{percentage:3}%" if percentage is not None else " NA%"
         
         return f"{bar} {percentage_str}"
-
