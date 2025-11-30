@@ -75,7 +75,7 @@ def get_nested(from_dict: Dict, key: str, default=None):
         for key in keys:
             result = result[key]
         return result
-    except KeyError:
+    except (KeyError, TypeError, IndexError):
         return default
 
 
