@@ -1,4 +1,5 @@
 import base64
+import binascii
 import collections
 import contextlib
 import email.utils
@@ -79,9 +80,13 @@ def get_nested(from_dict: Dict, key: str, default=None):
 
 
 def is_base_64(s):
+    if isinstance(s, str):
+        s = s.encode()
+    if not isinstance(s, (bytes, bytearray)):
+        return False
     try:
-        return base64.b64encode(base64.b64decode(s)) == s
-    except Exception:  # pylint: disable=broad-exception-caught
+        return base64.b64encode(base64.b64decode(s, validate=True)) == s
+    except (binascii.Error, TypeError, ValueError):
         return False
 
 
