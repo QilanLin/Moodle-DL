@@ -46,7 +46,7 @@ You may need to install [Visual C++ compiler for Python](https://wiki.python.org
 
   - Download and Install Microsoft [Build Tools for Visual Studio 2019 from here](https://aka.ms/vs/16/release/vs_buildtools.exe)
   - In Build tools, install C++ build tools and ensure the latest versions of MSVCv142 - VS 2019 C++ x64/x86 build tools and Windows 10 SDK are checked.
-  - In some very edge cases, you may also need [Visual C++ 14.0 Redistrubution Packages](https://aka.ms/vs/17/release/vc_redist.x64.exe)
+  - In some very edge cases, you may also need [Visual C++ 14.0 Redistribution Packages](https://aka.ms/vs/17/release/vc_redist.x64.exe)
 </details>
 
 If you run the program on **Windows**, please use [Powershell or CMD](https://www.isunshare.com/windows-10/5-ways-to-open-windows-powershell-in-windows-10.html). Please do not use a mintty like MINGW or similar.
@@ -62,7 +62,6 @@ If you run the program on **Windows**, please use [Powershell or CMD](https://ww
   - Disabled yt-dlp for video downloads (saves bandwidth and storage)
   - Only creates shortcuts for HTML pages (YouTube, Tumblr, etc.) instead of downloading page source
   - Downloads actual files (PDFs, videos, ZIP files) when linked externally
-  - Removed yt-dlp dependency to reduce installation size
 
  
 
@@ -106,7 +105,7 @@ If you need help configuring telegram notifications [click here](https://github.
 - The `privatetoken` can be used to create a cookie for your Moodle account. A Cookie is what is used to tell Moodle that you are logged in. The `cookie.txt` always keeps a valid cookie for you, take great care of this file, if it falls into the wrong hands someone can take over your entire Moodle account. This feature is only important for Moodles with plugins installed that are not supported by the Moodle app. If you do not want to generate cookies, remove the `privatetoken` from the `config.json`.
 
 
-### Alternativ downloader
+### Alternative downloader
 
 [webeep-sync](https://github.com/toto04/webeep-sync#english-version)
 - Written with node.js
