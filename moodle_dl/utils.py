@@ -1544,7 +1544,7 @@ class UrlHelper:
 
         主要功能：
         1. 处理 HTML 转义（&amp; → &）
-        2. 检查 URL 是否已包含 token（避免重复添加）
+        2. 检查并复用已存在的 token（避免重复添加）
         3. 转换 /pluginfile.php → /webservice/pluginfile.php
         4. 添加必要参数：token, offline=1, lang（可选）
         5. 只处理属于当前站点的 pluginfile URL
@@ -1573,35 +1573,33 @@ class UrlHelper:
         # 1. 处理 HTML 转义（Moodle 有时会返回 &amp;）
         url = url.replace('&amp;', '&')
 
-        # 2. 检查是否已包含 token（避免重复添加）
-        if 'token=' in url:
-            # URL 已经包含 token，直接返回
-            return url
-
-        # 3. 检查是否为 pluginfile URL
+        # 2. 检查是否为 pluginfile URL
         if '/pluginfile.php' not in url:
             # 不是 pluginfile URL，不需要修复
             return url
 
-        # 4. 确保 moodle_base_url 不以 / 结尾
+        # 3. 确保 moodle_base_url 不以 / 结尾
         moodle_base_url_clean = moodle_base_url.rstrip('/')
 
-        # 5. 检查 URL 是否属于当前站点
+        # 4. 检查 URL 是否属于当前站点
         if not url.startswith(moodle_base_url_clean):
             # URL 不属于当前站点，不处理（可能是外部资源）
             return url
 
-        # 6. 转换 /pluginfile.php → /webservice/pluginfile.php
+        # 5. 转换 /pluginfile.php → /webservice/pluginfile.php
         # 官方逻辑：如果 URL 是 {siteUrl}/pluginfile.php，则转换为 webservice/pluginfile.php
         if '/webservice/pluginfile.php' not in url:
             url = url.replace('/pluginfile.php', '/webservice/pluginfile.php')
 
-        # 7. 添加必要参数
+        # 6. 添加必要参数
         url_parts = list(urlparse.urlparse(url))
         query = dict(urlparse.parse_qsl(url_parts[4]))
 
+        # 复用已存在的 token，避免重复添加
+        token_to_use = query.get('token', token)
+
         # 添加 token（用于认证）
-        query['token'] = token
+        query['token'] = token_to_use
 
         # 添加 offline=1（外部仓库需要这个参数）
         # 参考：官方注释 "Always send offline=1 (it's for external repositories)"

@@ -28,7 +28,7 @@ class TestFixPluginfileUrl(unittest.TestCase):
         assert "offline=1" in fixed
 
     def test_url_with_existing_token(self):
-        """测试已包含 token 的 URL（不应修改）"""
+        """测试已包含 token 的 URL 仍需补齐 offline/webservice 等"""
         url = "https://moodle.example.com/pluginfile.php/123/file.pdf?token=existingtoken"
         token = "newtoken"
         base_url = "https://moodle.example.com"
@@ -38,8 +38,24 @@ class TestFixPluginfileUrl(unittest.TestCase):
         # 应该保留原 token，不添加新 token
         assert "token=existingtoken" in fixed
         assert "token=newtoken" not in fixed
-        # 应该原样返回
-        assert fixed == url
+        # 仍需补齐 webservice 和 offline
+        assert "/webservice/pluginfile.php" in fixed
+        assert "offline=1" in fixed
+
+    def test_existing_token_without_offline_or_webservice(self):
+        """已含 token 但缺少 webservice/offline 时也应补齐"""
+        url = "https://moodle.example.com/pluginfile.php/123/file.pdf?token=keepme&foo=bar"
+        token = "ignoreme"
+        base_url = "https://moodle.example.com"
+
+        fixed = UrlHelper.fix_pluginfile_url(url, token, base_url, add_lang=True, lang="en")
+
+        assert "/webservice/pluginfile.php" in fixed
+        assert "token=keepme" in fixed
+        assert "token=ignoreme" not in fixed
+        assert "offline=1" in fixed
+        assert "foo=bar" in fixed
+        assert "lang=en" in fixed
 
     def test_html_entity_escaping(self):
         """测试 HTML 实体转义（&amp; → &）"""
@@ -174,8 +190,11 @@ class TestIntegration(unittest.TestCase):
         # 再次调用 fix_pluginfile_url
         result = UrlHelper.fix_pluginfile_url(fixed_url, "newtoken", "https://keats.kcl.ac.uk")
 
-        # 应该保持不变（因为已包含 token）
-        assert result == fixed_url
+        # 应该保持 webservice/token/offline，且不添加新 token
+        assert result.count("/webservice/pluginfile.php") == 1
+        assert "token=abc" in result
+        assert "token=newtoken" not in result
+        assert "offline=1" in result
 
     def test_real_world_scenario_3(self):
         """真实场景 3: 处理外部资源（Kaltura）"""
