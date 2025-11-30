@@ -88,6 +88,6 @@ if __name__ == "__main__":
     sys.stdin.readline()
     time.sleep(1)
     test_with_carriage_return()
-    
+
     print("\n\nDone! Press Enter to exit...")
     sys.stdin.readline()
