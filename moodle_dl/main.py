@@ -99,7 +99,7 @@ def _get_failed_download_statistics(database: StateRecorder) -> Dict[int, Dict]:
         database: StateRecorder instance
         
     Returns:
-        Dictionary with failed files summary, or None if no failures
+        Dictionary with failed files summary. Returns an empty dictionary if no failures
     """
     return database.get_failed_files_summary()
 
