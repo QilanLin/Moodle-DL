@@ -80,7 +80,7 @@ class TestRetryFailedDownloadsAtomization(unittest.TestCase):
         """Test printing detailed statistics"""
         summary = {
             1: {
-                'course_name': 'Test Course',
+                'course_fullname': 'Test Course',
                 'failed_count': 5,
                 'total_failures': 10,
                 'max_consecutive': 3
@@ -165,6 +165,8 @@ class TestRetryFailedDownloadsAtomization(unittest.TestCase):
         opts.download_chunk_size = 8192
         opts.max_parallel_yt_dlp = 2
         opts.cookies_text = None
+        opts.max_parallel_api_calls = 10
+        opts.log_responses = False
         opts.global_opts = MagicMock()
         opts.global_opts.skip_cert_verify = False
         database = MagicMock()
@@ -312,7 +314,7 @@ class TestRetryFailedDownloadsFlow(unittest.TestCase):
         mock_state_recorder.return_value = database_mock
         
         # Setup empty statistics
-        mock_get_stats.return_value = None
+        mock_get_stats.return_value = {}
         
         # Call function
         retry_failed_downloads(config, opts)
