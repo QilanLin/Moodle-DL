@@ -7,6 +7,30 @@ def test_determine_ext_prefers_query_filename_extension():
     assert determine_ext(url, default_ext='bin') == 'mp4'
 
 
+def test_determine_ext_query_only_extension():
+    url = 'https://example.com/?file_name=slides.pptx'
+
+    assert determine_ext(url, default_ext='bin') == 'pptx'
+
+
+def test_determine_ext_with_trailing_slash_after_extension():
+    url = 'https://example.com/content/video.mp4/'
+
+    assert determine_ext(url, default_ext='bin') == 'mp4'
+
+
+def test_determine_ext_preserves_mixed_case_extension():
+    url = 'https://example.com/files/HANDOUT.PdF'
+
+    assert determine_ext(url, default_ext='bin') == 'PdF'
+
+
+def test_determine_ext_invalid_extension_falls_back_to_default():
+    url = 'https://example.com/?filename=lecture_video.mp4!'
+
+    assert determine_ext(url, default_ext='bin') == 'bin'
+
+
 def test_determine_ext_handles_excel_extension():
     url = 'https://example.com/files/report.xlsx'
 
