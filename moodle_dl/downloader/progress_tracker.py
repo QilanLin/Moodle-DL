@@ -104,19 +104,24 @@ class ProgressTracker:
         time_diff = current_time - self.last_update_time
         if time_diff > 0:
             bytes_diff = downloaded_bytes - self.last_bytes_downloaded
-            self.current_speed = calc_speed(self.last_update_time, current_time, bytes_diff)
-            
-            # 更新 EMA 平滑速度
-            if self.current_speed is not None and self.current_speed > 0:
-                if self.ema_speed == 0:
-                    # 首次设置
-                    self.ema_speed = self.current_speed
-                else:
-                    # EMA 更新: new = α * current + (1-α) * old
-                    self.ema_speed = (
-                        self.EMA_ALPHA * self.current_speed + 
-                        (1 - self.EMA_ALPHA) * self.ema_speed
-                    )
+            if bytes_diff <= 0:
+                # 下载进度未前进，重置速度以避免 ETA 停滞在旧值
+                self.current_speed = 0.0
+                self.ema_speed = 0.0
+            else:
+                self.current_speed = calc_speed(self.last_update_time, current_time, bytes_diff)
+
+                # 更新 EMA 平滑速度
+                if self.current_speed is not None and self.current_speed > 0:
+                    if self.ema_speed == 0:
+                        # 首次设置
+                        self.ema_speed = self.current_speed
+                    else:
+                        # EMA 更新: new = α * current + (1-α) * old
+                        self.ema_speed = (
+                            self.EMA_ALPHA * self.current_speed +
+                            (1 - self.EMA_ALPHA) * self.ema_speed
+                        )
             
         # 计算全局平均速度（用于总结统计）
         total_time = current_time - self.start_time

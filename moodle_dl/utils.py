@@ -299,7 +299,7 @@ def float_or_none(v, scale=1, invscale=1, default=None):
 
 
 def format_decimal_suffix(num, fmt='%d%s', *, factor=1000):
-    """Formats numbers with decimal sufixes like K, M, etc"""
+    """Formats numbers with decimal suffixes like K, M, etc"""
     num, factor = float_or_none(num), float(factor)
     if num is None or num < 0:
         return None

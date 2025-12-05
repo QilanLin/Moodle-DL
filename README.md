@@ -19,7 +19,7 @@ Furthermore, moodle-dl can notify you about various activities on your Moodle se
 - Running moodle-dl again will only download files that have not been downloaded yet. Do not miss any files, if files are deleted online, they are still available offline.
 - It is possible to download Moodle courses you are enrolled in, as well as courses that are publicly visible to you.
 
-Discussions about the development take place mainly on [Github](https://github.com/C0D3D3V/Moodle-DL/issues), but also on [Discord](https://discord.gg/HNg7CsqEnZ).
+Discussions about the development take place mainly on [GitHub](https://github.com/C0D3D3V/Moodle-DL/issues), but also on [Discord](https://discord.gg/HNg7CsqEnZ).
 
 ## 🚀 Setup
 
