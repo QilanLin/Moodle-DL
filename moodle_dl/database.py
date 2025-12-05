@@ -81,7 +81,13 @@ class StateRecorder:
             current_version = c.execute('pragma user_version').fetchone()[0]
             
             # 检查所有必要的表是否存在
-            required_tables = ['files', 'auth_sessions', 'cookie_store', 'auth_audit_log']
+            required_tables = [
+                'files',
+                'auth_sessions',
+                'cookie_store',
+                'auth_audit_log',
+                'incomplete_downloads',
+            ]
             existing_tables = set([
                 row[0] for row in c.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
@@ -139,7 +145,7 @@ class StateRecorder:
                 logging.debug(f'✓ 数据库已是最新版本 (v{current_version})，所有表完整')
 
             # ============================================================
-            # 增量升级已弃用：统一使用 v8 schema
+            # 增量升级已弃用：统一使用 v9 schema
             # 旧的增量升级代码已移至文件末尾的 _deprecated_incremental_upgrade()
             # ============================================================
 
@@ -152,14 +158,14 @@ class StateRecorder:
 
     # ============================================================
     # 已删除：旧的增量升级代码（v0→v1→v2→...→v8）
-    # 现在统一使用 v8 schema，大幅简化数据库初始化逻辑
+    # 现在统一使用 v9 schema，大幅简化数据库初始化逻辑
     # 如需参考旧代码，请查看 Git 历史记录
     # ============================================================
 
     @staticmethod
     def _create_fresh_database_v8(cursor):
         """
-        为全新数据库直接创建 v8 schema（最新版本）
+        为全新数据库直接创建 v8 schema（v9 的基础部分）
         
         这比执行 8 次增量升级高效得多！
         
