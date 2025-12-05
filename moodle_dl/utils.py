@@ -26,6 +26,7 @@ import requests
 import urllib3
 from aiohttp.cookiejar import CookieJar
 from requests.utils import DEFAULT_CA_BUNDLE_PATH, extract_zipped_paths
+from urllib.parse import parse_qs, urlparse
 
 
 def check_verbose() -> bool:
@@ -139,16 +140,40 @@ KNOWN_EXTENSIONS = (
 
 
 def determine_ext(url, default_ext='unknown_file'):
-    if url is None or '.' not in url:
+    def _validated_guess(guess: str) -> Optional[str]:
+        if not guess:
+            return None
+
+        path_guess = guess.rstrip('/')
+        if '.' in path_guess:
+            path_guess = path_guess.rpartition('.')[2]
+
+        if not path_guess:
+            return None
+
+        if re.match(r'^[A-Za-z0-9]+$', path_guess):
+            return path_guess
+        if path_guess in KNOWN_EXTENSIONS:
+            return path_guess
+        return None
+
+    if url is None:
         return default_ext
-    guess = url.partition('?')[0].rpartition('.')[2]
-    if re.match(r'^[A-Za-z0-9]+$', guess):
-        return guess
-    # Try extract ext from URLs like http://example.com/foo/bar.mp4/?download
-    elif guess.rstrip('/') in KNOWN_EXTENSIONS:
-        return guess.rstrip('/')
-    else:
-        return default_ext
+
+    parsed_url = urlparse(url)
+    query_params = parse_qs(parsed_url.query)
+
+    for key in ('filename', 'file', 'name', 'attachment', 'download', 'file_name'):
+        for value in query_params.get(key, []):
+            guess = _validated_guess(value)
+            if guess:
+                return guess
+
+    path_guess = _validated_guess(parsed_url.path or url)
+    if path_guess:
+        return path_guess
+
+    return default_ext
 
 
 def timeconvert(timestr):
