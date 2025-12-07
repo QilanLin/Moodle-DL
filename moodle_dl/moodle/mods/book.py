@@ -594,19 +594,20 @@ class BookMod(MoodleMod):
 
             logging.info(f'📖 Fetching print book HTML using headless browser from: {print_book_url}')
 
-            # Get cookies path
-            cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
+            # 优先且唯一来源：从认证数据库中获取 Playwright 格式的 cookies（Cookies.txt 已彻底弃用）
+            from moodle_dl.cookie_manager import create_cookie_manager_from_client
 
-            if not os.path.exists(cookies_path):
-                logging.warning(f'⚠️  Cookies file not found at {cookies_path}, print book download may fail')
-                return '', ''
-
-            # Convert cookies from Netscape format to Playwright format (use global function)
-            from moodle_dl.cookie_manager import convert_netscape_cookies_to_playwright
-            playwright_cookies = convert_netscape_cookies_to_playwright(cookies_path)
+            cookie_manager = create_cookie_manager_from_client(self.client, self.config)
+            playwright_cookies = cookie_manager.get_cookies_from_db() or []
 
             if not playwright_cookies:
-                logging.warning(f'⚠️  No cookies loaded, print book download may fail')
+                logging.warning(
+                    '⚠️  No cookies found in auth database for Playwright session, '
+                    'print book download will be skipped'
+                )
+                logging.info(
+                    '💡 请先运行 `moodle-dl --init --sso` 或通过配置向导完成一次登录，以将 cookies 写入数据库。'
+                )
                 return '', ''
 
             # Get Moodle domain for request filtering

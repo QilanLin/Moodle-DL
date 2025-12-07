@@ -744,11 +744,27 @@ class ConfigHelper:
                         # 如果域名不以.开头且不是localhost,添加.
                         if domain and not domain.startswith('.') and domain != 'localhost':
                             domain = '.' + domain
-                        
+
                         flag = 'TRUE' if domain.startswith('.') else 'FALSE'
                         path = cookie.get('path', '/')
                         secure = 'TRUE' if cookie.get('secure', 0) else 'FALSE'
-                        expires = str(cookie.get('expires', 0))
+
+                        # ⚠️ 重要：Netscape cookies.txt 不接受 -1 作为 expires
+                        # - 在 Playwright/数据库中，-1 表示「会话 cookie」
+                        # - 但 yt-dlp / MozillaCookieJar 会直接丢弃 expires=-1 的条目
+                        #   （表现为你看到的 “skipping cookie file entry due to invalid expires at -1”）
+                        # - 为了兼容，它们期望会话 cookie 用 0 或空字符串
+                        expires_raw = cookie.get('expires', 0)
+                        if expires_raw is None or expires_raw <= 0:
+                            # 统一映射为 0，表示「会话 cookie」，避免被 yt-dlp 跳过
+                            expires = '0'
+                        else:
+                            try:
+                                expires = str(int(expires_raw))
+                            except (TypeError, ValueError):
+                                # 异常情况安全回退为 0（会话）
+                                expires = '0'
+
                         name = cookie.get('name', '')
                         value = cookie.get('value', '')
                         
@@ -763,12 +779,7 @@ class ConfigHelper:
             # 数据库读取失败,记录日志并回退到文件读取
             logging.error(f'从数据库读取 cookies 失败: {e},回退到文件读取')
         
-        # v1: 从 txt 文件读取 cookies(向后兼容)
-        cookies_path = PT.get_cookies_path(self.get_misc_files_path())
-        if os.path.isfile(cookies_path):
-            with open(cookies_path, 'r', encoding='utf-8') as cookie_file:
-                return cookie_file.read()
-        
+        # 不再支持 Cookies.txt，仅使用数据库
         return None
 
     def get_yt_dlp_options(self) -> Dict:
