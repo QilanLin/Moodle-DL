@@ -40,12 +40,14 @@ class LtiMod(MoodleMod):
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
-        # LTI module is always enabled for LTI files and cookie_mod files (including kalvidres)
-        # This ensures that cookie_mod-kalvidres files are not filtered out by forum module
-        return not (
-            (file.module_modname.endswith(cls.MOD_NAME) and file.deleted) or
-            (file.module_modname.startswith('cookie_mod-') and file.deleted)
-        )
+        # LTI module handles external tool integrations (including kalvidres, helixmedia via cookie_mod)
+        # For cookie_mod files (kalvidres, helixmedia), always allow to ensure proper handling
+        # For regular LTI files, respect the user's configuration
+        if file.module_modname.startswith('cookie_mod-'):
+            # Cookie-based modules (kalvidres, helixmedia) should always be processed
+            return not file.deleted
+        # For regular LTI files, check configuration
+        return config.get_download_ltis() or (not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted))
 
     def _get_launch_container_name(self, launch_container: int) -> str:
         """Get human-readable name for launch container mode"""
@@ -73,7 +75,10 @@ class LtiMod(MoodleMod):
 
         result = {}
 
-        # LTI module is always enabled - no configuration check needed
+        # Check if LTI downloads are enabled
+        if not self.config.get_download_ltis():
+            return result
+        
         # 首先尝试使用 Mobile API
         try:
             response = await self.client.async_post(

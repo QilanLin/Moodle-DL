@@ -243,6 +243,18 @@ KNOWN_EXTENSIONS = tuple(
 )
 
 
+# 可能是网页或脚本的后缀（不应被判断为"明确是文件"）
+# 当服务器返回 text/html 或 text/plain 时，这些后缀的 URL 仍然被视为 HTML
+_HTML_LIKE_EXTENSIONS = frozenset({
+    'html', 'htm', 'php', 'xhtml', 'mhtml', 'xml', 'xul',
+    'js', 'mjs', 'json', 'jsonld', 'css', 'csh', 'sh',
+})
+
+# 明确是"非 HTML 文件"的后缀集合（从 KNOWN_EXTENSIONS 派生，遵循 DRY 原则）
+# 用于当服务器返回错误的 Content-Type 时，基于 URL 后缀进行启发式判断
+NON_HTML_FILE_EXTENSIONS = frozenset(KNOWN_EXTENSIONS) - _HTML_LIKE_EXTENSIONS
+
+
 def determine_ext(url, default_ext='unknown_file'):
     def _validated_guess(guess: str) -> Optional[str]:
         if not guess:

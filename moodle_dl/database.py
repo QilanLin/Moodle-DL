@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import logging
+import os
 import sqlite3
 import time
 from sqlite3 import Error
@@ -486,6 +487,26 @@ class StateRecorder:
 
         return False
 
+    @staticmethod
+    def _file_exists_on_disk(file: File) -> bool:
+        """
+        检查文件是否实际存在于磁盘上
+        
+        用于处理以下场景：
+        - 用户手动删除了下载的文件（如 .webloc 快捷方式）
+        - 用户希望重新下载但数据库中仍有记录
+        
+        如果文件在数据库中有记录但磁盘上不存在，应该重新下载
+        
+        @param file: 数据库中存储的文件记录
+        @return: True 如果文件存在于磁盘上
+        """
+        if not file.saved_to:
+            # 没有保存路径，认为文件不存在
+            return False
+        
+        return os.path.exists(file.saved_to)
+
     def get_stored_files(self) -> List[Course]:
         """
         获取所有存储的文件（未删除、未修改、未移动的文件）
@@ -672,6 +693,16 @@ class StateRecorder:
                     has_same_path = self.files_have_same_path(current_file, stored_file)
                     was_moved = self.file_was_moved(current_file, stored_file)
                     if has_same_path or was_moved:
+                        # 🆕 检查文件是否实际存在于磁盘上
+                        # 如果用户手动删除了文件，应该重新下载
+                        if not self._file_exists_on_disk(stored_file):
+                            logging.info(
+                                f'📁 [get_new_files] 文件在数据库中存在但磁盘上不存在，将重新下载: '
+                                f'{stored_file.saved_to}'
+                            )
+                            # 不设置 matching_file，让文件被加入下载队列
+                            break
+                        
                         matching_file = current_file
                         # Debug: Log if kalvidres file matched
                         if current_file.module_modname == 'cookie_mod-kalvidres':
@@ -858,6 +889,34 @@ class StateRecorder:
         else:
             self.new_file(file, course_id, course_fullname)
 
+    @staticmethod
+    def _set_insert_defaults(data: dict) -> dict:
+        """
+        为 File.INSERT SQL 语句设置所有必需的默认值
+        
+        这个方法确保所有 INSERT 操作都有完整的字段值，
+        避免 sqlite3.ProgrammingError: You did not supply a value for binding parameter
+        
+        遵循 DRY 原则：默认值只在此处定义一次
+        """
+        # 状态标志字段
+        data.setdefault('modified', 0)
+        data.setdefault('deleted', 0)
+        data.setdefault('moved', 0)
+        data.setdefault('notified', 0)
+        data.setdefault('old_file_id', 0)
+
+        # 下载追踪字段（v7 引入）
+        data.setdefault('download_status', 'pending')
+        data.setdefault('download_attempts', 0)
+        data.setdefault('last_download_at', 0)
+        data.setdefault('last_failed_at', 0)
+        data.setdefault('last_failed_reason', None)
+        data.setdefault('consecutive_failures', 0)
+        data.setdefault('position_in_section', 0)
+        
+        return data
+
     def new_file(self, file: File, course_id: int, course_fullname: str):
         # saves a file to index
 
@@ -866,16 +925,7 @@ class StateRecorder:
 
         data = {'course_id': course_id, 'course_fullname': course_fullname}
         data.update(file.getMap())
-
-        data.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
-
-        # 为下载追踪字段提供默认值（v7 引入）
-        data.setdefault('download_status', 'pending')
-        data.setdefault('download_attempts', 0)
-        data.setdefault('last_download_at', 0)
-        data.setdefault('last_failed_at', 0)
-        data.setdefault('last_failed_reason', None)
-        data.setdefault('consecutive_failures', 0)
+        self._set_insert_defaults(data)
 
         cursor.execute(File.INSERT, data)
 
@@ -957,6 +1007,7 @@ class StateRecorder:
 
         data_new = {'course_id': course_id, 'course_fullname': course_fullname}
         data_new.update(file.getMap())
+        self._set_insert_defaults(data_new)
 
         if file.old_file is not None:
             # insert a new file, but it is already notified because the same file already exists as moved
@@ -990,6 +1041,7 @@ class StateRecorder:
 
         data_new = {'course_id': course_id, 'course_fullname': course_fullname}
         data_new.update(file.getMap())
+        self._set_insert_defaults(data_new)
 
         if file.old_file is not None:
             # insert a new file,
@@ -1078,18 +1130,18 @@ class StateRecorder:
             logging.debug(f'更新失败文件记录: {file.content_filename} (尝试次数: {attempts + 1})')
         else:
             # 新文件，插入失败记录
-            data = {
-                'course_id': course_id,
-                'course_fullname': course_fullname,
+            data = {'course_id': course_id, 'course_fullname': course_fullname}
+            data.update(file.getMap())
+            self._set_insert_defaults(data)
+            # 覆盖失败相关的字段
+            data.update({
                 'download_status': 'failed',
                 'download_attempts': 1,
                 'last_download_at': current_time,
                 'last_failed_at': current_time,
                 'last_failed_reason': error_message[:500] if error_message else None,
                 'consecutive_failures': 1,
-            }
-            data.update(file.getMap())
-            data.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
+            })
 
             cursor.execute(File.INSERT, data)
             logging.debug(f'插入失败文件记录: {file.content_filename}')

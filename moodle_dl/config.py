@@ -39,45 +39,62 @@ def normalize_moodle_url(url: str) -> str:
 @dataclass
 class DownloadOptionsConfig:
     """
-    配置下载选项的 dataclass，提供类型安全和默认值
+    配置下载选项的 dataclass，提供类型安全
     
-    所有字段默认为 False，除了常用的选项（如 descriptions, resources 等）
+    所有字段都必须由用户在初始化向导中明确选择，不提供预设的默认值
     """
-    submissions: bool = False
-    descriptions: bool = True
-    links_in_descriptions: bool = True
-    databases: bool = False
-    forums: bool = False
-    quizzes: bool = False
-    lessons: bool = False
-    workshops: bool = False
-    books: bool = True
-    bigbluebuttonbns: bool = False
-    wikis: bool = False
-    glossaries: bool = False
-    h5pactivities: bool = False
-    h5p_attempts: bool = False
-    imscps: bool = False
-    scorms: bool = False
-    scorm_scos: bool = False
-    scorm_attempts: bool = False
-    subsections: bool = True
-    qbanks: bool = False
-    resources: bool = True
-    urls: bool = False
-    labels: bool = False
-    chats: bool = False
-    choices: bool = False
-    feedbacks: bool = False
-    surveys: bool = False
-    ltis: bool = False
-    calendars: bool = False
-    metadata_files: bool = False
+    submissions: bool
+    descriptions: bool
+    links_in_descriptions: bool
+    databases: bool
+    forums: bool
+    quizzes: bool
+    lessons: bool
+    workshops: bool
+    books: bool
+    bigbluebuttonbns: bool
+    wikis: bool
+    glossaries: bool
+    h5pactivities: bool
+    h5p_attempts: bool
+    imscps: bool
+    scorms: bool
+    scorm_scos: bool
+    scorm_attempts: bool
+    subsections: bool
+    qbanks: bool
+    resources: bool
+    urls: bool
+    labels: bool
+    chats: bool
+    choices: bool
+    feedbacks: bool
+    surveys: bool
+    ltis: bool
+    calendars: bool
+    metadata_files: bool
     
     @classmethod
     def from_dict(cls, data: Dict[str, bool]) -> 'DownloadOptionsConfig':
-        """从字典创建配置对象"""
-        return cls(**{k: v for k, v in data.items() if hasattr(cls, k)})
+        """
+        从字典创建配置对象
+        
+        所有字段都必须存在，不允许使用默认值或后备值
+        如果配置不完整，将抛出错误提示用户重新运行初始化向导
+        """
+        from dataclasses import fields
+        # 获取所有字段名
+        all_fields = {f.name for f in fields(cls)}
+        # 检查缺失的字段
+        missing_fields = all_fields - set(data.keys())
+        if missing_fields:
+            raise ValueError(
+                f'配置文件不完整，缺少以下字段: {", ".join(sorted(missing_fields))}\n'
+                f'请运行 moodle-dl --init 重新配置下载选项'
+            )
+        # 构建参数字典（只使用用户明确配置的值）
+        kwargs = {field: data[field] for field in all_fields}
+        return cls(**kwargs)
     
     def to_dict(self) -> Dict[str, bool]:
         """转换为字典"""
@@ -280,34 +297,15 @@ class ConfigHelper:
                         error_msg += f'    💡 建议: {error.suggestion}\n'
                 raise ValueError(error_msg)
 
-    def _get_default_download_options(self) -> Dict[str, bool]:
-        """
-        获取所有下载选项的默认值
-        
-        确保保存时配置文件包含所有下载选项，使用户一目了然所有可用的配置项
-        
-        Returns:
-            包含所有下载选项及其默认值的字典
-        """
-        # 使用 dataclass 获取默认值，确保一致性
-        return DownloadOptionsConfig().to_dict()
-
     def _ensure_download_options_present(self):
         """
-        确保配置中存在所有下载选项
+        确保配置中存在 download_options 字典结构
         
-        对于缺失的选项，使用默认值填充。这样配置文件会始终包含所有可用的选项，
-        用户可以很容易地看到哪些选项是可用的。
+        注意：不再自动填充默认值，所有选项必须由用户在初始化向导中明确选择
+        这样可以避免硬编码的默认值覆盖用户的选择
         """
         if 'download_options' not in self._whole_config:
             self._whole_config['download_options'] = {}
-        
-        download_options = self._whole_config['download_options']
-        defaults = self._get_default_download_options()
-        
-        for option_name, default_value in defaults.items():
-            if option_name not in download_options:
-                download_options[option_name] = default_value
     
     def _get_download_options_config(self) -> DownloadOptionsConfig:
         """
@@ -321,15 +319,19 @@ class ConfigHelper:
         download_options = self._whole_config.get('download_options', {})
         return DownloadOptionsConfig.from_dict(download_options)
 
-    def _save(self, validate: bool = False):
+    def _save(self, validate: bool = False, ensure_complete: bool = True):
         """
         保存配置到文件
         
         Args:
             validate: 是否在保存前验证配置（默认为 False，避免循环依赖）
+            ensure_complete: 是否用默认值填充缺失的配置项（默认为 True）
+                           设为 False 可避免在初始化向导中覆盖用户选择
         """
         # 改进: 保存前补全所有配置选项，使配置文件更完整
-        self._ensure_download_options_present()
+        # 但在初始化向导中，用户的选择应该优先，不应该被默认值覆盖
+        if ensure_complete:
+            self._ensure_download_options_present()
         
         # 可选：保存前验证
         if validate:
@@ -392,7 +394,7 @@ class ConfigHelper:
         """
         return self.get_property_or(f'download_{option_name}', default)
 
-    def set_property(self, key: str, value: any, validate: bool = False):
+    def set_property(self, key: str, value: any, validate: bool = False, ensure_complete: bool = True):
         """
         设置配置属性
         
@@ -400,10 +402,11 @@ class ConfigHelper:
             key: 属性键
             value: 属性值
             validate: 是否验证配置（默认为 False）
+            ensure_complete: 是否用默认值填充缺失的配置项（默认为 True）
         """
         # sets a property in the JSON object
         self._whole_config.update({key: value})
-        self._save(validate=validate)
+        self._save(validate=validate, ensure_complete=ensure_complete)
 
     def remove_property(self, key: str, validate: bool = False):
         """

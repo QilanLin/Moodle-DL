@@ -112,42 +112,38 @@ class ConfigValidator:
         'download_linked_files': False,
         # 手动指定的课程
         'manually_specified_course_ids': [],
-        # 扁平化的下载选项（向后兼容，新配置应使用 download_options）
-        'download_submissions': None,
-        'download_quizzes': None,
-        'download_lessons': None,
-        'download_workshops': None,
-        'download_books': None,
-        'download_scorms': None,
-        'download_h5pactivities': None,
-        'download_imscps': None,
-        'download_urls': None,
-        'download_labels': None,
-        'download_forums': None,
-        'download_wikis': None,
-        'download_glossaries': None,
-        'download_databases': None,
-        'download_chats': None,
-        'download_feedbacks': None,
-        'download_surveys': None,
-        'download_choices': None,
-        'download_calendars': None,
-        'download_bigbluebuttonbns': None,
-        'download_qbanks': None,
-        'download_descriptions': None,
-        'download_links_in_descriptions': None,
+        # 扁平化的下载选项会从 DOWNLOAD_OPTIONS_FIELDS 自动生成（见下方）
     }
     
-    # 下载选项字段（应该都是布尔值）
-    DOWNLOAD_OPTIONS_FIELDS = [
-        'submissions', 'descriptions', 'links_in_descriptions',
-        'databases', 'forums', 'quizzes', 'lessons', 'workshops',
-        'books', 'bigbluebuttonbns', 'wikis', 'glossaries',
-        'h5pactivities', 'h5p_attempts', 'imscps', 'scorms',
-        'scorm_scos', 'scorm_attempts', 'subsections', 'qbanks',
-        'resources', 'urls', 'labels', 'chats', 'choices',
-        'feedbacks', 'surveys', 'ltis', 'calendars', 'metadata_files'
-    ]
+    # 下载选项字段（单一来源，遵循 DRY 原则）
+    # 从 DownloadOptionsConfig 的字段自动获取
+    @staticmethod
+    def _get_download_options_fields():
+        """从 DownloadOptionsConfig 获取所有下载选项字段名"""
+        from dataclasses import fields
+        from moodle_dl.config import DownloadOptionsConfig
+        return [f.name for f in fields(DownloadOptionsConfig)]
+    
+    # 延迟初始化，避免循环导入
+    _download_options_fields_cache = None
+    
+    @classmethod
+    def get_download_options_fields(cls):
+        """获取下载选项字段列表（带缓存）"""
+        if cls._download_options_fields_cache is None:
+            cls._download_options_fields_cache = cls._get_download_options_fields()
+        return cls._download_options_fields_cache
+    
+    @classmethod
+    def get_known_config_fields(cls):
+        """获取完整的已知配置字段字典（包括动态生成的 download_xxx 字段）"""
+        # 复制基础字段（REQUIRED + OPTIONAL）
+        fields = {field: None for field in cls.REQUIRED_FIELDS}
+        fields.update(cls.OPTIONAL_FIELDS.copy())
+        # 从 DownloadOptionsConfig 自动生成 download_xxx 字段
+        for field in cls.get_download_options_fields():
+            fields[f'download_{field}'] = None
+        return fields
     
     def __init__(self, strict: bool = False):
         """
@@ -244,7 +240,8 @@ class ConfigValidator:
                 result.add_warning(field, f'必需字段为空: {field}')
         
         # 检查未知字段（可能是拼写错误）
-        known_fields = set(self.REQUIRED_FIELDS) | set(self.OPTIONAL_FIELDS.keys())
+        # 使用 get_known_config_fields() 获取完整的字段列表（包括自动生成的 download_xxx）
+        known_fields = set(self.get_known_config_fields().keys())
         for field in config.keys():
             if field not in known_fields:
                 result.add_warning(field, f'未知的配置字段: {field}',
@@ -286,7 +283,7 @@ class ConfigValidator:
             else:
                 # 检查每个下载选项的类型
                 for opt_name, opt_value in config['download_options'].items():
-                    if opt_name in self.DOWNLOAD_OPTIONS_FIELDS:
+                    if opt_name in self.get_download_options_fields():
                         if not isinstance(opt_value, bool):
                             result.add_error(f'download_options.{opt_name}',
                                            f'必须是布尔类型 (true/false)，当前是 {type(opt_value).__name__}')
@@ -387,7 +384,7 @@ class ConfigValidator:
                                  suggestion='考虑将 links_in_descriptions 也设为 false')
             
             # 如果所有选项都是 false，警告用户
-            if all(not opts.get(field, False) for field in self.DOWNLOAD_OPTIONS_FIELDS):
+            if all(not opts.get(field, False) for field in self.get_download_options_fields()):
                 result.add_warning('download_options',
                                  '所有下载选项都是 false，可能不会下载任何文件',
                                  suggestion='至少启用一些下载选项')

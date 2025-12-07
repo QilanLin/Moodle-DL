@@ -79,8 +79,9 @@ class ConfigWizard:
         ]
 
         # 自动启用以下功能（不再需要用户单独配置）
-        self.config.set_property('download_also_with_cookie', True)  # Cookie下载
-        self.config.set_property('download_linked_files', True)      # 外部链接文件下载（ffmpeg是必需依赖）
+        # ensure_complete=False: 避免在初始化阶段用默认值填充 download_options
+        self.config.set_property('download_also_with_cookie', True, ensure_complete=False)  # Cookie下载
+        self.config.set_property('download_linked_files', True, ensure_complete=False)      # 外部链接文件下载（ffmpeg是必需依赖）
 
         current_step = 0
 
@@ -709,7 +710,7 @@ class ConfigWizard:
         """
         self.section_separator()
         Log.info(
-            'Moodle-DL 支持下载 26 种不同类型的模块。你可以选择要下载哪些类型。\n'
+            'Moodle-DL 支持下载 30 种不同类型的模块。你可以选择要下载哪些类型。\n'
             + '使用空格键勾选/取消，回车键确认选择。\n'
             + '✅ = 将会下载   [ ] = 不下载'
         )
@@ -728,18 +729,30 @@ class ConfigWizard:
              '按同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
 
             # 内容与资源模块
+            ('download_resources', '资源文件 (Resources)',
+             'Moodle 最常用的模块，用于上传和分享文件（PDF、PPT、Word、视频等）。这是课程材料的主要来源。'),
             ('download_books', '书籍 (Books)',
              '页面集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
+            ('download_subsections', '子章节 (Subsections)',
+             '课程中的子章节内容。子章节可以嵌套在主章节下，形成多层次的课程结构。'),
             ('download_scorms', 'SCORM包 (SCORM)',
              '电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
+            ('download_scorm_scos', 'SCORM学习对象 (SCORM SCOs)',
+             'SCORM包中的单个学习对象（Shareable Content Objects）。每个SCO是一个独立的学习单元。'),
+            ('download_scorm_attempts', 'SCORM尝试记录 (SCORM Attempts)',
+             '学生在SCORM课程中的学习记录和成绩。包含完成状态、得分、时间等跟踪数据。'),
             ('download_h5pactivities', 'H5P活动 (H5P Activities)',
              '现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
+            ('download_h5p_attempts', 'H5P尝试记录 (H5P Attempts)',
+             '学生在H5P活动中的答题记录和成绩。包含每次尝试的答案、得分和时间信息。'),
             ('download_imscps', 'IMS内容包 (IMS Content Package)',
              'IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
             ('download_urls', 'URL链接 (URLs)',
              '模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
             ('download_labels', '标签 (Labels)',
              '课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
+            ('download_ltis', 'LTI外部工具 (LTI External Tools)',
+             'Learning Tools Interoperability - 集成第三方学习工具（如Zoom、YouTube、Turnitin等）的标准接口。'),
 
             # 协作与交流模块
             ('download_forums', '论坛 (Forums)',
@@ -774,6 +787,8 @@ class ConfigWizard:
              '课程中各种资源的描述文本。描述会创建为 Markdown 文件，包含文件、任务、作业的说明信息。适合离线阅读或存档。'),
             ('download_links_in_descriptions', '描述中的链接 (Links in Descriptions)',
              '描述中包含的网页、文件或视频链接。可指向 Moodle 内部页面或外部资源。下载后会创建快捷方式或副本文件。'),
+            ('download_metadata_files', '元数据文件 (Metadata Files)',
+             '为资源生成的元数据文件（.json、_info等）。包含文件的详细信息、上传时间、修改记录等结构化数据，便于归档和检索。'),
         ]
 
         # 获取当前配置
@@ -810,10 +825,26 @@ class ConfigWizard:
             selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
         )
 
-        # 保存配置
+        # 保存配置到 download_options 字典中（新格式）
+        # 构建完整的 download_options 字典，包含所有用户选择
+        download_options = {}
+        
+        # 先构建完整的字典（包含所有用户选择）
         for i, (config_key, name, desc) in enumerate(modules):
             should_download = i in selected_indices
-            self.config.set_property(config_key, should_download)
+            # 将 download_xxx 转换为 xxx（去掉 download_ 前缀）
+            option_key = config_key.replace('download_', '')
+            download_options[option_key] = should_download
+        
+        # 一次性保存 download_options
+        # ensure_complete=False: 不用默认值填充，完全使用用户的选择
+        self.config.set_property('download_options', download_options, ensure_complete=False)
+        
+        # 再保存旧格式的兼容性配置
+        # ensure_complete=False: 避免默认值覆盖用户选择
+        for i, (config_key, name, desc) in enumerate(modules):
+            should_download = i in selected_indices
+            self.config.set_property(config_key, should_download, ensure_complete=False)
 
         print('')
         Log.success(f'已选择 {len(selected_indices)}/{len(modules)} 个模块类型进行下载')

@@ -377,5 +377,50 @@ class HeadInfo:
     host: str
 
     def __post_init__(self):
+        """
+        判断响应是否为 HTML 页面
+        
+        判断逻辑：
+        1. 基于服务器返回的 Content-Type 头
+        2. 如果 Content-Type 是 HTML/text，但 URL 明确以文件后缀结尾（如 .pdf, .mp4），
+           则认为是服务器配置错误，强制判断为非 HTML
+        
+        这解决了以下问题：
+        - 服务器临时错误返回错误页面（Content-Type: text/html）
+        - 服务器配置不当，对 PDF 等文件返回 text/plain
+        """
         if self.content_type in ('text/html', 'text/plain'):
-            self.is_html = True
+            # 检查 URL 是否明确以已知文件后缀结尾
+            # 如果是，则认为服务器返回了错误的 Content-Type，不应视为 HTML
+            if self._url_has_non_html_extension():
+                self.is_html = False
+            else:
+                self.is_html = True
+    
+    def _url_has_non_html_extension(self) -> bool:
+        """
+        检查 URL 是否以已知的非 HTML 文件后缀结尾
+        
+        例如：
+        - https://example.com/slides07.pdf → True（.pdf 是非 HTML 后缀）
+        - https://example.com/page.html → False（.html 是 HTML 后缀）
+        - https://example.com/video.mp4?token=xxx → True（.mp4 是非 HTML 后缀）
+        """
+        import os
+        from urllib.parse import urlparse
+        from moodle_dl.utils import NON_HTML_FILE_EXTENSIONS
+        
+        if not self.final_url:
+            return False
+        
+        # 解析 URL 路径（去除查询参数）
+        parsed = urlparse(self.final_url)
+        path = parsed.path
+        
+        # 获取文件后缀（不含点号，小写）
+        _, ext = os.path.splitext(path)
+        if ext:
+            ext = ext[1:].lower()  # 去掉点号，转小写
+            return ext in NON_HTML_FILE_EXTENSIONS
+        
+        return False
