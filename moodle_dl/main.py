@@ -73,6 +73,8 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
         DatabaseManager(config, opts).reset_all_downloaded_files()
     elif opts.new_token:
         MoodleWizard(config, opts).interactively_acquire_token(use_stored_url=True)
+    elif opts.refresh_cookies:
+        refresh_cookies_only(config, opts)
     elif opts.retry_failed:
         retry_failed_downloads(config, opts)
     else:
@@ -262,6 +264,150 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
 
     # Step 7: Print results
     _print_retry_results(new_failed_downloads)
+
+
+def refresh_cookies_only(config: ConfigHelper, opts: MoodleDlOpts):
+    """
+    只刷新浏览器 cookies，不重置任何文件下载状态
+    
+    这个功能对于以下情况很有用：
+    - Cookies 已过期，需要刷新
+    - 想要重试失败的下载，但 cookies 已失效
+    - 不想重新下载所有文件，只想更新认证信息
+    
+    Process:
+    1. 检查 Moodle URL 配置
+    2. 让用户选择浏览器
+    3. 从浏览器导出 cookies
+    4. 更新数据库中的 cookies（不影响文件下载状态）
+    """
+    from moodle_dl.utils import Cutie, Log, PathTools as PT
+    
+    Log.info('')
+    Log.info('=' * 80)
+    Log.info('🔄 刷新浏览器 Cookies（不影响文件下载状态）')
+    Log.info('=' * 80)
+    Log.info('')
+    
+    # Step 1: 检查 Moodle URL
+    moodle_url = config.get_moodle_URL()
+    if moodle_url is None:
+        Log.error('❌ 错误：未找到 Moodle URL 配置')
+        Log.info('   请先运行: moodle-dl --init')
+        return
+    
+    moodle_domain = moodle_url.domain
+    cookies_path = PT.get_cookies_path(config.get_misc_files_path())
+    
+    Log.info(f'📍 Moodle 域名: {moodle_domain}')
+    Log.info(f'📁 Cookies 保存路径: {cookies_path}')
+    Log.info('')
+    
+    # Step 2: 让用户选择浏览器
+    Log.info('请选择要导出 cookies 的浏览器：')
+    browsers = ['Chrome', 'Firefox', 'Edge', 'Safari', 'Chromium', 'Brave', 'Opera', 'Vivaldi', '自动检测']
+    browser_map = {
+        'Chrome': 'chrome',
+        'Firefox': 'firefox',
+        'Edge': 'edge',
+        'Safari': 'safari',
+        'Chromium': 'chromium',
+        'Brave': 'brave',
+        'Opera': 'opera',
+        'Vivaldi': 'vivaldi',
+        '自动检测': None
+    }
+    
+    # 检查用户上次选择的浏览器
+    try:
+        preferred_browser_key = config.get_property('preferred_browser')
+        # 找到对应的中文名称
+        for key, value in browser_map.items():
+            if value == preferred_browser_key:
+                Log.info(f'💡 上次使用的浏览器: {key}')
+                break
+    except (ValueError, KeyError):
+        pass
+    
+    browser_choice = Cutie.select(browsers, deselected_prefix='  ', selected_prefix='→ ')
+    selected_browser = browser_map[browsers[browser_choice]]
+    
+    # Step 3: 从浏览器导出 cookies
+    Log.info('')
+    Log.info('正在从浏览器导出 cookies...')
+    
+    try:
+        # 动态导入 export_browser_cookies
+        import importlib.util
+        import os
+        script_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            'export_browser_cookies.py'
+        )
+        
+        if not os.path.exists(script_path):
+            script_path = os.path.join(os.getcwd(), 'export_browser_cookies.py')
+        
+        if not os.path.exists(script_path):
+            Log.error('❌ 错误：未找到 export_browser_cookies.py 文件')
+            Log.info('   请确保该文件在项目根目录')
+            return
+        
+        # 加载模块
+        spec = importlib.util.spec_from_file_location("export_browser_cookies", script_path)
+        export_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(export_module)
+        
+        # 导出 cookies
+        success = False
+        if selected_browser:
+            # 用户选择了特定浏览器
+            success = export_module.export_cookies_from_browser(
+                domain=moodle_domain,
+                output_file=cookies_path,
+                browser_name=selected_browser
+            )
+            if success:
+                # 验证 cookies
+                success = export_module.test_cookies(moodle_domain, cookies_path)
+        else:
+            # 自动检测
+            success = export_module.export_cookies_interactive(
+                domain=moodle_domain,
+                output_file=cookies_path,
+                ask_browser=False,
+                auto_get_token=False  # 只刷新 cookies，不获取新 token
+            )
+        
+        if success:
+            Log.success('')
+            Log.success('✅ Cookies 刷新成功！')
+            Log.info('')
+            Log.info('💡 下一步：')
+            Log.info('   如果有下载失败的文件，可以运行：')
+            Log.info('   moodle-dl --retry-failed')
+            Log.info('')
+            
+            # 保存浏览器选择
+            if selected_browser:
+                config.set_property('preferred_browser', selected_browser)
+                Log.info(f'✅ 已保存浏览器选择（{browsers[browser_choice]}），将用于下次自动刷新')
+        else:
+            Log.error('')
+            Log.error('❌ Cookies 导出失败')
+            Log.info('')
+            Log.info('💡 故障排查：')
+            Log.info('   1. 确保在浏览器中已登录 Moodle')
+            Log.info('   2. 尝试选择其他浏览器')
+            Log.info('   3. 或手动运行: python3 export_browser_cookies.py')
+    
+    except ImportError as e:
+        Log.error(f'❌ 错误：无法导入 browser-cookie3 库: {e}')
+        Log.info('   请先安装依赖：pip install browser-cookie3')
+    except Exception as e:
+        Log.error(f'❌ 导出过程出错: {e}')
+        import traceback
+        logging.debug(traceback.format_exc())
 
 
 def connect_sentry(config: ConfigHelper) -> bool:
@@ -567,6 +713,18 @@ def get_parser():
         help=(
             'Retry downloading all previously failed files. '
             + 'This will attempt to re-download files that failed in previous runs.'
+        ),
+    )
+
+    group.add_argument(
+        '--refresh-cookies',
+        dest='refresh_cookies',
+        default=False,
+        action='store_true',
+        help=(
+            'Refresh browser cookies without resetting download status. '
+            + 'This will re-export cookies from your browser and update them in the database. '
+            + 'Useful when your cookies have expired and you need to retry failed downloads.'
         ),
     )
 
