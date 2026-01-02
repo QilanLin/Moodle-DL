@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from pathlib import Path
 from typing import List
 
 from moodle_dl.downloader.task import Task
@@ -61,7 +62,31 @@ class ConsoleService(NotificationService):
             print('')
 
         for task in failed_downloads:
+            # 文件名（显眼）
             Log.cyan(PT.to_valid_name(task.file.content_filename, is_file=True))
-            Log.error(f'\t{task.status.get_error_text()}')
+            
+            # 错误信息
+            Log.error(f'  错误: {task.status.get_error_text()}')
+            
+            # 目标路径（完整的目标文件路径）
+            if hasattr(task, 'destination') and hasattr(task, 'filename'):
+                target_path = str(Path(task.destination) / task.filename)
+            elif task.file.saved_to:
+                target_path = task.file.saved_to
+            else:
+                target_path = '(未知路径)'
+            Log.info(f'  目标: {target_path}')
+            
+            # 源 URL（可能很长，所以放最后）
+            source_url = task.file.content_fileurl
+            # 如果 URL 太长，截断中间部分
+            max_url_length = 120
+            if len(source_url) > max_url_length:
+                url_prefix = source_url[:60]
+                url_suffix = source_url[-50:]
+                source_url = f'{url_prefix}...{url_suffix}'
+            Log.info(f'  来源: {source_url}')
+            
+            print('')  # 每个失败项之间空一行
 
         print('')
