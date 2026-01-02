@@ -1182,9 +1182,15 @@ class StateRecorder:
     def get_failed_files(self, course_id: int = None, min_failures: int = 1) -> List[File]:
         """
         查询下载失败的文件列表
+        
+        包含 'failed' 和 'retrying' 状态的文件：
+        - 'failed': 上次下载失败的文件
+        - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
 
         @param course_id: 可选，只查询特定课程的失败文件
         @param min_failures: 最小连续失败次数，默认1（所有失败文件）
+                            注意：'retrying' 状态的文件 consecutive_failures=0，
+                            但它们仍需要被重试，所以也会被包含
         @return: 失败的文件列表
         """
         conn = sqlite3.connect(self.db_file)
@@ -1194,8 +1200,10 @@ class StateRecorder:
             cursor.execute(
                 """SELECT * FROM files
                 WHERE course_id = ?
-                AND download_status = 'failed'
-                AND consecutive_failures >= ?
+                AND (
+                    (download_status = 'failed' AND consecutive_failures >= ?)
+                    OR download_status = 'retrying'
+                )
                 ORDER BY consecutive_failures DESC, last_failed_at DESC
                 """,
                 (course_id, min_failures)
@@ -1203,8 +1211,10 @@ class StateRecorder:
         else:
             cursor.execute(
                 """SELECT * FROM files
-                WHERE download_status = 'failed'
-                AND consecutive_failures >= ?
+                WHERE (
+                    (download_status = 'failed' AND consecutive_failures >= ?)
+                    OR download_status = 'retrying'
+                )
                 ORDER BY consecutive_failures DESC, last_failed_at DESC
                 """,
                 (min_failures,)
@@ -1248,8 +1258,14 @@ class StateRecorder:
     def get_failed_files_with_course_info(self, min_failures: int = 1) -> Dict[int, Dict]:
         """
         查询下载失败的文件列表，并按课程分组
+        
+        包含 'failed' 和 'retrying' 状态的文件：
+        - 'failed': 上次下载失败的文件
+        - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
 
         @param min_failures: 最小连续失败次数，默认1（所有失败文件）
+                            注意：'retrying' 状态的文件 consecutive_failures=0，
+                            但它们仍需要被重试，所以也会被包含
         @return: 字典，键为 course_id，值为包含 course_fullname 和 files 列表的字典
         """
         conn = sqlite3.connect(self.db_file)
@@ -1258,8 +1274,10 @@ class StateRecorder:
 
         cursor.execute(
             """SELECT * FROM files
-            WHERE download_status = 'failed'
-            AND consecutive_failures >= ?
+            WHERE (
+                (download_status = 'failed' AND consecutive_failures >= ?)
+                OR download_status = 'retrying'
+            )
             ORDER BY course_id, consecutive_failures DESC, last_failed_at DESC
             """,
             (min_failures,)
@@ -1313,6 +1331,10 @@ class StateRecorder:
     def get_failed_files_summary(self) -> Dict[int, Dict]:
         """
         获取失败文件的统计摘要（按课程分组）
+        
+        包含 'failed' 和 'retrying' 状态的文件：
+        - 'failed': 上次下载失败的文件
+        - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
 
         @return: 字典，键为 course_id，值为统计信息
         """
@@ -1329,7 +1351,7 @@ class StateRecorder:
                 MIN(last_failed_at) as earliest_failure,
                 MAX(last_failed_at) as latest_failure
             FROM files
-            WHERE download_status = 'failed'
+            WHERE download_status IN ('failed', 'retrying')
             GROUP BY course_id
             ORDER BY failed_count DESC
             """
@@ -1355,6 +1377,9 @@ class StateRecorder:
     def reset_failed_file_for_retry(self, file: File, course_id: int):
         """
         重置失败文件状态，准备重试
+        使用 'retrying' 状态而非 'pending'，这样如果中断后重新运行，
+        这些文件仍然会被包含在重试列表中。
+        
         不重置 download_attempts（保留历史），但重置 consecutive_failures
 
         @param file: 要重试的文件
@@ -1365,7 +1390,7 @@ class StateRecorder:
 
         cursor.execute(
             """UPDATE files
-            SET download_status = 'pending',
+            SET download_status = 'retrying',
                 consecutive_failures = 0,
                 last_failed_reason = NULL
             WHERE course_id = ?
