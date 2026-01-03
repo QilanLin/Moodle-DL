@@ -9,11 +9,13 @@ from moodle_dl.types import Course
 from moodle_dl.utils import PathTools as PT
 
 
-class TelegramFormater:
+class TelegramFormatter:
+    """Telegram 消息格式化器"""
+    
     @staticmethod
     def append_with_limit(new_line: str, one_msg_content: str, msg_list: List[str], limit: int = 4096):
         """Appends a new line to a message string,
-        if the string is to long it ist appended to the message list.
+        if the string is too long it is appended to the message list.
         Returns the new message string.
 
         Args:
@@ -150,3 +152,8 @@ class TelegramFormater:
 
         result_list.append(one_msg_content)
         return result_list
+
+
+# 向后兼容别名（已弃用，请使用 TelegramFormatter）
+TelegramFormater = TelegramFormatter
+

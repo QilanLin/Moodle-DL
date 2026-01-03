@@ -907,7 +907,7 @@ class StateRecorder:
         if file.deleted:
             self.delete_file(file, course_id, course_fullname)
         elif file.modified:
-            self.modifie_file(file, course_id, course_fullname)
+            self.modify_file(file, course_id, course_fullname)
         elif file.moved:
             self.move_file(file, course_id, course_fullname)
         else:
@@ -1090,7 +1090,14 @@ class StateRecorder:
         conn.commit()
         conn.close()
 
-    def modifie_file(self, file: File, course_id: int, course_fullname: str):
+    def modify_file(self, file: File, course_id: int, course_fullname: str):
+        """
+        处理已修改的文件：更新旧文件状态并插入新文件记录
+        
+        @param file: 修改后的文件对象
+        @param course_id: 课程 ID
+        @param course_fullname: 课程全名
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 

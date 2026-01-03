@@ -1123,7 +1123,7 @@ class BookMod(MoodleMod):
             with open(debug_file, 'w', encoding='utf-8') as f:
                 f.write(html_content)
             logging.debug(f'🔍 Saved Print Book HTML to: {debug_file}')
-        except:
+        except Exception:
             pass
 
         # 匹配每个章节div及其内容

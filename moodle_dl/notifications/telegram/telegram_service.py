@@ -5,7 +5,7 @@ from typing import List
 
 from moodle_dl.downloader.task import Task
 from moodle_dl.notifications.notification_service import NotificationService
-from moodle_dl.notifications.telegram.telegram_formater import TelegramFormater as TF
+from moodle_dl.notifications.telegram.telegram_formatter import TelegramFormatter as TF
 from moodle_dl.notifications.telegram.telegram_shooter import TelegramShooter
 from moodle_dl.types import Course
 

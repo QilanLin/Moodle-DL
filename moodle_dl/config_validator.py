@@ -520,7 +520,7 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             try:
                 fixed_config['download_course_ids'] = [fixed_config['download_course_ids']] if fixed_config['download_course_ids'] else []
                 fixes.append('将 download_course_ids 转换为列表')
-            except:
+            except Exception:
                 fixed_config['download_course_ids'] = []
                 fixes.append('将 download_course_ids 重置为空列表')
     
@@ -529,7 +529,7 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             try:
                 fixed_config['dont_download_course_ids'] = [fixed_config['dont_download_course_ids']] if fixed_config['dont_download_course_ids'] else []
                 fixes.append('将 dont_download_course_ids 转换为列表')
-            except:
+            except Exception:
                 fixed_config['dont_download_course_ids'] = []
                 fixes.append('将 dont_download_course_ids 重置为空列表')
     
@@ -561,7 +561,7 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             try:
                 fixed_config[field] = [fixed_config[field]] if fixed_config[field] else []
                 fixes.append(f'将 {field} 转换为列表')
-            except:
+            except Exception:
                 fixed_config[field] = []
                 fixes.append(f'将 {field} 重置为空列表（无法转换）')
     

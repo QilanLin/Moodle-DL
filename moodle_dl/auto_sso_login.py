@@ -599,7 +599,7 @@ async def _is_on_login_page(current_url: str, page) -> bool:
         try:
             await page.screenshot(path=screenshot_path)
             logging.debug(f'📸 已保存截图到: {screenshot_path}')
-        except:
+        except Exception:
             pass
 
         return True
@@ -721,7 +721,7 @@ async def auto_login_with_sso(
                         logging.info('💡 当前在 SSO 提供商页面')
                         logging.info('   这可能意味着需要重新认证')
                         logging.info('   建议：在浏览器中手动登录一次，然后重试')
-                except:
+                except Exception:
                     pass
 
                 await browser.close()

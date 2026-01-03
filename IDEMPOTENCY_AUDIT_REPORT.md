@@ -26,7 +26,7 @@
 | `new_file()` | ❌ 非幂等 | 直接 INSERT，不检查重复 |
 | `save_failed_file()` | ✅ 幂等 | 先 SELECT 检查，存在则 UPDATE，否则 INSERT |
 | `move_file()` | ⚠️ 部分幂等 | 更新旧文件 + 插入新文件，没有重复检查 |
-| `modifie_file()` | ⚠️ 部分幂等 | 更新旧文件 + 插入新文件，没有重复检查 |
+| `modify_file()` | ⚠️ 部分幂等 | 更新旧文件 + 插入新文件，没有重复检查 |
 | `save_incomplete_download()` | ✅ 幂等 | 先 SELECT 检查，存在则 UPDATE，否则 INSERT |
 
 #### 详细分析

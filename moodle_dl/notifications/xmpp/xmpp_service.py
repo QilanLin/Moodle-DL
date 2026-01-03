@@ -5,7 +5,7 @@ from typing import List
 
 from moodle_dl.downloader.task import Task
 from moodle_dl.notifications.notification_service import NotificationService
-from moodle_dl.notifications.xmpp.xmpp_formater import XmppFormater as XF
+from moodle_dl.notifications.xmpp.xmpp_formatter import XmppFormatter as XF
 from moodle_dl.notifications.xmpp.xmpp_shooter import XmppShooter
 from moodle_dl.types import Course
 
