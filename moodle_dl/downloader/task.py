@@ -556,38 +556,39 @@ class Task:
                     logging.error('[%d] 说明: 该视频受 DRM 保护，无法通过此方式下载', self.task_id)
                     logging.error('[%d] 建议: 无法绕过 DRM 保护。请联系教师或管理员', self.task_id)
                     
+                elif '403' in error_msg or 'Forbidden' in error_msg:
+                    # 403 通常表示 Cookie 过期或权限不足
+                    logging.error('[%d] 📋 错误类型: 403 禁止访问 (Cookie 过期)', self.task_id)
+                    logging.error('[%d] 说明: 没有权限访问 Kaltura CDN（通常是 Cookie 过期）', self.task_id)
+                    logging.error('[%d] 建议: 运行 moodle-dl --refresh-cookies 刷新 Cookie', self.task_id)
+                    
                 elif '404' in error_msg or 'Not Found' in error_msg:
-                    logging.error('[%d] 📋 错误类型: 404 - 内容未找到', self.task_id)
+                    logging.error('[%d] 📋 错误类型: 404 内容未找到', self.task_id)
                     logging.error('[%d] 说明: Kaltura 服务器上未找到该视频', self.task_id)
                     logging.error('[%d] 建议: 检查视频是否被删除或移动', self.task_id)
                     
-                elif 'Timeout' in error_msg or 'timeout' in error_msg.lower():
-                    logging.error('[%d] 📋 错误类型: 超时', self.task_id)
-                    logging.error('[%d] 说明: 连接到 Kaltura CDN 超时', self.task_id)
-                    logging.error('[%d] 建议: 网络可能不稳定，请稍后重试或检查网络连接', self.task_id)
-                    
-                elif '403' in error_msg or 'Forbidden' in error_msg:
-                    logging.error('[%d] 📋 错误类型: 403 - 禁止访问', self.task_id)
-                    logging.error('[%d] 说明: 没有权限访问该视频或 CDN', self.task_id)
-                    logging.error('[%d] 建议: Cookie 可能过期，请运行 moodle-dl --refresh-cookies', self.task_id)
-                    
                 elif '503' in error_msg or 'Service Unavailable' in error_msg:
-                    logging.error('[%d] 📋 错误类型: 503 - 服务不可用', self.task_id)
-                    logging.error('[%d] 说明: Kaltura 服务器临时不可用', self.task_id)
+                    logging.error('[%d] 📋 错误类型: 503 CDN 不可用', self.task_id)
+                    logging.error('[%d] 说明: Kaltura CDN 服务器临时不可用', self.task_id)
                     logging.error('[%d] 建议: 服务器可能在维护，请稍后重试', self.task_id)
                     
+                elif 'Timeout' in error_msg or 'timeout' in error_msg.lower():
+                    logging.error('[%d] 📋 错误类型: 网络超时', self.task_id)
+                    logging.error('[%d] 说明: 连接 yt-dlp 下载服务超过 30 秒', self.task_id)
+                    logging.error('[%d] 建议: 网络不稳定，请检查连接或稍后重试', self.task_id)
+                    
                 elif 'InvalidURL' in error_msg or 'URL' in error_msg:
-                    logging.error('[%d] 📋 错误类型: 无效的 URL', self.task_id)
-                    logging.error('[%d] 说明: 构建的 Kaltura URL 有问题', self.task_id)
+                    logging.error('[%d] 📋 错误类型: URL 无效或构建错误', self.task_id)
+                    logging.error('[%d] 说明: yt-dlp 收到的 URL 格式不正确', self.task_id)
                     logging.error('[%d] 建议: 可能是 CDN 地址错误，请提交问题报告', self.task_id)
                     
                 else:
                     logging.error('[%d] 📋 错误类型: 其他错误', self.task_id)
-                    logging.error('[%d] 详细信息: %s', self.task_id, error_msg)
+                    logging.error('[%d] 详细信息: %s', self.task_id, error_msg[:200])  # 截断显示
                     logging.error('[%d] 建议: 检查日志中的详细错误信息，或尝试以下步骤:', self.task_id)
                     logging.error('[%d]   1. 刷新 Cookie: moodle-dl --refresh-cookies', self.task_id)
                     logging.error('[%d]   2. 重试下载: moodle-dl --retry-failed', self.task_id)
-                    logging.error('[%d]   3. 忽略此错误: moodle-dl --ignore-ytdl-errors', self.task_id)
+                    logging.error('[%d]   3. 查看详细日志: moodle-dl -v', self.task_id)
                 
                 logging.debug('[%d] yt-dlp 完整错误: %s', self.task_id, error_msg)
                 self.status.yt_dlp_failed_with_error = True
@@ -1036,7 +1037,15 @@ class Task:
             response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
 
             if response.status_code != 200:
-                logging.error('[%d] ❌ HTTP %d: 无法获取 kalvidres 页面', self.task_id, response.status_code)
+                # 区分不同的 HTTP 错误
+                if response.status_code == 403:
+                    logging.error('[%d] ❌ HTTP 403: 禁止访问 (可能是 Cookie 过期或权限不足)', self.task_id)
+                elif response.status_code == 404:
+                    logging.error('[%d] ❌ HTTP 404: 页面未找到', self.task_id)
+                elif response.status_code == 503:
+                    logging.error('[%d] ❌ HTTP 503: 服务器不可用 (CDN 可能在维护)', self.task_id)
+                else:
+                    logging.error('[%d] ❌ HTTP %d: 无法获取 kalvidres 页面', self.task_id, response.status_code)
                 return None
 
             html_content = response.text
@@ -1055,11 +1064,16 @@ class Task:
             try:
                 lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
             except requests.Timeout:
-                logging.error('[%d] ❌ 超时: 无法连接到 LTI 启动页面', self.task_id)
+                logging.error('[%d] ❌ 超时 (LTI 启动): 无法在 30 秒内连接到服务器', self.task_id)
                 return None
 
             if lti_response.status_code != 200:
-                logging.error('[%d] ❌ HTTP %d: 无法获取 lti_launch.php', self.task_id, lti_response.status_code)
+                if lti_response.status_code == 403:
+                    logging.error('[%d] ❌ HTTP 403 (LTI): Cookie 可能过期或权限不足', self.task_id)
+                elif lti_response.status_code == 503:
+                    logging.error('[%d] ❌ HTTP 503 (LTI): Kaltura 服务器不可用', self.task_id)
+                else:
+                    logging.error('[%d] ❌ HTTP %d: 无法获取 lti_launch.php', self.task_id, lti_response.status_code)
                 return None
 
             lti_html = lti_response.text
@@ -1093,11 +1107,16 @@ class Task:
             try:
                 browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
             except requests.Timeout:
-                logging.error('[%d] ❌ 超时: 无法连接到 browseandembed 页面', self.task_id)
+                logging.error('[%d] ❌ 超时 (browseandembed): Kaltura 页面加载超过 30 秒', self.task_id)
                 return None
 
             if browseandembed_response.status_code != 200:
-                logging.error('[%d] ❌ HTTP %d: 无法获取 browseandembed 页面', self.task_id, browseandembed_response.status_code)
+                if browseandembed_response.status_code == 403:
+                    logging.error('[%d] ❌ HTTP 403 (browseandembed): Cookie 过期或无权限访问', self.task_id)
+                elif browseandembed_response.status_code == 503:
+                    logging.error('[%d] ❌ HTTP 503 (browseandembed): Kaltura CDN 不可用', self.task_id)
+                else:
+                    logging.error('[%d] ❌ HTTP %d: 无法获取 browseandembed 页面', self.task_id, browseandembed_response.status_code)
                 return None
 
             logging.debug('[%d] ✓ 成功获取 browseandembed 页面', self.task_id)
@@ -1151,15 +1170,22 @@ class Task:
                 return None
 
         except requests.Timeout as e:
-            logging.error('[%d] ❌ 超时错误: 请求超过 30 秒 - %s', self.task_id, str(e))
+            logging.error('[%d] ❌ 超时错误: 请求超过 30 秒 (网络问题)', self.task_id)
             return None
         except requests.ConnectionError as e:
-            logging.error('[%d] ❌ 连接错误: 无法连接到服务器 - %s', self.task_id, str(e))
+            logging.error('[%d] ❌ 连接错误: 无法连接到服务器 (网络问题)', self.task_id)
             return None
         except Exception as e:
-            logging.error('[%d] ❌ 异常: 提取 kalvidres 视频 URL 失败 - %s', self.task_id, str(e))
-            import traceback
-            logging.debug('[%d] 详细错误堆栈:\n%s', self.task_id, traceback.format_exc())
+            error_msg = str(e)
+            logging.error('[%d] ❌ 异常: 提取 kalvidres 视频 URL 失败', self.task_id)
+            
+            # 额外的诊断：检查是否是 Cookie 相关错误
+            if 'cookie' in error_msg.lower() or 'auth' in error_msg.lower():
+                logging.error('[%d] 可能原因: Cookie 过期或认证失败', self.task_id)
+            elif 'ssl' in error_msg.lower() or 'certificate' in error_msg.lower():
+                logging.error('[%d] 可能原因: SSL 证书问题', self.task_id)
+            
+            logging.debug('[%d] 详细错误堆栈:\n%s', self.task_id, e)
             return None
 
     def _clean_html_simple(self, html_text: str) -> str:
