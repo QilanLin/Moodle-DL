@@ -16,13 +16,16 @@ from concurrent.futures import ThreadPoolExecutor
 from email.utils import unquote
 from io import StringIO
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Dict, List, Optional
 from urllib.error import ContentTooShortError
 
 import aiofiles
 import aiohttp
 import html2text
+import requests
 import yt_dlp  # Re-enabled for cookie_mod files (kalvidres, helixmedia, lti)
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
 from moodle_dl.types import (
@@ -44,6 +47,22 @@ from moodle_dl.utils import (
     format_seconds,
     timeconvert,
 )
+
+
+# ======================== 自定义异常类 ========================
+class KalturaExtractionError(Exception):
+    """Kaltura 视频 URL 提取失败"""
+    pass
+
+
+class KalturaCDNError(Exception):
+    """Kaltura CDN 不可用或无法连接"""
+    pass
+
+
+class KalturaAuthenticationError(Exception):
+    """Kaltura 认证失败（Cookie 过期或权限不足）"""
+    pass
 
 
 class Task:
@@ -94,6 +113,38 @@ class Task:
     CHUNK_SIZE = 102400  # default: 1024 * 100 = 100kb; will be overwritten with download_chunk_size
     MAX_DL_RETRIES = 3
 
+    # ======================== Kaltura 提取常量 ========================
+    # HTTP 请求配置
+    REQUEST_TIMEOUT = 30
+    REQUEST_RETRY_ATTEMPTS = 3
+    REQUEST_BACKOFF_FACTOR = 1
+
+    # Kaltura CDN 列表（按优先级排序）
+    KALTURA_CDN_FALLBACKS = [
+        'cdnapisec.kaltura.com',  # 主 CDN
+        'cdnbakmi.kaltura.com',   # 备用 CDN
+        'cdnakmi.kaltura.com',    # 亚洲 CDN
+        'cdnapi.kaltura.com',     # 备用
+    ]
+
+    # 正则表达式模式（预编译）
+    REGEX_ENTRY_ID = re.compile(r'/entryid/([^/]+)/')
+    REGEX_UICONF_ID = re.compile(r'/playerSkin/(\d+)')
+    REGEX_PARTNER_ID = re.compile(r'partnerId[=:](\d+)')
+    REGEX_KALTURA_CDN = re.compile(r'https?://([^/]*kaltura\.com)/p/\d+/embed')
+    REGEX_LTI_IFRAME = re.compile(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"')
+    REGEX_TARGET_LINK_URI = re.compile(r'name="target_link_uri"\s+value="([^"]+)"')
+
+    # DRM 检测关键词
+    DRM_KEYWORDS = [
+        'DRM',
+        'protected',
+        'widevine',
+        'encrypted',
+        'drm-protected',
+        'WidevineDecryptor',
+    ]
+
     RQ_HEADER = {
         'User-Agent': (
             'Mozilla/5.0 (Linux; Android 7.1.1; Moto G Play Build/NPIS26.48-43-2; wv) AppleWebKit/537.36'
@@ -124,6 +175,131 @@ class Task:
         self.destination = self.gen_path(options.download_path, course, file)
         self.filename = self._generate_filename_with_index(file)
         self.status = TaskStatus()
+
+    def _create_session_with_retry(self) -> requests.Session:
+        """
+        创建一个配置了重试机制的 requests.Session。
+        
+        功能:
+        - 自动重试 500, 502, 503, 504 等错误
+        - 指数退避（exponential backoff）
+        - Cookie 支持
+        - SSL 证书验证配置
+        
+        @return: 配置好的 requests.Session 对象
+        """
+        session = requests.Session()
+        
+        # 配置重试策略
+        retry_strategy = Retry(
+            total=self.REQUEST_RETRY_ATTEMPTS,
+            backoff_factor=self.REQUEST_BACKOFF_FACTOR,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
+        )
+        
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        
+        # 加载 Cookie
+        if self.opts.cookies_text is not None:
+            try:
+                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
+                cookie_jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = cookie_jar
+                logging.debug('[%d] ✓ 成功加载 Cookie', self.task_id)
+            except Exception as e:
+                logging.warning('[%d] ⚠️  加载 Cookie 失败: %s', self.task_id, e)
+        
+        return session
+
+    def _is_drm_error(self, error_msg: str) -> bool:
+        """
+        检测错误消息是否表示 DRM 保护。
+        
+        @param error_msg: 错误消息字符串
+        @return: 如果是 DRM 相关错误返回 True
+        """
+        error_lower = error_msg.lower()
+        return any(kw.lower() in error_lower for kw in self.DRM_KEYWORDS)
+
+    def _extract_entry_id(self, url: str) -> str:
+        """
+        从 browseandembed URL 中提取 entry ID。
+        
+        @param url: browseandembed URL
+        @return: entry ID
+        @raise: KalturaExtractionError 如果提取失败
+        """
+        match = self.REGEX_ENTRY_ID.search(url)
+        if not match:
+            raise KalturaExtractionError('无法从 URL 中提取 entry ID')
+        entry_id = match.group(1)
+        logging.debug('[%d] ✓ Entry ID: %s', self.task_id, entry_id)
+        return entry_id
+
+    def _extract_uiconf_id(self, url: str) -> str:
+        """
+        从 browseandembed URL 中提取 uiconf_id。
+        
+        @param url: browseandembed URL
+        @return: uiconf_id
+        @raise: KalturaExtractionError 如果提取失败
+        """
+        match = self.REGEX_UICONF_ID.search(url)
+        if not match:
+            raise KalturaExtractionError('无法从 URL 中提取 uiconf_id')
+        uiconf_id = match.group(1)
+        logging.debug('[%d] ✓ UI 配置 ID: %s', self.task_id, uiconf_id)
+        return uiconf_id
+
+    def _extract_partner_id(self, html_content: str) -> str:
+        """
+        从 browseandembed 页面中提取 partner ID。
+        
+        @param html_content: browseandembed 页面 HTML 内容
+        @return: partner ID
+        @raise: KalturaExtractionError 如果提取失败
+        """
+        match = self.REGEX_PARTNER_ID.search(html_content)
+        if not match:
+            raise KalturaExtractionError('无法从页面中提取 partner ID')
+        partner_id = match.group(1)
+        logging.debug('[%d] ✓ Partner ID: %s', self.task_id, partner_id)
+        return partner_id
+
+    def _detect_kaltura_cdn(self, html_content: str) -> Optional[str]:
+        """
+        从页面中检测 Kaltura CDN 地址。
+        
+        @param html_content: 页面 HTML 内容
+        @return: CDN 地址或 None
+        """
+        match = self.REGEX_KALTURA_CDN.search(html_content)
+        if match:
+            cdn = match.group(1)
+            logging.debug('[%d] ✓ 从页面检测到 Kaltura CDN: %s', self.task_id, cdn)
+            return cdn
+        logging.debug('[%d] ℹ️  无法从页面检测到 CDN，将使用备用 CDN 列表', self.task_id)
+        return None
+
+    def _build_kaltura_url(self, partner_id: str, uiconf_id: str, entry_id: str, cdn: str) -> str:
+        """
+        构建 Kaltura 播放器 URL。
+        
+        @param partner_id: Partner ID
+        @param uiconf_id: UI 配置 ID
+        @param entry_id: Entry ID
+        @param cdn: CDN 地址
+        @return: 完整的 Kaltura URL
+        """
+        url = (
+            f'https://{cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
+            f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
+        )
+        logging.debug('[%d] 🔗 构建 Kaltura URL (CDN: %s)', self.task_id, cdn)
+        return url
 
     @staticmethod
     def _generate_filename_with_index(file: File) -> str:
@@ -1010,182 +1186,168 @@ class Task:
             logging.warning('[%d] Failed to extract kalvidres text: %s', self.task_id, e)
             return False
 
-    async def extract_kalvidres_video_url(self, url: str) -> str:
+    async def extract_kalvidres_video_url(self, url: str) -> Optional[str]:
         """
-        Extract the Kaltura iframe embed URL from a kalvidres page that yt-dlp can download.
+        从 kalvidres 页面提取 Kaltura 视频播放器 URL。
+        
+        处理流程:
+        1. 获取 kalvidres 页面
+        2. 提取 lti_launch URL
+        3. 从 lti_launch.php 获取 browseandembed URL
+        4. 从 browseandembed 页面提取 partner ID、entry ID、uiconf_id
+        5. 尝试使用检测到的或备用 CDN 构建 Kaltura URL
 
-        @param url: The kalvidres page URL
-        @return: Kaltura iframe embed URL or None if extraction fails
+        @param url: kalvidres 页面 URL
+        @return: Kaltura 播放器 URL，失败返回 None
         """
         try:
-            import re
-            import requests
-
-            logging.debug('[%d] Extracting Kaltura video URL from: %s', self.task_id, url)
-
-            # Use requests library for cookie handling
-            session = requests.Session()
-
-            # Load cookies if available
-            if self.opts.cookies_text is not None:
-                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
-                cookie_jar.load(ignore_discard=True, ignore_expires=True)
-                session.cookies = cookie_jar
-
-            # Fetch the kalvidres page
+            logging.debug('[%d] 🔍 开始提取 Kaltura 视频 URL: %s', self.task_id, url[:80] + '...')
+            
+            # 创建带重试机制的 session
+            session = self._create_session_with_retry()
             verify_ssl = not self.opts.global_opts.skip_cert_verify
-            response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
 
-            if response.status_code != 200:
-                # 区分不同的 HTTP 错误
-                if response.status_code == 403:
-                    logging.error('[%d] ❌ HTTP 403: 禁止访问 (可能是 Cookie 过期或权限不足)', self.task_id)
-                elif response.status_code == 404:
-                    logging.error('[%d] ❌ HTTP 404: 页面未找到', self.task_id)
-                elif response.status_code == 503:
-                    logging.error('[%d] ❌ HTTP 503: 服务器不可用 (CDN 可能在维护)', self.task_id)
-                else:
-                    logging.error('[%d] ❌ HTTP %d: 无法获取 kalvidres 页面', self.task_id, response.status_code)
+            # ====== 阶段 1: 获取 kalvidres 页面 ======
+            try:
+                response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, 
+                                     timeout=self.REQUEST_TIMEOUT)
+            except requests.Timeout:
+                logging.error('[%d] ❌ 超时 (kalvidres 页面): 无法在 %d 秒内获取页面',
+                            self.task_id, self.REQUEST_TIMEOUT)
+                return None
+            except requests.ConnectionError as e:
+                logging.error('[%d] ❌ 连接错误: 无法连接到服务器', self.task_id)
+                return None
+
+            # 检查 HTTP 状态码
+            if response.status_code == 403:
+                raise KalturaAuthenticationError('Cookie 过期或权限不足 (HTTP 403)')
+            elif response.status_code == 404:
+                logging.error('[%d] ❌ HTTP 404: 页面未找到', self.task_id)
+                return None
+            elif response.status_code == 503:
+                raise KalturaCDNError('服务器不可用 (HTTP 503)')
+            elif response.status_code != 200:
+                logging.error('[%d] ❌ HTTP %d: 无法获取 kalvidres 页面', 
+                            self.task_id, response.status_code)
                 return None
 
             html_content = response.text
-            logging.debug('[%d] ✓ 成功获取 kalvidres 页面 (%d 字节)', self.task_id, len(html_content))
+            logging.debug('[%d] ✓ 成功获取 kalvidres 页面 (%d 字节)', 
+                        self.task_id, len(html_content))
 
-            # 提取 iframe 中的 lti_launch URL
-            iframe_match = re.search(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"', html_content)
+            # ====== 阶段 2: 提取 lti_launch 页面 URL ======
+            iframe_match = self.REGEX_LTI_IFRAME.search(html_content)
             if not iframe_match:
-                logging.error('[%d] ❌ 解析失败: 无法在 kalvidres 页面中找到 lti_launch iframe', self.task_id)
-                return None
+                raise KalturaExtractionError('无法在 kalvidres 页面中找到 lti_launch iframe')
 
             lti_launch_url = iframe_match.group(1).replace('&amp;', '&')
             logging.debug('[%d] ✓ 找到 LTI 启动 URL', self.task_id)
 
-            # 获取 lti_launch.php 以获得 browseandembed URL
+            # ====== 阶段 3: 获取 lti_launch.php 页面 ======
             try:
-                lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+                lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, 
+                                         verify=verify_ssl, timeout=self.REQUEST_TIMEOUT)
             except requests.Timeout:
-                logging.error('[%d] ❌ 超时 (LTI 启动): 无法在 30 秒内连接到服务器', self.task_id)
+                logging.error('[%d] ❌ 超时 (LTI 启动): 无法在 %d 秒内获取页面',
+                            self.task_id, self.REQUEST_TIMEOUT)
                 return None
 
-            if lti_response.status_code != 200:
-                if lti_response.status_code == 403:
-                    logging.error('[%d] ❌ HTTP 403 (LTI): Cookie 可能过期或权限不足', self.task_id)
-                elif lti_response.status_code == 503:
-                    logging.error('[%d] ❌ HTTP 503 (LTI): Kaltura 服务器不可用', self.task_id)
-                else:
-                    logging.error('[%d] ❌ HTTP %d: 无法获取 lti_launch.php', self.task_id, lti_response.status_code)
+            if lti_response.status_code == 403:
+                raise KalturaAuthenticationError('Cookie 过期或权限不足 (LTI 页面 HTTP 403)')
+            elif lti_response.status_code == 503:
+                raise KalturaCDNError('Kaltura 服务器不可用 (LTI 页面 HTTP 503)')
+            elif lti_response.status_code != 200:
+                logging.error('[%d] ❌ HTTP %d: 无法获取 lti_launch.php', 
+                            self.task_id, lti_response.status_code)
                 return None
 
             lti_html = lti_response.text
             logging.debug('[%d] ✓ 成功获取 LTI 启动页面', self.task_id)
 
-            # 从 LTI 页面提取 target_link_uri（browseandembed URL）
-            target_uri_match = re.search(r'name="target_link_uri"\s+value="([^"]+)"', lti_html)
+            # ====== 阶段 4: 从 LTI 页面提取 browseandembed URL ======
+            target_uri_match = self.REGEX_TARGET_LINK_URI.search(lti_html)
             if not target_uri_match:
-                logging.error('[%d] ❌ 解析失败: 无法在 lti_launch 页面中找到 target_link_uri', self.task_id)
-                return None
+                raise KalturaExtractionError('无法在 lti_launch 页面中找到 target_link_uri')
 
             browseandembed_url = target_uri_match.group(1)
             logging.debug('[%d] ✓ 找到 browseandembed URL', self.task_id)
 
-            # 从 browseandembed URL 中提取关键信息
-            entry_id_match = re.search(r'/entryid/([^/]+)/', browseandembed_url)
-            if not entry_id_match:
-                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed URL 中提取 entry ID', self.task_id)
-                return None
-            entry_id = entry_id_match.group(1)
-            logging.debug('[%d] ✓ Entry ID: %s', self.task_id, entry_id)
-
-            uiconf_id_match = re.search(r'/playerSkin/(\d+)', browseandembed_url)
-            if not uiconf_id_match:
-                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed URL 中提取 uiconf_id', self.task_id)
-                return None
-            uiconf_id = uiconf_id_match.group(1)
-            logging.debug('[%d] ✓ UI 配置 ID: %s', self.task_id, uiconf_id)
-
-            # 获取 browseandembed 页面以提取 partner ID 和 CDN
+            # ====== 阶段 5: 从 browseandembed URL 提取信息 ======
             try:
-                browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
-            except requests.Timeout:
-                logging.error('[%d] ❌ 超时 (browseandembed): Kaltura 页面加载超过 30 秒', self.task_id)
+                entry_id = self._extract_entry_id(browseandembed_url)
+                uiconf_id = self._extract_uiconf_id(browseandembed_url)
+            except KalturaExtractionError as e:
+                logging.error('[%d] ❌ 解析失败: %s', self.task_id, e)
                 return None
 
-            if browseandembed_response.status_code != 200:
-                if browseandembed_response.status_code == 403:
-                    logging.error('[%d] ❌ HTTP 403 (browseandembed): Cookie 过期或无权限访问', self.task_id)
-                elif browseandembed_response.status_code == 503:
-                    logging.error('[%d] ❌ HTTP 503 (browseandembed): Kaltura CDN 不可用', self.task_id)
-                else:
-                    logging.error('[%d] ❌ HTTP %d: 无法获取 browseandembed 页面', self.task_id, browseandembed_response.status_code)
+            # ====== 阶段 6: 获取 browseandembed 页面 ======
+            try:
+                browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER,
+                                                     verify=verify_ssl, timeout=self.REQUEST_TIMEOUT)
+            except requests.Timeout:
+                logging.error('[%d] ❌ 超时 (browseandembed): 无法在 %d 秒内获取页面',
+                            self.task_id, self.REQUEST_TIMEOUT)
+                return None
+
+            if browseandembed_response.status_code == 403:
+                raise KalturaAuthenticationError('Cookie 过期或无权限访问 (browseandembed 页面)')
+            elif browseandembed_response.status_code == 503:
+                raise KalturaCDNError('Kaltura CDN 不可用 (browseandembed 页面 HTTP 503)')
+            elif browseandembed_response.status_code != 200:
+                logging.error('[%d] ❌ HTTP %d: 无法获取 browseandembed 页面',
+                            self.task_id, browseandembed_response.status_code)
                 return None
 
             logging.debug('[%d] ✓ 成功获取 browseandembed 页面', self.task_id)
 
-            # 提取 partner ID
-            partner_id_match = re.search(r'partnerId[=:](\d+)', browseandembed_response.text)
-            if not partner_id_match:
-                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed 页面中提取 partner ID', self.task_id)
+            # ====== 阶段 7: 提取 partner ID ======
+            try:
+                partner_id = self._extract_partner_id(browseandembed_response.text)
+            except KalturaExtractionError as e:
+                logging.error('[%d] ❌ 解析失败: %s', self.task_id, e)
                 return None
 
-            partner_id = partner_id_match.group(1)
-            logging.debug('[%d] ✓ Partner ID: %s', self.task_id, partner_id)
-
-            # 从页面提取 Kaltura CDN 地址
-            KALTURA_CDN_FALLBACKS = [
-                'cdnapisec.kaltura.com',      # 主 CDN
-                'cdnbakmi.kaltura.com',       # 备用 CDN
-                'cdnakmi.kaltura.com',        # 亚洲 CDN
-                'cdnapi.kaltura.com',         # 备用
-            ]
-
-            detected_cdn = None
-            kaltura_cdn_match = re.search(r'https?://([^/]*kaltura\.com)/p/\d+/embed', browseandembed_response.text)
-            if kaltura_cdn_match:
-                detected_cdn = kaltura_cdn_match.group(1)
-                logging.debug('[%d] ✓ 从页面检测到 Kaltura CDN: %s', self.task_id, detected_cdn)
-            else:
-                logging.debug('[%d] ℹ️  无法从页面检测到 CDN，将使用备用 CDN 列表', self.task_id)
-
-            # 构建 URL 列表进行测试（优先使用检测到的 CDN）
-            cdns_to_try = []
+            # ====== 阶段 8: 检测或使用备用 CDN ======
+            detected_cdn = self._detect_kaltura_cdn(browseandembed_response.text)
+            cdns_to_try: List[str] = []
             if detected_cdn:
                 cdns_to_try.append(detected_cdn)
-            cdns_to_try.extend(KALTURA_CDN_FALLBACKS)
+            cdns_to_try.extend(self.KALTURA_CDN_FALLBACKS)
 
-            # 使用检测到的或备用 CDN 构建 Kaltura 播放器 URL
-            kaltura_iframe_url = None
-            for idx, cdn in enumerate(cdns_to_try, 1):
-                kaltura_iframe_url = (
-                    f'https://{cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
-                    f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
-                )
-                logging.debug('[%d] 🔗 构建 Kaltura URL (CDN %d/%d): %s', 
-                             self.task_id, idx, len(cdns_to_try), cdn)
+            # ====== 阶段 9: 构建 Kaltura URL 并返回 ======
+            kaltura_url = self._build_kaltura_url(partner_id, uiconf_id, entry_id, cdns_to_try[0])
+            logging.info('[%d] ✅ 成功提取 Kaltura 视频 URL (CDN: %s)', 
+                       self.task_id, cdns_to_try[0])
+            return kaltura_url
 
-            if kaltura_iframe_url:
-                logging.info('[%d] ✅ 成功提取 Kaltura 视频 URL (CDN: %s)', self.task_id, cdns_to_try[0] if cdns_to_try else '未知')
-                return kaltura_iframe_url
-            else:
-                logging.error('[%d] ❌ 无法构建 Kaltura URL', self.task_id)
-                return None
-
-        except requests.Timeout as e:
-            logging.error('[%d] ❌ 超时错误: 请求超过 30 秒 (网络问题)', self.task_id)
+        except KalturaAuthenticationError as e:
+            logging.error('[%d] ❌ 认证失败: %s', self.task_id, e)
+            logging.error('[%d] 💡 建议: 运行 moodle-dl --refresh-cookies 刷新 Cookie', self.task_id)
             return None
-        except requests.ConnectionError as e:
-            logging.error('[%d] ❌ 连接错误: 无法连接到服务器 (网络问题)', self.task_id)
+        except KalturaCDNError as e:
+            logging.error('[%d] ❌ CDN 错误: %s', self.task_id, e)
+            logging.error('[%d] 💡 建议: CDN 服务器暂时不可用，请稍后重试', self.task_id)
+            return None
+        except KalturaExtractionError as e:
+            logging.error('[%d] ❌ 提取失败: %s', self.task_id, e)
+            return None
+        except requests.RequestException as e:
+            logging.error('[%d] ❌ 网络请求错误: %s', self.task_id, e)
             return None
         except Exception as e:
             error_msg = str(e)
-            logging.error('[%d] ❌ 异常: 提取 kalvidres 视频 URL 失败', self.task_id)
+            logging.error('[%d] ❌ 未知错误: %s', self.task_id, e)
             
-            # 额外的诊断：检查是否是 Cookie 相关错误
+            # 尝试诊断错误原因
             if 'cookie' in error_msg.lower() or 'auth' in error_msg.lower():
-                logging.error('[%d] 可能原因: Cookie 过期或认证失败', self.task_id)
+                logging.error('[%d] 💡 可能原因: Cookie 过期或认证失败', self.task_id)
             elif 'ssl' in error_msg.lower() or 'certificate' in error_msg.lower():
-                logging.error('[%d] 可能原因: SSL 证书问题', self.task_id)
+                logging.error('[%d] 💡 可能原因: SSL 证书问题', self.task_id)
+            elif 'timeout' in error_msg.lower():
+                logging.error('[%d] 💡 可能原因: 网络超时', self.task_id)
             
-            logging.debug('[%d] 详细错误堆栈:\n%s', self.task_id, e)
+            logging.debug('[%d] 详细错误堆栈: %s', self.task_id, traceback.format_exc())
             return None
 
     def _clean_html_simple(self, html_text: str) -> str:
