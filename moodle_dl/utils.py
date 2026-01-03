@@ -1016,7 +1016,10 @@ class ProcessLock:
     A very simple lock mechanism to prevent multiple downloader being started for the same Moodle.
 
     The functions are not resistant to high frequency calls.
-    Raise conditions will occur!
+    Race conditions will occur!
+    
+    Note: This is a simple file-based lock. For production use, consider using
+    fcntl.flock() or the filelock library for better thread/process safety.
     """
 
     class LockError(Exception):
