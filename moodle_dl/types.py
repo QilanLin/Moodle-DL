@@ -191,14 +191,14 @@ class File:
         valid_content_filename = PT.to_valid_name(self.content_filename, is_file=True)
         if len(valid_content_filename) > 256:
             message += (
-                f', content_filename (longer then 256 chars): "{valid_content_filename[:200]}[...]'
+                f', content_filename (longer than 256 chars): "{valid_content_filename[:200]}[...]'
                 + f'{valid_content_filename[-50:]}"'
             )
         else:
             message += f', content_filename: "{valid_content_filename}"'
         if len(self.content_fileurl) > 256:
             message += (
-                f', content_fileurl (longer then 256 chars): "{self.content_fileurl[:200]}[...]'
+                f', content_fileurl (longer than 256 chars): "{self.content_fileurl[:200]}[...]'
                 + f'{self.content_fileurl[-50:]}"'
             )
         else:

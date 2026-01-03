@@ -623,9 +623,9 @@ def extract_api_token_with_playwright(domain: str, cookies_file: str):
 
                 page = await context.new_page()
 
-                #  :Moodlesession
+                #  :MoodleSession
                 # MoodleSession cookie
-                print(f"  -> Moodlesession...")
+                print(f"  -> MoodleSession...")
                 try:
                     await page.goto(f"{moodle_url}/my/", wait_until='domcontentloaded', timeout=15000)
                     await page.wait_for_timeout(1000)  # cookies

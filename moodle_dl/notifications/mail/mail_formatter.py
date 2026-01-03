@@ -61,7 +61,7 @@ error_message_box = Template(
 failed_downloads_message_box = Template(
     '''
     <table style="width: 100%; margin-bottom: 15px;">
-        <thead style="heigth: 0"><tr>
+        <thead style="height: 0"><tr>
             <th style="width: 100%;"/>
         </tr></thead>
         ${list_entries}
@@ -112,7 +112,7 @@ moodle_main_box = Template(
             ${course_name}
     </p>
     <table style="width: 100%;">
-        <thead style="heigth: 0"><tr>
+        <thead style="height: 0"><tr>
             <td style="width: 17px"/>
             <td style="width: auto"/>
         </tr></thead>

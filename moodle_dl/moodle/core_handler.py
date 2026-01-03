@@ -152,8 +152,13 @@ class CoreHandler:
 
     async def async_load_core_contents(self, courses: List[Course]) -> Dict[int, List[Dict]]:
         """
-        Loads all course core structures for every given course
-        @param entries: List of all section entries, indexed by course id
+        为给定的课程列表加载 section 数据
+        
+        Args:
+            courses: 需要加载核心内容的课程列表
+        
+        Returns:
+            Dict[int, List[Dict]]: 课程 ID 到 section 列表的映射
         """
         total_courses = len(courses)
 

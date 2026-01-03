@@ -4,7 +4,7 @@ import logging
 import random
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
@@ -196,15 +196,17 @@ class DownloadService:
         
         # Step 5: Process manually specified courses (via Web API)
         manually_specified_ids = self.config.get_manually_specified_course_ids()
-        web_api_tasks = self._create_tasks_for_manually_specified_courses(
+        web_priority_tasks, web_api_tasks = self._create_tasks_for_manually_specified_courses(
             manually_specified_ids, dl_options, thread_pool, incomplete_files_map
         )
         
         # Combine tasks with priority ordering
-        all_tasks = priority_tasks + normal_tasks + web_api_tasks
+        all_tasks = priority_tasks + web_priority_tasks + normal_tasks + web_api_tasks
         
         # Step 6: Log summary
-        self._log_queue_summary(len(priority_tasks), len(web_api_tasks))
+        total_priority = len(priority_tasks) + len(web_priority_tasks)
+        web_api_task_count = len(web_priority_tasks) + len(web_api_tasks)
+        self._log_queue_summary(total_priority, web_api_task_count)
         
         # Step 7: Cleanup old records
         self._cleanup_old_incomplete_downloads()
@@ -212,29 +214,41 @@ class DownloadService:
         return all_tasks
 
     def status_callback(self, event: DlEvent, task: Task, **extra_args):
-        self.status.lock.acquire()
-        if event == DlEvent.RECEIVED:
-            self.status.bytes_downloaded += extra_args['bytes_received']
-        elif event == DlEvent.FAILED:
-            self.status.files_failed += 1
-            # 记录失败的文件到数据库，包括目标路径和失败原因
-            error_message = task.status.get_error_text() if task.status else '未知错误'
-            self.database.save_failed_file(
-                task.file,
-                task.course.id,
-                task.course.fullname,
-                error_message
-            )
-        elif event == DlEvent.FINISHED:
-            self.database.save_file(task.file, task.course.id, task.course.fullname)
-            # 标记下载成功，重置失败计数器
-            self.database.mark_download_success(task.file, task.course.id)
-            self.status.files_downloaded += 1
-        elif event == DlEvent.TOTAL_SIZE:
-            self.status.bytes_to_download += extra_args['content_length']
-        elif event == DlEvent.TOTAL_SIZE_UPDATE:
-            self.status.bytes_to_download += extra_args['content_length_diff']
-        self.status.lock.release()
+        """
+        处理下载事件的回调函数
+        
+        使用 with 语句确保锁在任何情况下都会被释放，
+        避免数据库操作抛出异常时造成死锁。
+        """
+        with self.status.lock:
+            if event == DlEvent.RECEIVED:
+                self.status.bytes_downloaded += extra_args['bytes_received']
+            elif event == DlEvent.FAILED:
+                self.status.files_failed += 1
+                # 记录失败的文件到数据库，包括目标路径和失败原因
+                try:
+                    error_message = task.status.get_error_text() if task.status else '未知错误'
+                    self.database.save_failed_file(
+                        task.file,
+                        task.course.id,
+                        task.course.fullname,
+                        error_message
+                    )
+                except Exception as e:
+                    logging.error(f'保存失败文件记录时出错: {e}')
+            elif event == DlEvent.FINISHED:
+                try:
+                    self.database.save_file(task.file, task.course.id, task.course.fullname)
+                    # 标记下载成功，重置失败计数器
+                    self.database.mark_download_success(task.file, task.course.id)
+                    self.status.files_downloaded += 1
+                except Exception as e:
+                    logging.error(f'保存成功文件记录时出错: {e}')
+                    self.status.files_failed += 1
+            elif event == DlEvent.TOTAL_SIZE:
+                self.status.bytes_to_download += extra_args['content_length']
+            elif event == DlEvent.TOTAL_SIZE_UPDATE:
+                self.status.bytes_to_download += extra_args['content_length_diff']
 
     def run(self):
         asyncio.run(self.real_run())
@@ -325,7 +339,7 @@ class DownloadService:
         dl_options,
         thread_pool,
         incomplete_files_map: dict
-    ) -> List[Task]:
+    ) -> Tuple[List[Task], List[Task]]:
         """Create tasks for manually specified courses using Web API.
         
         完整实现包括：
@@ -341,12 +355,13 @@ class DownloadService:
             incomplete_files_map: Map of incomplete downloads
             
         Returns:
-            List of Task objects for manually specified courses
+            Tuple[List[Task], List[Task]]: (priority_tasks, normal_tasks)
         """
-        web_api_tasks = []
+        web_api_priority_tasks: List[Task] = []
+        web_api_tasks: List[Task] = []
         
         if not course_ids:
-            return web_api_tasks
+            return web_api_priority_tasks, web_api_tasks
         
         try:
             from moodle_dl.moodle.course_validator import CourseValidator
@@ -396,11 +411,10 @@ class DownloadService:
                             
                             # Categorize by priority
                             if self._is_incomplete_download(course_file, incomplete_files_map):
-                                # 对于 web API 课程，未完成的下载也添加到主列表
-                                # （会在 gen_all_tasks 中重新排序）
-                                pass
-                            
-                            web_api_tasks.append(task)
+                                web_api_priority_tasks.append(task)
+                                self._log_incomplete_download(course_file, incomplete_files_map)
+                            else:
+                                web_api_tasks.append(task)
                             self._update_download_statistics(course_file)
                     
                     if not course.files:
@@ -413,7 +427,7 @@ class DownloadService:
         except ImportError:
             logging.error('无法导入 CourseValidator，跳过手动课程处理')
         
-        return web_api_tasks
+        return web_api_priority_tasks, web_api_tasks
     
     def _fetch_course_data_from_web_api(self, course_id: int) -> Dict[str, Any]:
         """Fetch course data from web API (core_course_get_contents).
@@ -508,6 +522,13 @@ class DownloadService:
                         filename = content.get('filename', module_name)
                         filesize = content.get('filesize', 0)
                         timemodified = content.get('timemodified', 0)
+                        raw_file_id = content.get('fileid')
+                        file_id = None
+                        if raw_file_id is not None:
+                            try:
+                                file_id = int(raw_file_id)
+                            except (ValueError, TypeError):
+                                file_id = None
                         
                         # 创建 File 对象
                         file_obj = File(
@@ -523,6 +544,7 @@ class DownloadService:
                             content_timemodified=timemodified,
                             content_type='file',
                             content_isexternalfile=False,
+                            file_id=file_id,
                         )
                         
                         # 不分配位置索引给系统文件

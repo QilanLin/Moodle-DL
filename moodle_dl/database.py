@@ -118,20 +118,41 @@ class StateRecorder:
             
             if should_rebuild:
                 logging.info(f'📋 重建数据库原因: {rebuild_reason}')
-                
+
                 # 删除所有现有的表和索引
                 if existing_tables:
                     logging.info('  正在清理旧数据...')
+
+                    # 🔒 安全修复：使用白名单验证表名，防止 SQL 注入
+                    ALLOWED_TABLES = {
+                        'files', 'auth_sessions', 'cookie_store',
+                        'auth_audit_log', 'incomplete_downloads'
+                    }
+
                     for table_name in existing_tables:
-                        c.execute(f'DROP TABLE IF EXISTS {table_name};')
-                    
+                        # 只删除白名单中的表
+                        if table_name in ALLOWED_TABLES:
+                            c.execute(f'DROP TABLE IF EXISTS {table_name};')
+                        else:
+                            logging.warning(f'  ⚠️  跳过未知表: {table_name}')
+
                     # 删除所有索引
                     all_indexes = c.execute(
                         "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_%';"
                     ).fetchall()
+
+                    # 🔒 安全修复：验证索引名称格式（只允许字母、数字、下划线）
+                    import re
+                    VALID_INDEX_PATTERN = re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+
                     for index in all_indexes:
-                        c.execute(f'DROP INDEX IF EXISTS {index[0]};')
-                    
+                        index_name = index[0]
+                        # 验证索引名称格式
+                        if VALID_INDEX_PATTERN.match(index_name):
+                            c.execute(f'DROP INDEX IF EXISTS {index_name};')
+                        else:
+                            logging.warning(f'  ⚠️  跳过无效索引名: {index_name}')
+
                 conn.commit()
 
                 # 使用 v9 schema 创建所有表
@@ -223,6 +244,9 @@ class StateRecorder:
             "CREATE INDEX IF NOT EXISTS idx_download_status ON files(download_status);",
             "CREATE INDEX IF NOT EXISTS idx_consecutive_failures ON files(consecutive_failures);",
             "CREATE INDEX IF NOT EXISTS idx_position_in_section ON files(course_id, section_id, position_in_section);",
+            # 幂等性增强：添加唯一索引，防止重复文件
+            # 只对未删除的文件应用约束（deleted = 0），允许已删除文件的 URL 被重用
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0;",
         ]
         
         for idx_sql in files_indexes:
@@ -918,19 +942,50 @@ class StateRecorder:
         return data
 
     def new_file(self, file: File, course_id: int, course_fullname: str):
-        # saves a file to index
-
+        """
+        保存新文件到数据库索引
+        
+        幂等性保证：如果文件已存在（基于 course_id, module_id, content_fileurl），
+        则跳过插入，避免创建重复记录。
+        
+        @param file: 文件对象
+        @param course_id: 课程 ID
+        @param course_fullname: 课程全名
+        @return: file_id（新插入的或已存在的）
+        """
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
+        # 幂等性检查：查询文件是否已存在
+        cursor.execute(
+            """SELECT file_id FROM files 
+               WHERE course_id = ? AND module_id = ? AND content_fileurl = ?""",
+            (course_id, file.module_id, file.content_fileurl)
+        )
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 文件已存在，跳过插入
+            file_id = existing[0]
+            logging.debug(
+                f'文件已存在于数据库中，跳过插入: {file.content_filename} (file_id={file_id})'
+            )
+            conn.close()
+            return file_id
+
+        # 文件不存在，执行插入
         data = {'course_id': course_id, 'course_fullname': course_fullname}
         data.update(file.getMap())
         self._set_insert_defaults(data)
 
         cursor.execute(File.INSERT, data)
+        file_id = cursor.lastrowid
+        logging.debug(f'插入新文件记录: {file.content_filename} (file_id={file_id})')
 
         conn.commit()
         conn.close()
+        
+        return file_id
 
     def batch_delete_files(self, courses: List[Course]):
         # 🆕 清除相关缓存（数据有变化）

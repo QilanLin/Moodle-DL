@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch, call
 from concurrent.futures import ThreadPoolExecutor
 from moodle_dl.downloader.download_service import DownloadService
-from moodle_dl.types import File, Course, DownloadOptions
+from moodle_dl.types import File, Course, DownloadOptions, MoodleDlOpts
 
 
 class TestDownloadServiceAtomization(unittest.TestCase):
@@ -21,6 +21,9 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         self.config = MagicMock()
         self.config.get_download_options.return_value = MagicMock()
         self.config.get_manually_specified_course_ids.return_value = []  # No manually specified courses by default
+        self.config.get_options_of_courses.return_value = {}
+        self.config.get_moodle_URL.return_value = MagicMock()
+        self.config.get_token.return_value = 'token'
         self.opts = MagicMock()
         self.opts.download_chunk_size = 8192
         self.opts.max_parallel_yt_dlp = 4
@@ -38,6 +41,25 @@ class TestDownloadServiceAtomization(unittest.TestCase):
             config=self.config,
             opts=self.opts,
             database=self.database
+        )
+    
+    def _make_download_options(self) -> DownloadOptions:
+        """Helper to create a minimal DownloadOptions instance"""
+        return DownloadOptions(
+            token='token',
+            moodle_url='https://moodle.example.com',
+            download_linked_files=False,
+            download_domains_whitelist=[],
+            download_domains_blacklist=[],
+            cookies_text='',
+            yt_dlp_options={},
+            video_passwords={},
+            external_file_downloaders={},
+            restricted_filenames=False,
+            write_links={},
+            download_path='/tmp',
+            download_metadata_files=False,
+            global_opts=MoodleDlOpts()
         )
 
     def test_configure_task_settings(self):
@@ -199,6 +221,139 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         self.assertIn('10 个任务', call_args[0])
         self.assertIn('3 个未完成的下载需要续传', call_args[0])
 
+    @patch('moodle_dl.moodle.request_helper.RequestHelper')
+    @patch('moodle_dl.moodle.course_validator.CourseValidator')
+    def test_create_tasks_for_manually_specified_courses_success(self, mock_validator, mock_request_helper):
+        """确保手动课程可以正确创建任务"""
+        self.config.get_options_of_courses.return_value = {
+            '101': {
+                'overwrite_name_with': 'Manual Course',
+                'create_directory_structure': False,
+                'excluded_sections': [202]
+            }
+        }
+        mock_validator.return_value.validate_course_exists_and_accessible.return_value = {
+            'fullname': 'Manual Source'
+        }
+        mock_request_helper.return_value = MagicMock()
+        course_data = {
+            'id': 101,
+            'sections': [
+                {
+                    'id': 201,
+                    'name': 'Week 1',
+                    'modules': [
+                        {
+                            'id': 501,
+                            'name': 'Slides',
+                            'modname': 'resource',
+                            'contents': [
+                                {
+                                    'fileurl': 'https://example.com/file.pdf',
+                                    'filename': 'slides.pdf',
+                                    'filesize': 1234,
+                                    'timemodified': 1700000000
+                                }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    'id': 202,
+                    'name': 'Week 2',
+                    'modules': [
+                        {
+                            'id': 502,
+                            'name': 'Hidden',
+                            'modname': 'resource',
+                            'contents': [
+                                {
+                                    'fileurl': 'https://example.com/hidden.pdf',
+                                    'filename': 'hidden.pdf',
+                                    'filesize': 42
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        dl_options = self._make_download_options()
+        thread_pool = MagicMock()
+        with patch.object(self.service, '_fetch_course_data_from_web_api', return_value=course_data):
+            priority_tasks, tasks = self.service._create_tasks_for_manually_specified_courses(
+                [101], dl_options, thread_pool, {}
+            )
+        self.assertEqual(priority_tasks, [])
+        self.assertEqual(len(tasks), 1)
+        task = tasks[0]
+        self.assertEqual(task.api_source, 'web')
+        self.assertEqual(task.course.id, 101)
+        self.assertEqual(task.course.overwrite_name_with, 'Manual Course')
+        self.assertFalse(task.course.create_directory_structure)
+        self.assertEqual(task.course.files[0].section_id, 201)
+        mock_validator.return_value.validate_course_exists_and_accessible.assert_called_once_with(101)
+
+    @patch('moodle_dl.moodle.request_helper.RequestHelper')
+    @patch('moodle_dl.moodle.course_validator.CourseValidator')
+    def test_create_tasks_for_manually_specified_courses_prioritizes_incomplete(self, mock_validator, mock_request_helper):
+        """确保手动课程未完成下载会进入优先队列"""
+        mock_validator.return_value.validate_course_exists_and_accessible.return_value = {
+            'fullname': 'Manual Source'
+        }
+        mock_request_helper.return_value = MagicMock()
+        course_data = {
+            'id': 202,
+            'sections': [
+                {
+                    'id': 301,
+                    'name': 'Week 3',
+                    'modules': [
+                        {
+                            'id': 601,
+                            'name': 'Video',
+                            'modname': 'resource',
+                            'contents': [
+                                {
+                                    'fileid': 9001,
+                                    'fileurl': 'https://example.com/video.mp4',
+                                    'filename': 'lesson.mp4',
+                                    'filesize': 2048,
+                                    'timemodified': 1710000000,
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        dl_options = self._make_download_options()
+        thread_pool = MagicMock()
+        incomplete_map = {9001: {'file_id': 9001, 'downloaded_bytes': 1024, 'total_bytes': 2048}}
+        with patch.object(self.service, '_fetch_course_data_from_web_api', return_value=course_data):
+            priority_tasks, tasks = self.service._create_tasks_for_manually_specified_courses(
+                [202], dl_options, thread_pool, incomplete_map
+            )
+        self.assertEqual(len(priority_tasks), 1)
+        self.assertEqual(priority_tasks[0].file.file_id, 9001)
+        self.assertEqual(tasks, [])
+
+    @patch('moodle_dl.moodle.request_helper.RequestHelper')
+    @patch('moodle_dl.moodle.course_validator.CourseValidator')
+    def test_create_tasks_for_manually_specified_courses_skips_inaccessible(self, mock_validator, mock_request_helper):
+        """不可访问课程应被跳过"""
+        mock_validator.return_value.validate_course_exists_and_accessible.return_value = None
+        mock_request_helper.return_value = MagicMock()
+        dl_options = self._make_download_options()
+        thread_pool = MagicMock()
+        with patch.object(self.service, '_fetch_course_data_from_web_api') as mock_fetch:
+            priority_tasks, tasks = self.service._create_tasks_for_manually_specified_courses(
+                [999], dl_options, thread_pool, {}
+            )
+        self.assertEqual(priority_tasks, [])
+        self.assertEqual(tasks, [])
+        mock_fetch.assert_not_called()
+
     @patch('moodle_dl.downloader.download_service.logging')
     def test_log_queue_summary_no_priority(self, mock_logging):
         """Test logging queue summary without priority tasks"""
@@ -328,4 +483,3 @@ class TestGenAllTasksFlow(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

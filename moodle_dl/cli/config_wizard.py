@@ -128,7 +128,7 @@ class ConfigWizard:
         )
 
         Log.magenta(
-            'This process can take several minutes for large Moodels, as is common at'
+            'This process can take several minutes for large Moodles, as is common at'
             + ' large universities. Timeout is set to 20 minutes.'
         )
 
@@ -167,7 +167,7 @@ class ConfigWizard:
             Log.error(f'Error while communicating with the Moodle System! ({error})')
             sys.exit(1)
 
-        # Filter out courses the user is enroled in
+        # Filter out courses the user is enrolled in
         filtered_all_courses = []
         for visible_course in all_visible_courses:
             add_to_final_list = True

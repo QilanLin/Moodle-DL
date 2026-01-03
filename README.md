@@ -60,7 +60,7 @@ If you run the program on **Windows**, please use [Powershell or CMD](https://ww
 - **Improved navigation**: Added back/forward navigation in the configuration wizard
 - **Better UX**: Different checkbox symbols (✅/✗) for whitelist vs blacklist modes
 - **Optimized download logic**:
-  - Disabled yt-dlp for video downloads (saves bandwidth and storage)
+  - yt-dlp 仅在需要浏览器 cookies 的嵌入式视频（如 kalvidres、helixmedia、LTI）上启用，其余内容走轻量下载路径
   - Only creates shortcuts for HTML pages (YouTube, Tumblr, etc.) instead of downloading page source
   - Downloads actual files (PDFs, videos, ZIP files) when linked externally
 

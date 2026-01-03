@@ -4,7 +4,7 @@ import traceback
 from typing import List
 
 from moodle_dl.downloader.task import Task
-from moodle_dl.notifications.mail.mail_formater import (
+from moodle_dl.notifications.mail.mail_formatter import (
     create_full_error_mail,
     create_full_failed_downloads_mail,
     create_full_moodle_diff_mail,

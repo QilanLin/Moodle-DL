@@ -960,15 +960,23 @@ class SslHelper:
             ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
             cls.load_default_certs(ssl_context)
         else:
+            # 🔒 安全警告：SSL 证书验证已禁用
+            logging.warning('⚠️  SSL 证书验证已禁用！这可能导致中间人攻击风险。')
+            logging.warning('⚠️  此选项仅应用于可信环境或自签名证书的测试环境。')
             ssl_context = ssl._create_unverified_context()  # pylint: disable=protected-access
 
         if allow_insecure_ssl:
+            # 🔒 安全警告：允许不安全的 SSL 连接
+            logging.warning('⚠️  已启用不安全的 SSL 连接选项（用于兼容旧服务器）')
             # This allows connections to legacy insecure servers
             # https://www.openssl.org/docs/manmaster/man3/SSL_CTX_set_options.html#SECURE-RENEGOTIATION
             # Be warned the insecure renegotiation allows an attack, see:
             # https://nvd.nist.gov/vuln/detail/CVE-2009-3555
             ssl_context.options |= 0x4  # set ssl.OP_LEGACY_SERVER_CONNECT bit
+
         if use_all_ciphers:
+            # 🔒 安全警告：启用所有加密套件（包括不安全的）
+            logging.warning('⚠️  已启用所有加密套件（包括已知的不安全套件）')
             ssl_context.set_ciphers('ALL')
 
         # Activate ALPN extension

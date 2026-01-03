@@ -12,6 +12,7 @@ v2 改进：使用数据库存储 cookies 而不是文本文件
 """
 
 import importlib.util
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -145,7 +146,8 @@ class CookieManager:
         try:
             import socket
             return socket.gethostbyname(socket.gethostname())
-        except:
+        except (OSError, socket.gaierror) as e:
+            logging.debug(f'获取客户端 IP 失败: {e}，使用默认值')
             return '127.0.0.1'
 
     def _load_export_module(self):
@@ -429,8 +431,8 @@ def create_cookie_manager_from_client(client, config) -> CookieManager:
     try:
         misc_files_path = config.get_misc_files_path()
         db_file = PT.make_path(misc_files_path, 'moodle_state.db')
-    except:
-        pass
+    except (OSError, KeyError, AttributeError) as e:
+        logging.debug(f'获取数据库文件路径失败: {e}，将使用默认路径')
 
     return CookieManager(config, moodle_domain, cookies_path, db_file)
 

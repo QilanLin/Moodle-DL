@@ -3,7 +3,7 @@ from getpass import getpass
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
-from moodle_dl.notifications.mail.mail_formater import create_full_welcome_mail
+from moodle_dl.notifications.mail.mail_formatter import create_full_welcome_mail
 from moodle_dl.notifications.mail.mail_shooter import MailShooter
 from moodle_dl.notifications.ntfy.ntfy_shooter import NtfyShooter
 from moodle_dl.notifications.telegram.telegram_shooter import (

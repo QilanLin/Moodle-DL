@@ -114,7 +114,7 @@ See `BOOK_MODULE_IMPROVEMENTS_SUMMARY.md` (sections 2-62) for detailed implement
 The application follows a modular architecture with clear separation:
 
 1. **Moodle API Client** (`moodle/`) - Handles Moodle Mobile API communication
-2. **Download Service** (`downloader/`) - AsyncIO-based download orchestrator with parallel processing
+2. **Download Service** (`downloader/`) - AsyncIO-based orchestrator currently configured for sequential downloads (parallel path kept but disabled to throttle load)
 3. **Module Handlers** (`moodle/mods/`) - 35+ specialized handlers for different Moodle module types
 4. **State Management** (`database.py`) - SQLite-based file tracking and change detection
 5. **Notification System** (`notifications/`) - Multi-channel notifications (Telegram, Discord, Email, XMPP, Ntfy)

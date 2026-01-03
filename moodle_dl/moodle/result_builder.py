@@ -480,7 +480,8 @@ class ResultBuilder:
                 file_extension_guess = mimetypes.guess_extension(mime_type, strict=False)
                 if file_extension_guess is None:
                     file_extension_guess = f'.{media_type}'
-                m = hashlib.sha1()
+                # 🔒 安全改进：使用 SHA256 替代 SHA1（用于文件去重，非安全验证）
+                m = hashlib.sha256()
                 if len(embedded_data) > 100000:
                     # To improve speed hash only first 100kb if file is bigger
                     m.update(embedded_data[:100000].encode(encoding='utf-8'))
@@ -643,7 +644,8 @@ class ResultBuilder:
             file_hash = None
             if content_type in ('description', 'html') and not content.get('no_hash', False):
                 hashable_description = self.filter_changing_attributes(content_description)
-                m = hashlib.sha1()
+                # 🔒 安全改进：使用 SHA256 替代 SHA1（用于内容去重）
+                m = hashlib.sha256()
                 m.update(hashable_description.encode('utf-8'))
                 file_hash = m.hexdigest()
 
@@ -746,7 +748,8 @@ class ResultBuilder:
         files = []
         content_filepath = '/'
 
-        m = hashlib.sha1()
+        # 🔒 安全改进：使用 SHA256 替代 SHA1（用于描述去重）
+        m = hashlib.sha256()
         hashable_description = self.filter_changing_attributes(module_description)
         m.update(hashable_description.encode('utf-8'))
         hash_description = m.hexdigest()

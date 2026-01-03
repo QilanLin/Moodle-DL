@@ -7,7 +7,7 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.types import File, MoodleDlOpts
-from moodle_dl.utils import Cutie, Log
+from moodle_dl.utils import Cutie, Log, PathTools as PT
 
 
 class DatabaseManager:
@@ -189,15 +189,13 @@ class DatabaseManager:
                 for file_to_delete in files[1:]:  # Ignore the first element of the array set as None
                     if isinstance(file_to_delete, File):
                         files_to_delete.append(file_to_delete)
-                        if os.path.exists(file_to_delete.saved_to):
-                            os.remove(file_to_delete.saved_to)
+                        PT.remove_file(file_to_delete.saved_to)
 
                 break
 
             elif file_index < len(files) and isinstance(files[file_index], File):
                 files_to_delete.append(files[file_index])
-                if os.path.exists(files[file_index].saved_to):
-                    os.remove(files[file_index].saved_to)
+                PT.remove_file(files[file_index].saved_to)
 
         self.state_recorder.batch_delete_files_from_db(files_to_delete)
 

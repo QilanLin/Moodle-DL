@@ -227,8 +227,9 @@ class Task:
 
     def create_target_file(self, target_path: str) -> str:
         """
-        Rename target_path if necessary to a unused filename and touch the target_path
-        @return: Path to the touched target file
+        Rename target_path if necessary to an unused filename and touch the target_path.
+        @param target_path: The desired path for the target file
+        @return: Path to the touched target file (may differ from input if renamed)
         """
         target_path = PT.get_unused_file_path(target_path)
         PT.touch_file(target_path)
@@ -767,7 +768,7 @@ class Task:
 
         if md_content == '':
             logging.debug('[%d] Remove target file because description file would be empty', self.task_id)
-            os.remove(self.file.saved_to)
+            PT.remove_file(self.file.saved_to)
             return
 
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as md_file:
@@ -783,7 +784,7 @@ class Task:
 
         if html_content == '':
             logging.debug('[%d] Remove target file because html file would be empty', self.task_id)
-            os.remove(self.file.saved_to)
+            PT.remove_file(self.file.saved_to)
             return
 
         # Save HTML version
@@ -820,7 +821,7 @@ class Task:
 
         if content == '':
             logging.debug('[%d] Remove target file because content file would be empty', self.task_id)
-            os.remove(self.file.saved_to)
+            PT.remove_file(self.file.saved_to)
             return
 
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as content_file:
@@ -842,7 +843,7 @@ class Task:
         logging.debug('[%d] Moving old file "%s" to new target location', self.task_id, old_path)
         try:
             # On Windows, the temporary file must be deleted first.
-            os.remove(self.file.saved_to)
+            PT.remove_file(self.file.saved_to)
             shutil.move(old_path, self.file.saved_to)
             return True
         except OSError as e:
@@ -852,6 +853,13 @@ class Task:
     async def create_data_url_file(self):
         url_to_download = self.file.content_fileurl
         logging.debug('[%d] Creating a Data-URL file', self.task_id)
+
+        # 🔒 安全验证：只允许 HTTP/HTTPS 协议
+        parsed_url = urlparse.urlparse(url_to_download)
+        if parsed_url.scheme not in ['http', 'https']:
+            logging.warning('[%d] ❌ 不支持的 URL 协议: %s (只允许 http/https)', self.task_id, parsed_url.scheme)
+            return False
+
         PT.remove_file(self.file.saved_to)
         self.set_path(True)
         with urllib.request.urlopen(url_to_download) as response:
@@ -879,7 +887,7 @@ class Task:
             # Use requests library for better cookie handling with redirects
             session = requests.Session()
 
-            # Load cookies from Cookies.txt if available
+            # Legacy fallback: load cookies from opts.cookies_text (formerly Cookies.txt)
             if self.opts.cookies_text is not None:
                 cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
                 cookie_jar.load(ignore_discard=True, ignore_expires=True)
@@ -1874,16 +1882,23 @@ class Task:
             except Exception as head_err:
                 logging.debug('[%d] HEAD 请求失败，无法续传: %s', self.task_id, head_err)
                 return 0, None
-            
+
             # 打开文件用于追加写入
             file_obj = await aiofiles.open(file_path, 'a+b')
-            logging.info(
-                '[%d] 恢复未完成下载，从 %s 处继续',
-                self.task_id,
-                format_bytes(downloaded_bytes)
-            )
-            
-            return downloaded_bytes, file_obj
+
+            try:
+                logging.info(
+                    '[%d] 恢复未完成下载，从 %s 处继续',
+                    self.task_id,
+                    format_bytes(downloaded_bytes)
+                )
+
+                return downloaded_bytes, file_obj
+            except Exception as log_err:
+                # 日志记录失败时关闭文件
+                await file_obj.close()
+                logging.debug('[%d] 日志记录失败: %s', self.task_id, log_err)
+                return 0, None
         except Exception as e:
             logging.debug('[%d] 恢复下载失败: %s', self.task_id, e)
             return 0, None

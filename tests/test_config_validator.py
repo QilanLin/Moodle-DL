@@ -294,8 +294,8 @@ class TestConfigValidator(unittest.TestCase):
         self.assertTrue(result.has_warnings())
         self.assertTrue(any('太短' in warn.message for warn in result.warnings))
     
-    def test_unsafe_filename(self):
-        """测试不安全的文件名"""
+    def test_restricted_filenames_type_error(self):
+        """restricted_filenames 不是布尔值时应报错"""
         config = {
             'moodle_domain': 'moodle.example.com',
             'moodle_path': '/moodle',
@@ -303,9 +303,8 @@ class TestConfigValidator(unittest.TestCase):
         }
         
         result = self.validator.validate_config_data(config)
-        self.assertTrue(result.is_valid)  # 只是警告
-        self.assertTrue(result.has_warnings())
-        self.assertTrue(any('不安全' in warn.message for warn in result.warnings))
+        self.assertFalse(result.is_valid)
+        self.assertTrue(any('布尔' in err.message for err in result.errors))
     
     def test_file_validation_nonexistent(self):
         """测试验证不存在的文件"""
@@ -445,4 +444,3 @@ class TestConvenienceFunctions(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

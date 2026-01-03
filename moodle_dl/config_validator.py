@@ -103,7 +103,7 @@ class ConfigValidator:
         'download_course_ids': [],
         'download_public_course_ids': [],
         'dont_download_course_ids': [],
-        'restricted_filenames': [],
+        'restricted_filenames': False,
         'include_noncourse_files': False,
         'notifications': {},
         # Cookie 和浏览器相关
@@ -265,12 +265,15 @@ class ConfigValidator:
         
         # 课程过滤器必须是列表
         list_fields = ['courses_to_filter', 'download_course_ids', 
-                      'download_public_course_ids', 'dont_download_course_ids',
-                      'restricted_filenames']
+                      'download_public_course_ids', 'dont_download_course_ids']
         for field in list_fields:
             if field in config and not isinstance(config[field], list):
                 result.add_error(field, f'{field} 必须是列表类型',
                                suggestion=f'使用 [] 包裹值，例如 [1, 2, 3]')
+        
+        # 限制文件名开关必须是布尔类型
+        if 'restricted_filenames' in config and not isinstance(config['restricted_filenames'], bool):
+            result.add_error('restricted_filenames', 'restricted_filenames 必须是布尔类型 (true/false)')
         
         # 布尔字段
         if 'include_noncourse_files' in config and not isinstance(config['include_noncourse_files'], bool):
@@ -427,20 +430,6 @@ class ConfigValidator:
     
     def _validate_security(self, config: Dict[str, Any], result: ValidationResult):
         """验证安全性"""
-        # 检查不安全的文件名字符
-        if 'restricted_filenames' in config:
-            for i, filename in enumerate(config['restricted_filenames']):
-                if not isinstance(filename, str):
-                    result.add_error(f'restricted_filenames[{i}]',
-                                   '文件名必须是字符串')
-                    continue
-                
-                # 检查路径遍历攻击
-                if '..' in filename or filename.startswith('/'):
-                    result.add_warning(f'restricted_filenames[{i}]',
-                                     f'文件名包含不安全的路径: {filename}',
-                                     suggestion='避免使用 .. 或绝对路径')
-        
         # 警告：Token 不应该包含明显的占位符
         placeholder_patterns = ['xxx', 'replace', 'your', 'token', 'here', 'example']
         if 'token' in config and config['token']:
@@ -565,8 +554,7 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     
     # 修复 5: 确保列表字段确实是列表
     list_fields = ['courses_to_filter', 'download_course_ids', 
-                  'download_public_course_ids', 'dont_download_course_ids',
-                  'restricted_filenames']
+                  'download_public_course_ids', 'dont_download_course_ids']
     for field in list_fields:
         if field in fixed_config and not isinstance(fixed_config[field], list):
             # 尝试转换为列表
@@ -577,5 +565,9 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
                 fixed_config[field] = []
                 fixes.append(f'将 {field} 重置为空列表（无法转换）')
     
-    return fixed_config, fixes
+    # 修复 6: 将 restricted_filenames 统一为布尔值
+    if 'restricted_filenames' in fixed_config and not isinstance(fixed_config['restricted_filenames'], bool):
+        fixed_config['restricted_filenames'] = bool(fixed_config['restricted_filenames'])
+        fixes.append('将 restricted_filenames 转换为布尔值')
 
+    return fixed_config, fixes
