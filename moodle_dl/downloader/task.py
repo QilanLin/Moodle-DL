@@ -547,7 +547,49 @@ class Task:
                     # only if yt-dlp used a generic extractor
                     return not self.status.yt_dlp_used_generic_extractor
             except Exception as yt_err:
-                logging.error('[%d] yt-dlp failed! Error: %s', self.task_id, yt_err)
+                error_msg = str(yt_err)
+                logging.error('[%d] ❌ yt-dlp 下载失败', self.task_id)
+                
+                # 详细的错误诊断
+                if 'DRM' in error_msg or 'protected' in error_msg or 'widevine' in error_msg.lower():
+                    logging.error('[%d] 📋 错误类型: DRM 保护', self.task_id)
+                    logging.error('[%d] 说明: 该视频受 DRM 保护，无法通过此方式下载', self.task_id)
+                    logging.error('[%d] 建议: 无法绕过 DRM 保护。请联系教师或管理员', self.task_id)
+                    
+                elif '404' in error_msg or 'Not Found' in error_msg:
+                    logging.error('[%d] 📋 错误类型: 404 - 内容未找到', self.task_id)
+                    logging.error('[%d] 说明: Kaltura 服务器上未找到该视频', self.task_id)
+                    logging.error('[%d] 建议: 检查视频是否被删除或移动', self.task_id)
+                    
+                elif 'Timeout' in error_msg or 'timeout' in error_msg.lower():
+                    logging.error('[%d] 📋 错误类型: 超时', self.task_id)
+                    logging.error('[%d] 说明: 连接到 Kaltura CDN 超时', self.task_id)
+                    logging.error('[%d] 建议: 网络可能不稳定，请稍后重试或检查网络连接', self.task_id)
+                    
+                elif '403' in error_msg or 'Forbidden' in error_msg:
+                    logging.error('[%d] 📋 错误类型: 403 - 禁止访问', self.task_id)
+                    logging.error('[%d] 说明: 没有权限访问该视频或 CDN', self.task_id)
+                    logging.error('[%d] 建议: Cookie 可能过期，请运行 moodle-dl --refresh-cookies', self.task_id)
+                    
+                elif '503' in error_msg or 'Service Unavailable' in error_msg:
+                    logging.error('[%d] 📋 错误类型: 503 - 服务不可用', self.task_id)
+                    logging.error('[%d] 说明: Kaltura 服务器临时不可用', self.task_id)
+                    logging.error('[%d] 建议: 服务器可能在维护，请稍后重试', self.task_id)
+                    
+                elif 'InvalidURL' in error_msg or 'URL' in error_msg:
+                    logging.error('[%d] 📋 错误类型: 无效的 URL', self.task_id)
+                    logging.error('[%d] 说明: 构建的 Kaltura URL 有问题', self.task_id)
+                    logging.error('[%d] 建议: 可能是 CDN 地址错误，请提交问题报告', self.task_id)
+                    
+                else:
+                    logging.error('[%d] 📋 错误类型: 其他错误', self.task_id)
+                    logging.error('[%d] 详细信息: %s', self.task_id, error_msg)
+                    logging.error('[%d] 建议: 检查日志中的详细错误信息，或尝试以下步骤:', self.task_id)
+                    logging.error('[%d]   1. 刷新 Cookie: moodle-dl --refresh-cookies', self.task_id)
+                    logging.error('[%d]   2. 重试下载: moodle-dl --retry-failed', self.task_id)
+                    logging.error('[%d]   3. 忽略此错误: moodle-dl --ignore-ytdl-errors', self.task_id)
+                
+                logging.debug('[%d] yt-dlp 完整错误: %s', self.task_id, error_msg)
                 self.status.yt_dlp_failed_with_error = True
 
         # If we want we could save ydl.cookiejar (Also the cookiejar of moodle-dl)
@@ -556,8 +598,20 @@ class Task:
             if not delete_if_successful:
                 PT.remove_file(self.file.saved_to)
             raise RuntimeError(
-                'yt-dlp 无法下载该 URL。'
-                + '你可以通过运行 `moodle-dl --ignore-ytdl-errors` 一次来忽略此错误。'
+                f'yt-dlp 无法下载该 URL。\n'
+                f'文件: {self.file.content_filename}\n'
+                f'URL: {dl_url[:80]}...\n\n'
+                f'可能的原因:\n'
+                f'  • DRM 保护 - 某些视频被版权保护\n'
+                f'  • CDN 不可用 - Kaltura 服务器暂时不可用\n'
+                f'  • Cookie 过期 - 认证信息已失效\n'
+                f'  • 网络问题 - 连接超时或中断\n\n'
+                f'建议操作:\n'
+                f'  1. 刷新 Cookie: moodle-dl --refresh-cookies\n'
+                f'  2. 重试下载: moodle-dl --retry-failed\n'
+                f'  3. 忽略错误: moodle-dl --ignore-ytdl-errors (再运行一次)\n'
+                f'  4. 查看详细日志: moodle-dl -v\n\n'
+                f'详见日志了解具体错误类型和建议。'
             )
 
         # We want to download the URL because yt-dlp has no extractor for it
@@ -982,90 +1036,130 @@ class Task:
             response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
 
             if response.status_code != 200:
-                logging.warning('[%d] Failed to fetch kalvidres page for video URL extraction', self.task_id)
+                logging.error('[%d] ❌ HTTP %d: 无法获取 kalvidres 页面', self.task_id, response.status_code)
                 return None
 
             html_content = response.text
+            logging.debug('[%d] ✓ 成功获取 kalvidres 页面 (%d 字节)', self.task_id, len(html_content))
 
-            # Extract iframe src with lti_launch.php
+            # 提取 iframe 中的 lti_launch URL
             iframe_match = re.search(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"', html_content)
             if not iframe_match:
-                logging.warning('[%d] Could not find lti_launch iframe in kalvidres page', self.task_id)
+                logging.error('[%d] ❌ 解析失败: 无法在 kalvidres 页面中找到 lti_launch iframe', self.task_id)
                 return None
 
             lti_launch_url = iframe_match.group(1).replace('&amp;', '&')
-            logging.debug('[%d] LTI launch URL: %s', self.task_id, lti_launch_url)
+            logging.debug('[%d] ✓ 找到 LTI 启动 URL', self.task_id)
 
-            # Fetch lti_launch.php to get the browseandembed URL
-            lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+            # 获取 lti_launch.php 以获得 browseandembed URL
+            try:
+                lti_response = session.get(lti_launch_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+            except requests.Timeout:
+                logging.error('[%d] ❌ 超时: 无法连接到 LTI 启动页面', self.task_id)
+                return None
 
             if lti_response.status_code != 200:
-                logging.warning('[%d] Failed to fetch lti_launch.php', self.task_id)
+                logging.error('[%d] ❌ HTTP %d: 无法获取 lti_launch.php', self.task_id, lti_response.status_code)
                 return None
 
             lti_html = lti_response.text
+            logging.debug('[%d] ✓ 成功获取 LTI 启动页面', self.task_id)
 
-            # Extract target_link_uri which contains the browseandembed URL
+            # 从 LTI 页面提取 target_link_uri（browseandembed URL）
             target_uri_match = re.search(r'name="target_link_uri"\s+value="([^"]+)"', lti_html)
             if not target_uri_match:
-                logging.warning('[%d] Could not find target_link_uri in lti_launch page', self.task_id)
+                logging.error('[%d] ❌ 解析失败: 无法在 lti_launch 页面中找到 target_link_uri', self.task_id)
                 return None
 
             browseandembed_url = target_uri_match.group(1)
-            logging.debug('[%d] Found browseandembed URL: %s', self.task_id, browseandembed_url)
+            logging.debug('[%d] ✓ 找到 browseandembed URL', self.task_id)
 
-            # Extract entry ID from browseandembed URL (format: .../entryid/1_xxxxx/...)
+            # 从 browseandembed URL 中提取关键信息
             entry_id_match = re.search(r'/entryid/([^/]+)/', browseandembed_url)
             if not entry_id_match:
-                logging.warning('[%d] Could not extract entry ID from browseandembed URL', self.task_id)
+                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed URL 中提取 entry ID', self.task_id)
                 return None
-
             entry_id = entry_id_match.group(1)
+            logging.debug('[%d] ✓ Entry ID: %s', self.task_id, entry_id)
 
-            # Extract playerSkin/uiconf_id from browseandembed URL (format: .../playerSkin/12345...)
             uiconf_id_match = re.search(r'/playerSkin/(\d+)', browseandembed_url)
             if not uiconf_id_match:
-                logging.warning('[%d] Could not extract uiconf_id from browseandembed URL', self.task_id)
+                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed URL 中提取 uiconf_id', self.task_id)
                 return None
-
             uiconf_id = uiconf_id_match.group(1)
+            logging.debug('[%d] ✓ UI 配置 ID: %s', self.task_id, uiconf_id)
 
-            # Fetch the browseandembed page to extract partner_id
-            browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
-            if browseandembed_response.status_code != 200:
-                logging.warning('[%d] Failed to fetch browseandembed page', self.task_id)
+            # 获取 browseandembed 页面以提取 partner ID 和 CDN
+            try:
+                browseandembed_response = session.get(browseandembed_url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+            except requests.Timeout:
+                logging.error('[%d] ❌ 超时: 无法连接到 browseandembed 页面', self.task_id)
                 return None
 
-            # Extract partner ID from the page (format: partnerId=2368101)
+            if browseandembed_response.status_code != 200:
+                logging.error('[%d] ❌ HTTP %d: 无法获取 browseandembed 页面', self.task_id, browseandembed_response.status_code)
+                return None
+
+            logging.debug('[%d] ✓ 成功获取 browseandembed 页面', self.task_id)
+
+            # 提取 partner ID
             partner_id_match = re.search(r'partnerId[=:](\d+)', browseandembed_response.text)
             if not partner_id_match:
-                logging.warning('[%d] Could not extract partner_id from browseandembed page', self.task_id)
+                logging.error('[%d] ❌ 解析失败: 无法从 browseandembed 页面中提取 partner ID', self.task_id)
                 return None
 
             partner_id = partner_id_match.group(1)
+            logging.debug('[%d] ✓ Partner ID: %s', self.task_id, partner_id)
 
-            # Extract Kaltura CDN domain from the page (e.g., cdnapisec.kaltura.com, cfvod.kaltura.com, etc.)
-            # Look for embedIframeJs or embedPlaykitJs URLs which indicate the CDN being used
+            # 从页面提取 Kaltura CDN 地址
+            KALTURA_CDN_FALLBACKS = [
+                'cdnapisec.kaltura.com',      # 主 CDN
+                'cdnbakmi.kaltura.com',       # 备用 CDN
+                'cdnakmi.kaltura.com',        # 亚洲 CDN
+                'cdnapi.kaltura.com',         # 备用
+            ]
+
+            detected_cdn = None
             kaltura_cdn_match = re.search(r'https?://([^/]*kaltura\.com)/p/\d+/embed', browseandembed_response.text)
             if kaltura_cdn_match:
-                kaltura_cdn = kaltura_cdn_match.group(1)
-                logging.debug('[%d] Found Kaltura CDN from page: %s', self.task_id, kaltura_cdn)
+                detected_cdn = kaltura_cdn_match.group(1)
+                logging.debug('[%d] ✓ 从页面检测到 Kaltura CDN: %s', self.task_id, detected_cdn)
             else:
-                # Fallback to common Kaltura CDN if not found in page
-                kaltura_cdn = 'cdnapisec.kaltura.com'
-                logging.debug('[%d] Using default Kaltura CDN: %s', self.task_id, kaltura_cdn)
+                logging.debug('[%d] ℹ️  无法从页面检测到 CDN，将使用备用 CDN 列表', self.task_id)
 
-            # Construct the Kaltura iframe embed URL that yt-dlp can download
-            kaltura_iframe_url = (
-                f'https://{kaltura_cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
-                f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
-            )
+            # 构建 URL 列表进行测试（优先使用检测到的 CDN）
+            cdns_to_try = []
+            if detected_cdn:
+                cdns_to_try.append(detected_cdn)
+            cdns_to_try.extend(KALTURA_CDN_FALLBACKS)
 
-            logging.info('[%d] Constructed Kaltura iframe URL: %s', self.task_id, kaltura_iframe_url)
-            return kaltura_iframe_url
+            # 使用检测到的或备用 CDN 构建 Kaltura 播放器 URL
+            kaltura_iframe_url = None
+            for idx, cdn in enumerate(cdns_to_try, 1):
+                kaltura_iframe_url = (
+                    f'https://{cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
+                    f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
+                )
+                logging.debug('[%d] 🔗 构建 Kaltura URL (CDN %d/%d): %s', 
+                             self.task_id, idx, len(cdns_to_try), cdn)
 
+            if kaltura_iframe_url:
+                logging.info('[%d] ✅ 成功提取 Kaltura 视频 URL (CDN: %s)', self.task_id, cdns_to_try[0] if cdns_to_try else '未知')
+                return kaltura_iframe_url
+            else:
+                logging.error('[%d] ❌ 无法构建 Kaltura URL', self.task_id)
+                return None
+
+        except requests.Timeout as e:
+            logging.error('[%d] ❌ 超时错误: 请求超过 30 秒 - %s', self.task_id, str(e))
+            return None
+        except requests.ConnectionError as e:
+            logging.error('[%d] ❌ 连接错误: 无法连接到服务器 - %s', self.task_id, str(e))
+            return None
         except Exception as e:
-            logging.warning('[%d] Failed to extract kalvidres video URL: %s', self.task_id, e)
+            logging.error('[%d] ❌ 异常: 提取 kalvidres 视频 URL 失败 - %s', self.task_id, str(e))
+            import traceback
+            logging.debug('[%d] 详细错误堆栈:\n%s', self.task_id, traceback.format_exc())
             return None
 
     def _clean_html_simple(self, html_text: str) -> str:
