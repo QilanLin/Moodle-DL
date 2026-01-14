@@ -320,13 +320,70 @@ class CookieManager:
     def _load_cookies_from_file(self, file_path: str) -> Optional[List[Dict]]:
         """
         从 Netscape 格式的 cookies 文件中加载 cookies
+        
+        使用 Python 标准库 http.cookiejar.MozillaCookieJar 来正确解析 Netscape Cookie 文件。
+        这是处理 Netscape Cookie 格式的最佳实践，能够：
+        - 自动处理 TRUE/FALSE 布尔值
+        - 正确解析所有字段类型
+        - 处理各种边界情况
+        - 官方维护，经过充分测试
 
+        @param file_path: cookies 文件路径
+        @return: cookies 列表（字典格式），或 None 如果加载失败
+        """
+        if not os.path.exists(file_path):
+            Log.debug(f'Cookie 文件不存在: {file_path}')
+            return None
+
+        try:
+            import http.cookiejar
+            
+            # 使用标准库的 MozillaCookieJar 加载 Netscape 格式
+            cookie_jar = http.cookiejar.MozillaCookieJar(file_path)
+            
+            try:
+                # 加载 cookies，忽略过期和丢弃标志
+                cookie_jar.load(ignore_discard=True, ignore_expires=True)
+            except http.cookiejar.LoadError as e:
+                # 如果文件格式有问题，尝试手动解析（向后兼容）
+                Log.warning(f'⚠️  标准库加载失败: {e}，尝试手动解析...')
+                return self._fallback_manual_parse(file_path)
+            
+            # 将 CookieJar 转换为字典列表（用于数据库存储和 Playwright）
+            cookies = []
+            for cookie in cookie_jar:
+                cookie_dict = {
+                    'domain': cookie.domain,
+                    'path': cookie.path,
+                    'secure': 1 if cookie.secure else 0,
+                    'expires': int(cookie.expires) if cookie.expires else None,
+                    'name': cookie.name,
+                    'value': cookie.value,
+                    'httponly': 1 if cookie.has_nonstandard_attr('HttpOnly') else 0,
+                    'samesite': 'Lax'  # 默认值，Netscape 格式不包含此字段
+                }
+                cookies.append(cookie_dict)
+            
+            Log.debug(f'✓ 使用标准库从文件加载了 {len(cookies)} 个 cookies')
+            return cookies if cookies else None
+            
+        except Exception as e:
+            Log.warning(f'⚠️  标准库加载 cookies 失败: {e}，尝试手动解析...')
+            return self._fallback_manual_parse(file_path)
+
+    def _fallback_manual_parse(self, file_path: str) -> Optional[List[Dict]]:
+        """
+        手动解析 Netscape Cookie 文件（作为标准库的后备方案）
+        
+        当标准库 MozillaCookieJar 无法解析时使用此方法。
+        这可能发生在：
+        - 文件格式不完全符合标准
+        - 缺少文件头注释
+        - 某些字段格式异常
+        
         @param file_path: cookies 文件路径
         @return: cookies 列表，或 None 如果加载失败
         """
-        if not os.path.exists(file_path):
-            return None
-
         cookies = []
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -336,8 +393,7 @@ class CookieManager:
                     if not line or line.startswith('#'):
                         continue
 
-                    # 解析 Netscape 格式
-                    # domain flag path secure expiration name value
+                    # 解析 Netscape 格式: domain flag path secure expiration name value
                     parts = line.split('\t')
                     if len(parts) >= 7:
                         # 转换 secure 字段：Netscape 格式使用 TRUE/FALSE 字符串
@@ -347,18 +403,18 @@ class CookieManager:
                         elif secure_str in ('FALSE', '0'):
                             secure = 0
                         else:
-                            # 尝试作为整数解析（兼容旧格式）
+                            # 尝试作为整数解析（兼容性）
                             try:
                                 secure = int(secure_str)
                             except ValueError:
-                                logging.warning(f'无法解析 secure 字段: {secure_str}，使用默认值 0')
+                                logging.debug(f'无法解析 secure 字段: {secure_str}，使用默认值 0')
                                 secure = 0
                         
                         # 处理 expires 字段
                         try:
-                            expires_val = int(parts[4]) if parts[4] else None
+                            expires_val = int(parts[4]) if parts[4] and parts[4] != '0' else None
                         except ValueError:
-                            logging.warning(f'无法解析 expires 字段: {parts[4]}，使用默认值 None')
+                            logging.debug(f'无法解析 expires 字段: {parts[4]}，使用默认值 None')
                             expires_val = None
                         
                         cookies.append({
@@ -372,11 +428,11 @@ class CookieManager:
                             'samesite': 'Lax'  # 默认值
                         })
 
-            Log.debug(f'✓ 从文件加载了 {len(cookies)} 个 cookies')
+            Log.debug(f'✓ 手动解析加载了 {len(cookies)} 个 cookies')
             return cookies if cookies else None
 
         except Exception as e:
-            Log.debug(f'加载 cookies 文件失败: {e}')
+            Log.debug(f'❌ 手动解析也失败: {e}')
             return None
 
     def _show_manual_refresh_instructions(self):
