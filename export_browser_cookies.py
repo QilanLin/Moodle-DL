@@ -943,7 +943,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
         logging.debug(f'🔍 [Playwright] Token URL: {token_url}')
 
         def _extract_token_from_moodledl_url(moodledl_url: str):
-            \"\"\"从 moodledl://token=... URL 中解码出 (web_service_token, mobile_app_token)\"\"\"
+            """从 moodledl://token=... URL 中解码出 (web_service_token, mobile_app_token)"""
             if 'token=' not in moodledl_url:
                 return None, None
             match = re.search(r'token=([^&\\s]+)', moodledl_url)
@@ -959,7 +959,14 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             return None, None
 
         def _try_requests_location_fallback() -> tuple:
-            \"\"\"\n+            最可靠的方式：不用 Playwright 事件捕获，直接用 requests 拿 launch.php 的 302 Location。\n+            你在另一个工具里看到的：\n+              [GET] launch.php => [302]\n+              [GET] moodledl://token=...\n+            其中 moodledl://... 本质就是 302 Location。\n+            \"\"\"\n+            try:
+            """
+            最可靠的方式：不用 Playwright 事件捕获，直接用 requests 拿 launch.php 的 302 Location。
+            你在另一个工具里看到的：
+              [GET] launch.php => [302]
+              [GET] moodledl://token=...
+            其中 moodledl://... 本质就是 302 Location。
+            """
+            try:
                 import requests
             except Exception as e:
                 logging.warning(f'⚠️  [RequestsFallback] 无法导入 requests: {e}')
@@ -997,7 +1004,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             else:
                 logging.warning('⚠️  [RequestsFallback] 响应没有 Location header（可能返回 200 HTML 或被重定向链拦截）')
                 try:
-                    logging.info(f'🔍 [RequestsFallback] 响应前200字符: {resp.text[:200].replace(\"\\n\", \" \")}')
+                    logging.info(f'🔍 [RequestsFallback] 响应前200字符: {resp.text[:200].replace(chr(10), " ")}')
                 except Exception:
                     pass
                 return None, None
