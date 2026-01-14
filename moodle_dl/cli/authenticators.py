@@ -832,37 +832,62 @@ class SSOAuthenticator(BaseAuthenticator):
 
         try:
             # v2: 从数据库获取最新的 cookie_batch 会话
+            logging.debug('🔍 [Token提取] 开始从数据库获取 cookie_batch 会话...')
             auth_manager = self.config.get_auth_manager()
             session = auth_manager.get_valid_session(session_type='cookie_batch')
 
             if not session:
-                logging.error('❌ 数据库中没有有效的 cookies 会话')
+                logging.error('❌ [Token提取] 数据库中没有有效的 cookies 会话')
+                logging.debug('🔍 [Token提取] 尝试查询所有 cookie_batch 会话...')
+                all_sessions = auth_manager.get_all_sessions(session_type='cookie_batch')
+                logging.debug(f'🔍 [Token提取] 找到 {len(all_sessions)} 个 cookie_batch 会话')
                 return None, None
 
+            logging.debug(f'🔍 [Token提取] 找到有效会话: session_id={session.get("session_id")}, created_at={session.get("created_at")}')
+
             # 从数据库获取 cookies
+            logging.debug(f'🔍 [Token提取] 从数据库加载 cookies (session_id={session["session_id"]})...')
             cookies = auth_manager.get_session_cookies(session['session_id'])
 
             if not cookies:
-                logging.error('❌ 数据库中没有 cookies')
+                logging.error('❌ [Token提取] 数据库中没有 cookies')
+                logging.debug(f'🔍 [Token提取] session_id={session["session_id"]} 没有关联的 cookies')
                 return None, None
 
-            logging.info(f'📦 从数据库加载 {len(cookies)} 个 cookies')
+            logging.info(f'📦 [Token提取] 从数据库加载 {len(cookies)} 个 cookies')
+            
+            # 详细记录 Cookie 信息
+            logging.debug(f'🔍 [Token提取] Cookie 详情:')
+            moodle_session_count = sum(1 for c in cookies if c.get('name') == 'MoodleSession')
+            logging.debug(f'  - MoodleSession cookies: {moodle_session_count}')
+            logging.debug(f'  - 总 cookies 数: {len(cookies)}')
+            if cookies:
+                sample_cookie = cookies[0]
+                logging.debug(f'  - Cookie 示例: name={sample_cookie.get("name")}, domain={sample_cookie.get("domain")}, secure={sample_cookie.get("secure")}')
 
             # 使用新的 API：直接传入 cookies 列表
+            logging.debug(f'🔍 [Token提取] 调用 Playwright 提取 token (domain={self.moodle_url.domain})...')
             token, private_token = self._export_module.extract_api_token_with_playwright_from_cookies(
                 self.moodle_url.domain, cookies
             )
 
             if token and private_token:
-                logging.info(f'✅ 成功提取 API token（从数据库 cookies）')
+                logging.info(f'✅ [Token提取] 成功提取 API token（从数据库 cookies）')
+                logging.debug(f'🔍 [Token提取] Token 长度: {len(token)}, Private token 长度: {len(private_token)}')
                 return token, private_token
             else:
-                logging.warning('⚠️  未能成功提取 API token')
+                logging.warning('⚠️  [Token提取] 未能成功提取 API token')
+                logging.debug('🔍 [Token提取] Playwright 返回: token={}, private_token={}'.format(
+                    '有值' if token else 'None',
+                    '有值' if private_token else 'None'
+                ))
                 return None, None
 
         except Exception as e:
-            logging.error(f'❌ 提取 API token 时出错: {e}')
+            logging.error(f'❌ [Token提取] 提取 API token 时出错: {e}')
+            logging.debug(f'🔍 [Token提取] 错误类型: {type(e).__name__}')
             import traceback
+            logging.debug(f'🔍 [Token提取] 完整错误堆栈:\n{traceback.format_exc()}')
             traceback.print_exc()
             return None, None
 

@@ -890,125 +890,240 @@ def extract_api_token_with_cookies(domain: str, cookies_file: str):
 
 def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
     """
-     Playwright + cookies  Moodle API token
+    使用 Playwright + cookies 自动提取 Moodle API token
     
-    **v2:  cookies ,**
+    **v2: 直接接收 cookies 列表，无需文件**
     
     Args:
-        domain: Moodle 
-        cookies: Playwright  cookies 
+        domain: Moodle 域名
+        cookies: Playwright 格式的 cookies 列表
         
     Returns:
-        tuple: (token, privatetoken) , (None, None)
+        tuple: (token, privatetoken) 或 (None, None) 表示失败
     """
-    print("\n Playwright  API token...")
-    print(f"  ->  {len(cookies)}  cookies ...")
+    import logging
+    
+    logging.info("\n🔍 [Playwright] 开始使用 Playwright 提取 API token...")
+    logging.debug(f'🔍 [Playwright] 输入参数: domain={domain}, cookies数量={len(cookies)}')
+    print("\n🔍 使用 Playwright 自动获取 API token...")
+    print(f"  -> 已加载 {len(cookies)} 个 cookies ...")
     
     try:
         if async_playwright is None:
-            raise ImportError("Playwright not installed. Install with: pip install playwright")
+            error_msg = "Playwright not installed. Install with: pip install playwright"
+            logging.error(f'❌ [Playwright] {error_msg}')
+            raise ImportError(error_msg)
         
-        #  token  URL
+        # 构建 token 提取 URL
         moodle_url = f'https://{domain}' if not domain.startswith('http') else domain
         token_url = f"{moodle_url}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl"
+        logging.debug(f'🔍 [Playwright] Moodle URL: {moodle_url}')
+        logging.debug(f'🔍 [Playwright] Token URL: {token_url}')
         
         # 防御性编程：标准化所有 cookies 为 Playwright 格式
-        cleaned_cookies = [normalize_cookie_for_playwright(c) for c in cookies]
+        logging.debug('🔍 [Playwright] 标准化 cookies 格式...')
+        cleaned_cookies = []
+        for i, c in enumerate(cookies):
+            try:
+                cleaned = normalize_cookie_for_playwright(c)
+                cleaned_cookies.append(cleaned)
+                if i < 3:  # 记录前3个 cookie 的详情
+                    logging.debug(f'  Cookie {i+1}: name={cleaned.get("name")}, domain={cleaned.get("domain")}, secure={cleaned.get("secure")}')
+            except Exception as e:
+                logging.warning(f'⚠️  [Playwright] Cookie {i+1} 标准化失败: {e}')
         
-        #  Playwright 
+        logging.debug(f'🔍 [Playwright] 成功标准化 {len(cleaned_cookies)}/{len(cookies)} 个 cookies')
+        
+        # 使用 Playwright 提取 token
         async def get_token():
             captured_urls = []
+            page_final_url = None
+            page_status = None
             
             async with async_playwright() as p:
+                logging.debug('🔍 [Playwright] 启动 Chromium 浏览器...')
                 browser = await p.chromium.launch(headless=True)
                 context = await browser.new_context()
-                await context.add_cookies(cleaned_cookies)
+                
+                logging.debug(f'🔍 [Playwright] 添加 {len(cleaned_cookies)} 个 cookies 到浏览器上下文...')
+                try:
+                    await context.add_cookies(cleaned_cookies)
+                    logging.debug('✅ [Playwright] Cookies 添加成功')
+                except Exception as e:
+                    logging.error(f'❌ [Playwright] 添加 cookies 失败: {e}')
+                    logging.debug(f'🔍 [Playwright] 失败的 cookies 详情: {cleaned_cookies[:2]}')
+                    raise
                 
                 page = await context.new_page()
                 
-                #  : Moodle  session
-                print(f"  ->  Moodle  session...")
+                # 步骤 1: 验证 Moodle 会话
+                print(f"  -> 验证 Moodle 会话...")
+                logging.debug(f'🔍 [Playwright] 步骤1: 访问 {moodle_url}/my/ 验证会话...')
                 try:
-                    await page.goto(f"{moodle_url}/my/", wait_until='domcontentloaded', timeout=15000)
-                    await page.wait_for_timeout(1000)  #  cookies 
-                    print(f"  -> Session ")
+                    response = await page.goto(f"{moodle_url}/my/", wait_until='domcontentloaded', timeout=15000)
+                    page_status = response.status if response else None
+                    page_final_url = page.url
+                    logging.debug(f'🔍 [Playwright] 页面响应: status={page_status}, final_url={page_final_url[:80]}...')
+                    
+                    await page.wait_for_timeout(1000)  # 等待 cookies 生效
+                    
+                    # 检查是否成功登录
+                    page_title = await page.title()
+                    logging.debug(f'🔍 [Playwright] 页面标题: {page_title[:50]}...')
+                    
+                    # 检查是否有重定向到登录页面
+                    if 'login' in page_final_url.lower() or 'enrol' in page_final_url.lower():
+                        logging.warning(f'⚠️  [Playwright] 检测到重定向到登录/注册页面: {page_final_url}')
+                        print(f"  -> ⚠️  会话验证失败: 重定向到登录页面")
+                    else:
+                        logging.debug('✅ [Playwright] 会话验证成功')
+                        print(f"  -> ✅ 会话验证成功")
+                        
                 except Exception as e:
-                    print(f"  -> :  session  ({str(e)[:50]}...)")
+                    error_msg = str(e)
+                    logging.error(f'❌ [Playwright] 会话验证失败: {error_msg}')
+                    logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
+                    print(f"  -> ❌ 会话验证失败: {error_msg[:50]}...")
                 
-                # 
+                # 步骤 2: 监听控制台消息
                 def handle_console(msg):
                     text = msg.text
+                    logging.debug(f'🔍 [Playwright] 控制台消息: {text[:100]}...')
                     if 'moodledl://' in text or 'moodlemobile://' in text:
                         captured_urls.append(text)
-                        print(f"  -> : {text[:80]}...")
+                        logging.info(f'✅ [Playwright] 从控制台捕获到 URL: {text[:80]}...')
+                        print(f"  -> ✅ 从控制台捕获: {text[:80]}...")
                 
                 page.on('console', handle_console)
                 
-                # 
+                # 步骤 3: 监听网络请求
                 def handle_request(request):
                     url = request.url
+                    logging.debug(f'🔍 [Playwright] 网络请求: {url[:100]}...')
                     if 'moodledl://' in url or 'moodlemobile://' in url:
                         captured_urls.append(url)
-                        print(f"  -> : {url[:80]}...")
+                        logging.info(f'✅ [Playwright] 从网络请求捕获到 URL: {url[:80]}...')
+                        print(f"  -> ✅ 从网络请求捕获: {url[:80]}...")
                 
                 page.on('request', handle_request)
                 
-                print(f"  ->  token ...")
+                # 步骤 4: 监听响应
+                def handle_response(response):
+                    url = response.url
+                    status = response.status
+                    logging.debug(f'🔍 [Playwright] 网络响应: {url[:100]}... status={status}')
+                    if 'moodledl://' in url or 'moodlemobile://' in url:
+                        captured_urls.append(url)
+                        logging.info(f'✅ [Playwright] 从响应捕获到 URL: {url[:80]}...')
+                
+                page.on('response', handle_response)
+                
+                # 步骤 5: 访问 token URL
+                print(f"  -> 访问 token URL...")
+                logging.debug(f'🔍 [Playwright] 步骤2: 访问 token URL: {token_url}')
                 try:
-                    await page.goto(token_url, wait_until='domcontentloaded', timeout=30000)
+                    response = await page.goto(token_url, wait_until='domcontentloaded', timeout=30000)
+                    response_status = response.status if response else None
+                    final_url = page.url
+                    logging.debug(f'🔍 [Playwright] Token URL 响应: status={response_status}, final_url={final_url[:100]}...')
+                    
+                    # 等待页面加载完成
+                    await page.wait_for_timeout(2000)
+                    
+                    # 检查页面内容
+                    try:
+                        page_content = await page.content()
+                        logging.debug(f'🔍 [Playwright] 页面内容长度: {len(page_content)} 字符')
+                        if 'moodledl://' in page_content or 'moodlemobile://' in page_content:
+                            logging.info('✅ [Playwright] 在页面内容中发现 token URL')
+                    except Exception as e:
+                        logging.debug(f'🔍 [Playwright] 读取页面内容失败: {e}')
+                    
                 except Exception as e:
-                    if 'net::ERR_ABORTED' in str(e) or 'ERR_INVALID_URL' in str(e):
-                        print(f"  -> (): ")
+                    error_msg = str(e)
+                    if 'net::ERR_ABORTED' in error_msg or 'ERR_INVALID_URL' in error_msg:
+                        logging.info('ℹ️  [Playwright] 预期的错误（URL scheme 不被浏览器支持）: ERR_ABORTED')
+                        print(f"  -> ℹ️  预期的错误（URL scheme 不被浏览器支持）")
                     else:
-                        print(f"  -> : {e}")
+                        logging.error(f'❌ [Playwright] 访问 token URL 失败: {error_msg}')
+                        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
+                        print(f"  -> ❌ 访问失败: {error_msg[:50]}...")
                 
-                await page.wait_for_timeout(2000)  # 
-                
-                for context in browser.contexts:
-                    await context.close()
+                # 清理资源
+                logging.debug('🔍 [Playwright] 清理浏览器资源...')
+                for ctx in browser.contexts:
+                    await ctx.close()
                 await browser.close()
                 
+                logging.debug(f'🔍 [Playwright] 总共捕获到 {len(captured_urls)} 个 URL')
                 return captured_urls
         
+        logging.debug('🔍 [Playwright] 运行异步函数...')
         captured = asyncio.run(get_token())
         
         if not captured:
-            print(f"  token ")
+            logging.warning('⚠️  [Playwright] 未捕获到任何 token URL')
+            print(f"  -> ⚠️  未捕获到 token URL")
+            logging.debug('🔍 [Playwright] 可能的原因:')
+            logging.debug('  1. Cookies 已过期或无效')
+            logging.debug('  2. 页面未正确加载')
+            logging.debug('  3. URL scheme 处理异常')
+            logging.debug('  4. 网络请求被拦截')
             return None, None
         
-        print(f"  ->  {len(captured)}  URL")
+        logging.info(f'✅ [Playwright] 捕获到 {len(captured)} 个 URL')
+        print(f"  -> ✅ 捕获到 {len(captured)} 个 URL")
         
-        #  token
-        for url in captured:
+        # 解析 token
+        logging.debug('🔍 [Playwright] 开始解析 token...')
+        for i, url in enumerate(captured, 1):
+            logging.debug(f'🔍 [Playwright] 解析 URL {i}/{len(captured)}: {url[:100]}...')
             if 'token=' in url:
                 match = re.search(r'token=([^&\s]+)', url)
                 if match:
                     token_encoded = match.group(1)
+                    logging.debug(f'🔍 [Playwright] 提取到编码的 token: {token_encoded[:50]}...')
                     
                     try:
-                        #  base64
+                        # 解码 base64
                         decoded = base64.b64decode(token_encoded).decode('utf-8')
+                        logging.debug(f'🔍 [Playwright] Base64 解码成功，长度: {len(decoded)}')
                         parts = decoded.split(':::')  # 修复：应该是三个冒号，不是两个
+                        logging.debug(f'🔍 [Playwright] 分割后部分数: {len(parts)}')
                         
                         if len(parts) >= 2:
-                            mobile_app_token = parts[0]  # Mobile app token()
-                            web_service_token = parts[1]  #  Web Service API( API token)
+                            mobile_app_token = parts[0]  # Mobile app token (private token)
+                            web_service_token = parts[1]  # Web Service API token (API token)
                             
-                            print(f"  API token")
+                            logging.info('✅ [Playwright] 成功解析 API token')
+                            logging.debug(f'🔍 [Playwright] Web Service Token 长度: {len(web_service_token)}')
+                            logging.debug(f'🔍 [Playwright] Mobile App Token 长度: {len(mobile_app_token)}')
+                            print(f"  -> ✅ 成功解析 API token")
                             print(f"   Web Service Token: {web_service_token[:20]}...")
                             print(f"   Mobile App Token: {mobile_app_token[:20]}...")
                             
                             return web_service_token, mobile_app_token
+                        else:
+                            logging.warning(f'⚠️  [Playwright] Token 格式不正确，部分数不足: {len(parts)}')
                     except Exception as e:
-                        print(f"  token : {e}")
+                        logging.error(f'❌ [Playwright] Token 解析失败: {e}')
+                        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
+                        logging.debug(f'🔍 [Playwright] 编码的 token: {token_encoded[:100]}...')
+                        print(f"  -> ❌ Token 解析失败: {e}")
                         continue
         
-        print(f"  token")
+        logging.warning('⚠️  [Playwright] 所有 URL 都无法解析出有效的 token')
+        print(f"  -> ⚠️  无法解析 token")
         return None, None
         
     except Exception as e:
-        print(f"  API token : {e}")
+        error_msg = str(e)
+        logging.error(f'❌ [Playwright] API token 提取过程出错: {error_msg}')
+        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
+        print(f"  -> ❌ API token 提取失败: {error_msg}")
         import traceback
+        full_traceback = traceback.format_exc()
+        logging.debug(f'🔍 [Playwright] 完整错误堆栈:\n{full_traceback}')
         traceback.print_exc()
         return None, None
 
