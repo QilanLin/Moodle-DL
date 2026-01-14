@@ -44,7 +44,9 @@ def normalize_cookie_for_playwright(cookie: dict) -> dict:
     处理不同来源的 cookies 字段差异：
     - 确保 secure 和 httpOnly 是布尔值（不是整数 0/1）
     - 统一字段命名：httpOnly（不是 httponly），sameSite（不是 samesite）
-    - 确保 expires 是有效值（-1 或正整数秒级时间戳）
+    - 确保 expires 符合 Playwright 规范：
+      - **会话 cookie**：不包含 expires 字段（而不是 -1）
+      - **持久 cookie**：expires 为正整数秒级时间戳
     - 移除非 Playwright 字段（如 cookie_id）
     
     Args:
@@ -58,24 +60,32 @@ def normalize_cookie_for_playwright(cookie: dict) -> dict:
     # 移除数据库专用字段
     cleaned.pop('cookie_id', None)
     
-    # 处理 expires 字段（Playwright 严格要求：-1 或正整数秒级时间戳）
+    # 处理 expires 字段（Playwright 规范：会话 cookie 不应包含 expires 字段）
+    # - Playwright Cookie.expires: Unix time seconds (float/int), optional
+    # - 若传入 -1/0/None，可能导致 cookie 被视为已过期或被忽略
     expires_value = cleaned.get('expires')
-    if expires_value is None or expires_value == '':
-        # None 或空字符串 → session cookie
-        cleaned['expires'] = -1
-    elif isinstance(expires_value, (int, float)):
-        if expires_value <= 0 and expires_value != -1:
-            # 负数（除了-1）→ session cookie
-            cleaned['expires'] = -1
-        elif expires_value > 10000000000:
-            # 毫秒级时间戳 → 转换为秒级
-            cleaned['expires'] = int(expires_value / 1000)
+    try:
+        if expires_value is None or expires_value == '' or expires_value == -1:
+            cleaned.pop('expires', None)
+        elif isinstance(expires_value, str):
+            expires_str = expires_value.strip()
+            if expires_str == '' or expires_str == '0' or expires_str == '-1':
+                cleaned.pop('expires', None)
+            else:
+                cleaned['expires'] = int(float(expires_str))
+        elif isinstance(expires_value, (int, float)):
+            if expires_value <= 0:
+                cleaned.pop('expires', None)
+            elif expires_value > 10000000000:
+                # 毫秒级时间戳 → 转换为秒级
+                cleaned['expires'] = int(expires_value / 1000)
+            else:
+                cleaned['expires'] = int(expires_value)
         else:
-            # 正常的秒级时间戳
-            cleaned['expires'] = int(expires_value)
-    else:
-        # 其他类型 → session cookie
-        cleaned['expires'] = -1
+            cleaned.pop('expires', None)
+    except Exception:
+        # 任何异常都降级为会话 cookie
+        cleaned.pop('expires', None)
     
     # 统一 secure 字段为布尔值
     if 'secure' in cleaned:
@@ -87,15 +97,27 @@ def normalize_cookie_for_playwright(cookie: dict) -> dict:
         cleaned['httpOnly'] = bool(http_only_value)
     
     # 统一 sameSite 字段（支持 samesite 和 sameSite）
+    # 注意：不要强行设置默认 sameSite='Lax'。
+    # 对 OIDC/SSO 相关 cookie 来说，错误的 SameSite 会导致登录态无法在重定向中生效。
     if 'samesite' in cleaned or 'sameSite' in cleaned:
-        same_site_value = cleaned.pop('samesite', cleaned.get('sameSite', 'Lax'))
-        cleaned['sameSite'] = same_site_value or 'Lax'
+        same_site_value = cleaned.pop('samesite', cleaned.get('sameSite', None))
+        if isinstance(same_site_value, str):
+            s = same_site_value.strip().lower()
+            if s == 'lax':
+                cleaned['sameSite'] = 'Lax'
+            elif s == 'strict':
+                cleaned['sameSite'] = 'Strict'
+            elif s == 'none':
+                cleaned['sameSite'] = 'None'
+            else:
+                cleaned.pop('sameSite', None)
+        else:
+            cleaned.pop('sameSite', None)
     
     # 确保必需字段存在且类型正确
     cleaned.setdefault('path', '/')
     cleaned.setdefault('secure', False)
     cleaned.setdefault('httpOnly', False)
-    cleaned.setdefault('sameSite', 'Lax')
     
     return cleaned
 
@@ -483,23 +505,23 @@ def convert_netscape_to_playwright(cookies_file: str) -> list:
 
         playwright_cookies = []
         for cookie in cookie_jar:
-            # expires
-            expires_value = -1
-            if cookie.expires is not None and cookie.expires > 0:
-                if cookie.expires > 10000000000:
-                    expires_value = int(cookie.expires / 1000)
-                else:
-                    expires_value = int(cookie.expires)
-
             playwright_cookie = {
                 'name': cookie.name,
                 'value': cookie.value,
                 'domain': cookie.domain,
                 'path': cookie.path,
-                'expires': expires_value,
                 'httpOnly': bool(cookie.has_nonstandard_attr('HttpOnly')),
                 'secure': cookie.secure,
             }
+
+            # Playwright：会话 cookie 不应包含 expires
+            if cookie.expires is not None and cookie.expires > 0:
+                expires_value = cookie.expires
+                if expires_value > 10000000000:
+                    expires_value = int(expires_value / 1000)
+                else:
+                    expires_value = int(expires_value)
+                playwright_cookie['expires'] = expires_value
 
             same_site = cookie.get_nonstandard_attr('SameSite', 'Lax')
             if same_site:
@@ -953,6 +975,20 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     logging.error(f'❌ [Playwright] 添加 cookies 失败: {e}')
                     logging.debug(f'🔍 [Playwright] 失败的 cookies 详情: {cleaned_cookies[:2]}')
                     raise
+
+                # 立即验证 cookies 是否真的进入了上下文（这是判断重定向原因的关键）
+                try:
+                    ctx_cookies = await context.cookies(moodle_url)
+                    moodle_session_in_ctx = any(c.get('name') == 'MoodleSession' for c in ctx_cookies)
+                    # 这些信息对定位问题非常关键，提升到 INFO/WARNING 级别（无需 --verbose 也能看到）
+                    logging.info(f'🔍 [Playwright] context.cookies({moodle_url}) = {len(ctx_cookies)}')
+                    logging.info(f'🔍 [Playwright] context 内是否存在 MoodleSession: {moodle_session_in_ctx}')
+                    if not moodle_session_in_ctx:
+                        names = [c.get('name') for c in ctx_cookies if c.get('name')]
+                        logging.warning('⚠️  [Playwright] context 内缺少 MoodleSession（很可能导致 /my/ 重定向到登录页）')
+                        logging.warning(f'⚠️  [Playwright] context cookie 名称(前40个): {names[:40]}')
+                except Exception as e:
+                    logging.warning(f'⚠️  [Playwright] 读取 context.cookies() 失败: {e}')
                 
                 page = await context.new_page()
                 
@@ -972,8 +1008,14 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     logging.debug(f'🔍 [Playwright] 页面标题: {page_title[:50]}...')
                     
                     # 检查是否有重定向到登录页面
-                    if 'login' in page_final_url.lower() or 'enrol' in page_final_url.lower():
+                    if 'login' in page_final_url.lower() or 'enrol' in page_final_url.lower() or 'microsoftonline.com' in page_final_url.lower():
                         logging.warning(f'⚠️  [Playwright] 检测到重定向到登录/注册页面: {page_final_url}')
+                        # 额外打印一些页面线索（title + 少量内容），帮助判断是 OIDC 还是 Moodle 登录
+                        try:
+                            snippet = (await page.content())[:600].replace('\n', ' ')
+                            logging.info(f'🔍 [Playwright] 登录页 HTML 片段(前600字符): {snippet}')
+                        except Exception:
+                            pass
                         print(f"  -> ⚠️  会话验证失败: 重定向到登录页面")
                     else:
                         logging.debug('✅ [Playwright] 会话验证成功')
