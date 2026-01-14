@@ -941,6 +941,78 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
         token_url = f"{moodle_url}/admin/tool/mobile/launch.php?service=moodle_mobile_app&passport=12345&urlscheme=moodledl"
         logging.debug(f'🔍 [Playwright] Moodle URL: {moodle_url}')
         logging.debug(f'🔍 [Playwright] Token URL: {token_url}')
+
+        def _extract_token_from_moodledl_url(moodledl_url: str):
+            \"\"\"从 moodledl://token=... URL 中解码出 (web_service_token, mobile_app_token)\"\"\"
+            if 'token=' not in moodledl_url:
+                return None, None
+            match = re.search(r'token=([^&\\s]+)', moodledl_url)
+            if not match:
+                return None, None
+            token_encoded = match.group(1)
+            decoded = base64.b64decode(token_encoded).decode('utf-8')
+            parts = decoded.split(':::')
+            if len(parts) >= 2:
+                mobile_app_token = parts[0]
+                web_service_token = parts[1]
+                return web_service_token, mobile_app_token
+            return None, None
+
+        def _try_requests_location_fallback() -> tuple:
+            \"\"\"\n+            最可靠的方式：不用 Playwright 事件捕获，直接用 requests 拿 launch.php 的 302 Location。\n+            你在另一个工具里看到的：\n+              [GET] launch.php => [302]\n+              [GET] moodledl://token=...\n+            其中 moodledl://... 本质就是 302 Location。\n+            \"\"\"\n+            try:
+                import requests
+            except Exception as e:
+                logging.warning(f'⚠️  [RequestsFallback] 无法导入 requests: {e}')
+                return None, None
+
+            sess = requests.Session()
+            # 只注入 keats 域的 cookie 即可（其他域对这个请求无意义）
+            jar = requests.cookies.RequestsCookieJar()
+            for c in cleaned_cookies:
+                try:
+                    dom = c.get('domain') or ''
+                    if 'keats.kcl.ac.uk' not in dom:
+                        continue
+                    jar.set(
+                        name=c.get('name'),
+                        value=c.get('value'),
+                        domain=dom.lstrip('.'),
+                        path=c.get('path') or '/',
+                    )
+                except Exception:
+                    continue
+            sess.cookies = jar
+
+            logging.info('🔍 [RequestsFallback] 尝试用 requests 获取 launch.php 的 Location（allow_redirects=False）...')
+            try:
+                resp = sess.get(token_url, allow_redirects=False, timeout=20)
+            except Exception as e:
+                logging.warning(f'⚠️  [RequestsFallback] 请求失败: {e}')
+                return None, None
+
+            loc = resp.headers.get('Location') or resp.headers.get('location')
+            logging.info(f'🔍 [RequestsFallback] 状态码: {resp.status_code}')
+            if loc:
+                logging.info(f'🔍 [RequestsFallback] Location: {loc[:200]}...')
+            else:
+                logging.warning('⚠️  [RequestsFallback] 响应没有 Location header（可能返回 200 HTML 或被重定向链拦截）')
+                try:
+                    logging.info(f'🔍 [RequestsFallback] 响应前200字符: {resp.text[:200].replace(\"\\n\", \" \")}')
+                except Exception:
+                    pass
+                return None, None
+
+            if 'moodledl://' in loc or 'moodlemobile://' in loc:
+                try:
+                    return _extract_token_from_moodledl_url(loc)
+                except Exception as e:
+                    logging.warning(f'⚠️  [RequestsFallback] 解码 token 失败: {e}')
+                    return None, None
+
+            # 若 Location 仍指向 OIDC/登录页，说明会话未登录
+            if 'login.microsoftonline.com' in loc or '/auth/oidc' in loc or '/login/' in loc:
+                logging.warning('⚠️  [RequestsFallback] Location 指向登录/SSO，说明当前 cookies 不足以视为已登录')
+            return None, None
         
         # 防御性编程：标准化所有 cookies 为 Playwright 格式
         logging.debug('🔍 [Playwright] 标准化 cookies 格式...')
@@ -1177,6 +1249,14 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             logging.debug('  2. 页面未正确加载')
             logging.debug('  3. URL scheme 处理异常')
             logging.debug('  4. 网络请求被拦截')
+            # 关键：Playwright 事件可能抓不到自定义 scheme 请求，使用 requests 直接读 302 Location 更可靠
+            token2, private2 = _try_requests_location_fallback()
+            if token2 and private2:
+                logging.info('✅ [RequestsFallback] 成功通过 Location header 获取 token（无需 Playwright 捕获事件）')
+                print("  -> ✅ 通过 HTTP Location 成功获取 token")
+                print(f"   Web Service Token: {token2[:20]}...")
+                print(f"   Mobile App Token: {private2[:20]}...")
+                return token2, private2
             return None, None
         
         logging.info(f'✅ [Playwright] 捕获到 {len(captured)} 个 URL')
