@@ -340,11 +340,25 @@ class CookieManager:
                     # domain flag path secure expiration name value
                     parts = line.split('\t')
                     if len(parts) >= 7:
+                        # 转换 secure 字段：Netscape 格式使用 TRUE/FALSE 字符串
+                        secure_str = parts[3].strip().upper()
+                        if secure_str in ('TRUE', '1'):
+                            secure = 1
+                        elif secure_str in ('FALSE', '0'):
+                            secure = 0
+                        else:
+                            # 尝试作为整数解析（兼容旧格式）
+                            try:
+                                secure = int(secure_str)
+                            except ValueError:
+                                logging.warning(f'无法解析 secure 字段: {secure_str}，使用默认值 0')
+                                secure = 0
+                        
                         cookies.append({
                             'domain': parts[0],
                             'path': parts[2],
-                            'secure': int(parts[3]),
-                            'expires': int(parts[4]) if parts[4] else None,
+                            'secure': secure,
+                            'expires': int(parts[4]) if parts[4] and parts[4] != '0' else None,
                             'name': parts[5],
                             'value': parts[6],
                             'httponly': 1,  # Netscape 格式不包含 httponly，默认设为 1

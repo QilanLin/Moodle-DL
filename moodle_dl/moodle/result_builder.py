@@ -8,7 +8,7 @@ import urllib.parse as urlparse
 from typing import Dict, List
 
 from moodle_dl.types import Course, File, MoodleURL
-from moodle_dl.utils import PathTools as PT
+from moodle_dl.utils import PathTools as PT, UrlHelper
 
 
 class ResultBuilder:
@@ -568,6 +568,19 @@ class ResultBuilder:
             content_filepath = content.get('filepath', '/') or '/'
             content_fileurl = content.get('fileurl', '')
 
+            # 🔧 修复 pluginfile URL（关键修复）
+            # 确保 URL 包含正确的认证参数和端点路径
+            if content_fileurl and 'pluginfile.php' in content_fileurl:
+                try:
+                    content_fileurl = UrlHelper.fix_pluginfile_url(
+                        content_fileurl,
+                        token=self.moodle_url.token,
+                        moodle_base_url=self.moodle_domain
+                    )
+                    logging.debug(f'   🔧 Fixed pluginfile URL: {content_fileurl[:80]}...')
+                except Exception as e:
+                    logging.warning(f'   ⚠️ Failed to fix pluginfile URL: {e}')
+
             if content_type == 'directory_placeholder':
                 placeholder_filename = content_filename or '__empty_chapter__'
                 placeholder_file = File(
@@ -649,6 +662,17 @@ class ResultBuilder:
                 m.update(hashable_description.encode('utf-8'))
                 file_hash = m.hexdigest()
 
+            # 🆕 提取扩展元数据字段（从 module 或 content 中）
+            # 这些字段通常在 module 对象中，但某些情况下也可能在 content 中
+            metadata = {
+                'visible': location.get('visible', content.get('visible', 1)),
+                'uservisible': location.get('uservisible', content.get('uservisible', 1)),
+                'availabilityinfo': location.get('availabilityinfo', content.get('availabilityinfo')),
+                'completion': location.get('completion', content.get('completion', 0)),
+                'timecreated': location.get('timecreated', content.get('timecreated', 0)),
+                'sortorder': location.get('sortorder', content.get('sortorder', 0)),
+            }
+
             new_file = File(
                 **location,
                 content_filepath=content_filepath,
@@ -659,6 +683,8 @@ class ResultBuilder:
                 content_type=content_type,
                 content_isexternalfile=content.get('isexternalfile', False),
                 file_hash=file_hash,
+                # 🆕 扩展元数据
+                **metadata,
             )
 
             if content_type == 'description':

@@ -1521,18 +1521,35 @@ class Task:
     async def real_run(self) -> bool:
         """
         主下载流程的原子化编排器。
-        
+
         职责：协调下载流程的 4 个阶段
         1. 元数据文件检查（可跳过）
         2. 文件准备（目录/重命名/移动）
         3. 类型特定的下载执行
         4. 错误处理和清理
-        
+
         每个阶段都由独立的原子函数处理，便于测试和复用。
         """
         try:
             logging.debug('[%d] Starting Task: %s', self.task_id, self)
-            
+
+            # 🔧 修复和验证 pluginfile URL（双重保障）
+            # 虽然 result_builder 已经修复过，但这里作为下载前的最后防线
+            if self.file.content_fileurl and 'pluginfile.php' in self.file.content_fileurl:
+                try:
+                    original_url = self.file.content_fileurl
+                    fixed_url = UrlHelper.fix_pluginfile_url(
+                        self.file.content_fileurl,
+                        token=self.opts.token,
+                        moodle_base_url=self.opts.moodle_url
+                    )
+                    if original_url != fixed_url:
+                        logging.info(f'[{self.task_id}] 🔧 Fixed URL before download: {original_url[:80]}...')
+                        logging.debug(f'[{self.task_id}]    Fixed to: {fixed_url[:80]}...')
+                        self.file.content_fileurl = fixed_url
+                except Exception as e:
+                    logging.warning(f'[{self.task_id}] ⚠️ URL fix attempt failed: {e}')
+
             # 阶段 1: 检查元数据文件
             if await self._handle_metadata_file():
                 return True

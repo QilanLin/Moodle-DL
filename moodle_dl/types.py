@@ -32,6 +32,13 @@ class File:
         file_id: int = None,
         old_file_id: int = None,
         position_in_section: int = None,
+        # 🆕 扩展元数据字段（从 Moodle Mobile API 获取）
+        visible: int = 1,  # 模块可见性 (1=可见, 0=隐藏)
+        uservisible: int = 1,  # 用户可见性 (1=对用户可见, 0=不可见)
+        availabilityinfo: str = None,  # 可用性信息（JSON 字符串）
+        completion: int = 0,  # 完成状态 (0=未完成, 1=已完成, 2=已通过)
+        timecreated: int = 0,  # 创建时间（Unix 时间戳）
+        sortorder: int = 0,  # 在章节中的排序顺序
     ):
         self.file_id = file_id
 
@@ -101,6 +108,14 @@ class File:
         self.old_file_id = old_file_id
         self.position_in_section = position_in_section
 
+        # 🆕 扩展元数据字段
+        self.visible = visible if visible is not None else 1
+        self.uservisible = uservisible if uservisible is not None else 1
+        self.availabilityinfo = availabilityinfo
+        self.completion = completion if completion is not None else 0
+        self.timecreated = timecreated if timecreated is not None else 0
+        self.sortorder = sortorder if sortorder is not None else 0
+
     def getMap(self) -> {str: str}:
         return {
             'file_id': self.file_id,
@@ -125,6 +140,13 @@ class File:
             'hash': self.hash,
             'old_file_id': self.old_file_id,
             'position_in_section': self.position_in_section,
+            # 🆕 扩展元数据字段
+            'visible': self.visible,
+            'uservisible': self.uservisible,
+            'availabilityinfo': self.availabilityinfo,
+            'completion': self.completion,
+            'timecreated': self.timecreated,
+            'sortorder': self.sortorder,
         }
 
     @staticmethod
@@ -134,6 +156,37 @@ class File:
             position_in_section = row['position_in_section']
         except (KeyError, IndexError):
             position_in_section = None
+
+        # 🆕 尝试读取扩展元数据字段（向后兼容，可能不存在）
+        try:
+            visible = row['visible']
+        except (KeyError, IndexError):
+            visible = 1
+
+        try:
+            uservisible = row['uservisible']
+        except (KeyError, IndexError):
+            uservisible = 1
+
+        try:
+            availabilityinfo = row['availabilityinfo']
+        except (KeyError, IndexError):
+            availabilityinfo = None
+
+        try:
+            completion = row['completion']
+        except (KeyError, IndexError):
+            completion = 0
+
+        try:
+            timecreated = row['timecreated']
+        except (KeyError, IndexError):
+            timecreated = 0
+
+        try:
+            sortorder = row['sortorder']
+        except (KeyError, IndexError):
+            sortorder = 0
 
         return File(
             file_id=row['file_id'],
@@ -158,6 +211,13 @@ class File:
             file_hash=row['hash'],
             old_file_id=row['old_file_id'],
             position_in_section=position_in_section,
+            # 🆕 扩展元数据字段（向后兼容）
+            visible=visible,
+            uservisible=uservisible,
+            availabilityinfo=availabilityinfo,
+            completion=completion,
+            timecreated=timecreated,
+            sortorder=sortorder,
         )
 
     INSERT = """INSERT INTO files
@@ -168,7 +228,8 @@ class File:
             saved_to, time_stamp, modified, moved, deleted, notified,
             hash, old_file_id, download_status, download_attempts,
             last_download_at, last_failed_at, last_failed_reason,
-            consecutive_failures, position_in_section)
+            consecutive_failures, position_in_section,
+            visible, uservisible, availabilityinfo, completion, timecreated, sortorder)
             VALUES (:course_id, :course_fullname, :module_id,
             :section_name, :section_id, :module_name, :content_filepath,
             :content_filename, :content_fileurl, :content_filesize,
@@ -177,7 +238,8 @@ class File:
             :modified, :moved, :deleted, :notified,  :hash,
             :old_file_id, :download_status, :download_attempts,
             :last_download_at, :last_failed_at, :last_failed_reason,
-            :consecutive_failures, :position_in_section);
+            :consecutive_failures, :position_in_section,
+            :visible, :uservisible, :availabilityinfo, :completion, :timecreated, :sortorder);
             """
 
     def __str__(self):

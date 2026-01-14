@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import json
+import logging
 import math
 from typing import Dict, List, Optional, Tuple
 
@@ -18,6 +19,27 @@ class CoreHandler:
         self.client = request_helper
         # oldest supported Moodle version
         self.version = 2011120500
+
+    def _build_api_options(self, options: List[Dict[str, str]]) -> Dict[str, str]:
+        """
+        构建 Moodle Web Service API 的选项参数。
+
+        Moodle REST API 期望选项参数格式为:
+        options[0][name]=excludemodules&options[0][value]=true&options[1][name]=excludecontents&options[1][value]=true
+
+        这个辅助方法将选项列表转换为所需的字典格式。
+
+        Args:
+            options: 选项字典列表，例如 [{'name': 'excludemodules', 'value': 'true'}]
+
+        Returns:
+            Dict[str, str]: 序列化后的选项字典
+        """
+        result = {}
+        for idx, option in enumerate(options):
+            result[f'options[{idx}][name]'] = option['name']
+            result[f'options[{idx}][value]'] = option['value']
+        return result
 
     def fetch_userid_and_version(self) -> Tuple[int, int]:
         """
@@ -134,15 +156,21 @@ class CoreHandler:
         @return: A List of all section dictionaries
         """
         data = {'courseid': course_id}
-        if self.version >= 2015051100:  # 2.9
-            data = {
-                'courseid': course_id,
-                'options[0][name]': 'excludemodules',
-                'options[0][value]': 'true',
-                'options[1][name]': 'excludecontents',
-                'options[1][value]': 'true',
-            }
+        if self.version >= 2015051100:  # Moodle 2.9+
+            # 使用辅助方法构建选项参数，提高可维护性
+            options = [
+                {'name': 'excludemodules', 'value': 'true'},
+                {'name': 'excludecontents', 'value': 'true'},
+            ]
+            data.update(self._build_api_options(options))
+
         course_sections = self.client.post('core_course_get_contents', data)
+
+        # 🔍 检查并记录 API 警告信息
+        if 'warnings' in course_sections and course_sections['warnings']:
+            logging.warning(f'API warnings in fetch_sections for course {course_id}:')
+            for warning in course_sections['warnings']:
+                logging.warning(f'  - {warning.get("message", "Unknown warning")} (item: {warning.get("item", "N/A")})')
 
         sections = []
         for section in course_sections:
@@ -195,8 +223,33 @@ class CoreHandler:
         return result
 
     async def async_load_course_core(self, course: Course) -> List[Dict]:
+        """
+        异步加载课程的核心内容（sections 和 modules）
+
+        Args:
+            course: 要加载的课程对象
+
+        Returns:
+            List[Dict]: 课程的核心内容列表
+        """
         data = {'courseid': course.id}
-        return await self.client.async_post('core_course_get_contents', data)
+
+        # 对于 Moodle 2.9+，添加选项参数以减少不必要的数据传输
+        if self.version >= 2015051100:
+            options = [
+                {'name': 'excludemodules', 'value': 'true'},
+            ]
+            data.update(self._build_api_options(options))
+
+        result = await self.client.async_post('core_course_get_contents', data)
+
+        # 🔍 检查并记录 API 警告信息
+        if 'warnings' in result and result['warnings']:
+            logging.warning(f'API warnings in async_load_course_core for course {course.id} ({course.fullname}):')
+            for warning in result['warnings']:
+                logging.warning(f'  - {warning.get("message", "Unknown warning")} (item: {warning.get("item", "N/A")})')
+
+        return result
 
     def fetch_course_blocks(self, course_id: int) -> List[Dict]:
         """

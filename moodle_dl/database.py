@@ -228,7 +228,14 @@ class StateRecorder:
                 last_failed_at INTEGER DEFAULT 0,
                 last_failed_reason TEXT,
                 consecutive_failures INTEGER DEFAULT 0,
-                position_in_section INTEGER
+                position_in_section INTEGER,
+                -- 🆕 扩展元数据字段（v10 schema）
+                visible INTEGER DEFAULT 1 NOT NULL,
+                uservisible INTEGER DEFAULT 1 NOT NULL,
+                availabilityinfo TEXT,
+                completion INTEGER DEFAULT 0 NOT NULL,
+                timecreated INTEGER DEFAULT 0 NOT NULL,
+                sortorder INTEGER DEFAULT 0 NOT NULL
             );
         """)
         
@@ -247,10 +254,35 @@ class StateRecorder:
             # 幂等性增强：添加唯一索引，防止重复文件
             # 只对未删除的文件应用约束（deleted = 0），允许已删除文件的 URL 被重用
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0;",
+            # 🆕 扩展元数据字段的索引
+            "CREATE INDEX IF NOT EXISTS idx_visible ON files(visible);",
+            "CREATE INDEX IF NOT EXISTS idx_uservisible ON files(uservisible);",
+            "CREATE INDEX IF NOT EXISTS idx_completion ON files(completion);",
+            "CREATE INDEX IF NOT EXISTS idx_sortorder ON files(sortorder);",
         ]
-        
+
         for idx_sql in files_indexes:
             cursor.execute(idx_sql)
+
+        # 🆕 向后兼容：为已存在的数据库添加新列（v10 schema migration）
+        # 使用 ALTER TABLE ... ADD COLUMN 并在列已存在时捕获异常
+        migration_columns = [
+            ('visible', 'INTEGER DEFAULT 1 NOT NULL'),
+            ('uservisible', 'INTEGER DEFAULT 1 NOT NULL'),
+            ('availabilityinfo', 'TEXT'),
+            ('completion', 'INTEGER DEFAULT 0 NOT NULL'),
+            ('timecreated', 'INTEGER DEFAULT 0 NOT NULL'),
+            ('sortorder', 'INTEGER DEFAULT 0 NOT NULL'),
+        ]
+
+        for column_name, column_def in migration_columns:
+            try:
+                cursor.execute(f"ALTER TABLE files ADD COLUMN {column_name} {column_def};")
+                logging.info(f"Added migration column: {column_name}")
+            except Exception as e:
+                # 列已存在或其他错误，忽略
+                if "duplicate column name" not in str(e).lower():
+                    logging.debug(f"Migration column {column_name}: {e}")
         
         # 创建 auth_sessions 表
         cursor.execute("""

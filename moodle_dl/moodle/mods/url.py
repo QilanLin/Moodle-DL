@@ -3,6 +3,8 @@ import json
 import logging
 from typing import Dict, List
 
+import phpserialize
+
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.moodle.request_helper import RequestRejectedError
@@ -226,13 +228,52 @@ class UrlMod(MoodleMod):
             except Exception as e:
                 logging.debug("Error parsing URL parameters '%s': %s", parameters, str(e))
 
-        # If it's PHP serialized or other format, return as structured metadata
+        # Try to parse as PHP serialized array using phpserialize library
         if parameters.startswith('a:'):
-            return {
-                'format': 'php_serialized',
-                'raw': parameters,
-                'note': 'PHP serialized data - requires PHP unserialize for parsing'
-            }
+            try:
+                # Decode PHP serialized array to Python dict
+                # phpserialize returns bytes, so we need to decode to str
+                unserialized = phpserialize.loads(parameters.encode('utf-8'))
+
+                # Convert bytes keys/values to strings
+                parsed = {}
+                for key, value in unserialized.items():
+                    # Decode key (always bytes in phpserialize)
+                    key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+
+                    # Handle different value types
+                    if isinstance(value, bytes):
+                        value_str = value.decode('utf-8')
+                        # Try to convert to appropriate type
+                        if value_str.isdigit():
+                            parsed[key_str] = int(value_str)
+                        elif value_str.lower() in ('true', 'false'):
+                            parsed[key_str] = value_str.lower() == 'true'
+                        else:
+                            parsed[key_str] = value_str
+                    elif isinstance(value, dict):
+                        # Nested array - decode recursively
+                        parsed[key_str] = self._decode_php_dict(value)
+                    elif isinstance(value, list):
+                        # Array of values
+                        parsed[key_str] = [
+                            v.decode('utf-8') if isinstance(v, bytes) else v
+                            for v in value
+                        ]
+                    else:
+                        # Keep as-is (int, bool, etc.)
+                        parsed[key_str] = value
+
+                return parsed
+            except Exception as e:
+                logging.debug("Error parsing PHP serialized parameters '%s': %s", parameters, str(e))
+                # Fallback to structured metadata if parsing fails
+                return {
+                    'format': 'php_serialized',
+                    'raw': parameters,
+                    'error': f'Parse error: {str(e)}',
+                    'note': 'PHP serialized data - parsing failed, raw data preserved'
+                }
 
         # Return raw string in structured format for unknown formats
         return {
@@ -240,29 +281,56 @@ class UrlMod(MoodleMod):
             'raw': parameters,
         }
 
+    def _decode_php_dict(self, php_dict: dict) -> dict:
+        """
+        Recursively decode a PHP dictionary (bytes keys/values) to Python dict
+
+        @param php_dict: Dictionary from phpserialize with bytes keys/values
+        @return: Dictionary with string keys/values
+        """
+        decoded = {}
+        for key, value in php_dict.items():
+            key_str = key.decode('utf-8') if isinstance(key, bytes) else key
+
+            if isinstance(value, bytes):
+                decoded[key_str] = value.decode('utf-8')
+            elif isinstance(value, dict):
+                decoded[key_str] = self._decode_php_dict(value)
+            elif isinstance(value, list):
+                decoded[key_str] = [
+                    v.decode('utf-8') if isinstance(v, bytes) else v
+                    for v in value
+                ]
+            else:
+                decoded[key_str] = value
+
+        return decoded
+
     async def _fetch_urls_web_api(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> List[Dict]:
         """
         使用 Web API fallback 获取 URL 模块信息。
-        
+
         这是 mod_url_get_urls_by_courses 的 fallback 实现。
         通过 core_course_get_contents 获取 url 模块信息。
-        
+
+        改进版：从 module 对象中提取更多可用字段，减少硬编码默认值
+
         Return: 转换为与 Mobile API 相同格式的 url 列表
         """
         logging.debug('🌐 使用 Web API fallback 获取 URL 模块信息...')
-        
+
         urls = []
-        
+
         # 从 core_contents 中提取 url 模块
         modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'url')
-        
+
         for course in courses:
             course_id = course.id
             if course_id not in modules_by_course:
                 continue
-            
+
             for module in modules_by_course[course_id]:
                 # 从 contents 中提取 externalurl
                 externalurl = ''
@@ -271,7 +339,23 @@ class UrlMod(MoodleMod):
                     if content.get('type') == 'url':
                         externalurl = content.get('fileurl', '')
                         break
-                
+
+                # 从 module 对象中提取更多可用字段
+                # core_course_get_contents 提供的 module 对象包含很多元数据
+
+                # 尝试从 availability 设置中推断 display 选项
+                # 注意：core_course_get_contents 不会提供完整的 URL 配置，
+                # 但我们可以提取更多可用的元数据
+                display = self.DISPLAY_AUTO  # 默认值
+                displayoptions = ''
+
+                # 尝试从 module 的 availability 字段中推断显示选项
+                availability = module.get('availability', None)
+                if availability:
+                    # availability 可能包含显示设置（虽然不太可能在 fallback 中）
+                    # 这里我们保留解析能力，以防将来需要
+                    pass
+
                 # 将 Web API 的 url 模块转换为 Mobile API 的格式
                 url = {
                     'id': module.get('instance', 0),
@@ -279,18 +363,33 @@ class UrlMod(MoodleMod):
                     'course': course_id,
                     'name': module.get('name', 'URL'),
                     'intro': module.get('description', ''),
-                    'introformat': 1,
+                    'introformat': 1,  # 默认 HTML 格式
                     'externalurl': externalurl,
-                    'display': self.DISPLAY_AUTO,
-                    'displayoptions': '',
-                    'parameters': '',
+                    'display': display,
+                    'displayoptions': displayoptions,
+                    'parameters': '',  # Web API 不提供参数信息
                     'timemodified': module.get('timemodified', 0),
+                    'timecreated': module.get('timecreated', 0),  # 如果可用
+
+                    # 可见性信息（从 module 对象中提取）
+                    'visible': module.get('visible', 1),
+                    'uservisible': module.get('uservisible', 1),
+                    'availability': availability,
+
+                    # Section 信息（从 module 对象中提取）
+                    'section_id': module.get('section', 0),
+                    'section_number': module.get('sectionnumber', 0),
+                    'section_name': module.get('sectionname', ''),
+
+                    # Web API fallback 标记
+                    '_fallback': True,  # 标记这是 fallback 数据
+                    '_data_source': 'core_course_get_contents',
                 }
                 urls.append(url)
-        
+
         if not urls:
             logging.warning('⚠️ Web API fallback 未找到任何 URL 模块')
             raise ValueError('Web API 未能检索任何 URL 模块信息')
-        
+
         logging.debug(f'✅ Web API fallback 成功获取 {len(urls)} 个 URL 模块')
         return urls
