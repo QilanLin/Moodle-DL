@@ -961,6 +961,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             captured_urls = []
             page_final_url = None
             page_status = None
+            last_location_headers = []
             
             async with async_playwright() as p:
                 logging.debug('🔍 [Playwright] 启动 Chromium 浏览器...')
@@ -1004,8 +1005,13 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     await page.wait_for_timeout(1000)  # 等待 cookies 生效
                     
                     # 检查是否成功登录
-                    page_title = await page.title()
-                    logging.debug(f'🔍 [Playwright] 页面标题: {page_title[:50]}...')
+                    try:
+                        page_title = await page.title()
+                        logging.debug(f'🔍 [Playwright] 页面标题: {page_title[:50]}...')
+                    except Exception as e:
+                        # 常见：页面发生重定向导致 execution context 被销毁
+                        logging.warning(f'⚠️  [Playwright] 读取页面标题失败（可能正在重定向）: {e}')
+                        logging.info(f'🔍 [Playwright] /my/ 当前 URL: {page.url}')
                     
                     # 检查是否有重定向到登录页面
                     if 'login' in page_final_url.lower() or 'enrol' in page_final_url.lower() or 'microsoftonline.com' in page_final_url.lower():
@@ -1054,9 +1060,22 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     url = response.url
                     status = response.status
                     logging.debug(f'🔍 [Playwright] 网络响应: {url[:100]}... status={status}')
+                    # 关键：launch.php 往往返回 302/303，并把 moodledl://... 放在 Location header 里
+                    try:
+                        headers = response.headers or {}
+                        location = headers.get('location') or headers.get('Location')
+                        if location:
+                            last_location_headers.append((url, status, location))
+                            logging.debug(f'🔍 [Playwright] Location header: {location[:120]}...')
+                            if 'moodledl://' in location or 'moodlemobile://' in location:
+                                captured_urls.append(location)
+                                logging.info(f'✅ [Playwright] 从响应 Location 捕获到 URL: {location[:80]}...')
+                    except Exception:
+                        pass
+                    # 少见情况：URL 本身就是自定义 scheme（通常不会发生）
                     if 'moodledl://' in url or 'moodlemobile://' in url:
                         captured_urls.append(url)
-                        logging.info(f'✅ [Playwright] 从响应捕获到 URL: {url[:80]}...')
+                        logging.info(f'✅ [Playwright] 从响应 URL 捕获到 URL: {url[:80]}...')
                 
                 page.on('response', handle_response)
                 
@@ -1068,6 +1087,19 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     response_status = response.status if response else None
                     final_url = page.url
                     logging.debug(f'🔍 [Playwright] Token URL 响应: status={response_status}, final_url={final_url[:100]}...')
+                    # 如果 response 自身就带 Location（重定向链末端），也记录一下
+                    try:
+                        if response is not None:
+                            headers = response.headers or {}
+                            location = headers.get('location') or headers.get('Location')
+                            if location:
+                                last_location_headers.append((response.url, response_status, location))
+                                logging.info(f'🔍 [Playwright] Token goto() 返回的 Location: {location[:120]}...')
+                                if 'moodledl://' in location or 'moodlemobile://' in location:
+                                    captured_urls.append(location)
+                                    logging.info(f'✅ [Playwright] 从 goto() Location 捕获到 URL: {location[:80]}...')
+                    except Exception:
+                        pass
                     
                     # 等待页面加载完成
                     await page.wait_for_timeout(2000)
@@ -1090,6 +1122,12 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                         logging.error(f'❌ [Playwright] 访问 token URL 失败: {error_msg}')
                         logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
                         print(f"  -> ❌ 访问失败: {error_msg[:50]}...")
+                finally:
+                    # 无论成功与否，都打印最近看到的 Location 头（高价值调试信息）
+                    if last_location_headers:
+                        logging.info(f'🔍 [Playwright] 最近捕获到的 Location headers（最多5条）:')
+                        for (u, st, loc) in last_location_headers[-5:]:
+                            logging.info(f'  - status={st} url={str(u)[:80]}... location={str(loc)[:120]}...')
                 
                 # 清理资源
                 logging.debug('🔍 [Playwright] 清理浏览器资源...')
