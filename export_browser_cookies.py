@@ -984,6 +984,17 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     # 这些信息对定位问题非常关键，提升到 INFO/WARNING 级别（无需 --verbose 也能看到）
                     logging.info(f'🔍 [Playwright] context.cookies({moodle_url}) = {len(ctx_cookies)}')
                     logging.info(f'🔍 [Playwright] context 内是否存在 MoodleSession: {moodle_session_in_ctx}')
+                    # 进一步输出关键 cookie（能直接判断是否是“游客 MoodleSession”）
+                    key_names = {'MoodleSession', 'MOODLEID', 'MOODLEID1_', 'MoodleSessionTest'}
+                    key_cookies = [c for c in ctx_cookies if c.get('name') in key_names]
+                    if key_cookies:
+                        logging.info('🔍 [Playwright] context 内关键 cookie（最多10条）:')
+                        for c in key_cookies[:10]:
+                            logging.info(
+                                f"  - name={c.get('name')} domain={c.get('domain')} path={c.get('path')} "
+                                f"secure={c.get('secure')} httpOnly={c.get('httpOnly')} expires={c.get('expires')} "
+                                f"value_prefix={(c.get('value') or '')[:12]}..."
+                            )
                     if not moodle_session_in_ctx:
                         names = [c.get('name') for c in ctx_cookies if c.get('name')]
                         logging.warning('⚠️  [Playwright] context 内缺少 MoodleSession（很可能导致 /my/ 重定向到登录页）')
@@ -1001,6 +1012,15 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     page_status = response.status if response else None
                     page_final_url = page.url
                     logging.debug(f'🔍 [Playwright] 页面响应: status={page_status}, final_url={page_final_url[:80]}...')
+                    # 直接把 /my/ 的首个响应头 Location 打出来（很多情况下这里就是 OIDC 重定向）
+                    try:
+                        if response is not None:
+                            hdrs = response.headers or {}
+                            loc = hdrs.get('location') or hdrs.get('Location')
+                            if loc:
+                                logging.info(f'🔍 [Playwright] /my/ 首响应 Location: {loc[:160]}...')
+                    except Exception:
+                        pass
                     
                     await page.wait_for_timeout(1000)  # 等待 cookies 生效
                     
@@ -1067,6 +1087,14 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                         if location:
                             last_location_headers.append((url, status, location))
                             logging.debug(f'🔍 [Playwright] Location header: {location[:120]}...')
+                            # 对关键重定向（keats/my/launch.php/oidc）提升到 INFO，方便你直接看到
+                            if status in (301, 302, 303, 307, 308) and (
+                                'keats.kcl.ac.uk' in url
+                                or '/my/' in url
+                                or 'admin/tool/mobile/launch.php' in url
+                                or '/auth/oidc' in url
+                            ):
+                                logging.info(f'🔍 [Playwright] 关键重定向: status={status} url={url[:90]}... -> {location[:120]}...')
                             if 'moodledl://' in location or 'moodlemobile://' in location:
                                 captured_urls.append(location)
                                 logging.info(f'✅ [Playwright] 从响应 Location 捕获到 URL: {location[:80]}...')
