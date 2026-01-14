@@ -354,11 +354,18 @@ class CookieManager:
                                 logging.warning(f'无法解析 secure 字段: {secure_str}，使用默认值 0')
                                 secure = 0
                         
+                        # 处理 expires 字段
+                        try:
+                            expires_val = int(parts[4]) if parts[4] else None
+                        except ValueError:
+                            logging.warning(f'无法解析 expires 字段: {parts[4]}，使用默认值 None')
+                            expires_val = None
+                        
                         cookies.append({
                             'domain': parts[0],
                             'path': parts[2],
                             'secure': secure,
-                            'expires': int(parts[4]) if parts[4] and parts[4] != '0' else None,
+                            'expires': expires_val,
                             'name': parts[5],
                             'value': parts[6],
                             'httponly': 1,  # Netscape 格式不包含 httponly，默认设为 1
