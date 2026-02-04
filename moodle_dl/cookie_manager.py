@@ -265,52 +265,44 @@ class CookieManager:
                     Log.debug(f'自动 SSO 登录出错: {e}')
                     Log.info('💡 回退到从浏览器读取cookies...')
 
-        # 2. 回退：从浏览器读取 cookies
-        export_module = self._load_export_module()
-        if not export_module:
-            self._show_manual_refresh_instructions()
-            return False
+        # 2. 回退：从浏览器读取 cookies（使用新的 extract_all_cookies_from_browser 支持 SSO 和多账号检测）
+        Log.info(f'📤 正在从{preferred_browser}读取cookies...')
+        Log.info('   💡 v2: 支持多账号检测，如有多个 Microsoft 账号会提示选择')
 
         try:
-            if preferred_browser:
-                Log.info(f'📤 正在从{preferred_browser}导出cookies...')
-                success = export_module.export_cookies_from_browser(
-                    domain=self.moodle_domain,
-                    output_file=self.cookies_path,
-                    browser_name=preferred_browser
-                )
-            else:
-                Log.info('📤 正在从浏览器自动导出cookies...')
-                Log.info('   💡 提示：在config.json中设置 "preferred_browser" 可加快导出速度')
-                success = export_module.export_cookies_interactive(
-                    domain=self.moodle_domain,
-                    output_file=self.cookies_path,
-                    ask_browser=False,
-                    auto_get_token=auto_get_token,
-                )
+            # 直接调用 extract_all_cookies_from_browser（包含多账号检测）
+            from moodle_dl.auto_sso_login import extract_all_cookies_from_browser
 
-            if success:
-                # v2 改进：导出成功后，将 cookies 存储到数据库
-                if self._auth_manager and self.cookies_path:
+            cookies = extract_all_cookies_from_browser(
+                browser_name=preferred_browser,
+                moodle_domain=self.moodle_domain,
+                cookies_path=self.cookies_path
+            )
+
+            if cookies and len(cookies) > 0:
+                # 保存到数据库（如果需要的话也可以保存到文件）
+                if self._auth_manager:
                     try:
-                        cookies = self._load_cookies_from_file(self.cookies_path)
-                        if cookies:
-                            session_id = self.refresh_session_with_new_cookies(
-                                new_cookies=cookies,
-                                source='browser_export'
-                            )
-                            if session_id:
-                                Log.debug(f'✓ Cookies已保存到数据库（session_id={session_id}）')
+                        session_id = self.refresh_session_with_new_cookies(
+                            new_cookies=cookies,
+                            source='browser_export'
+                        )
+                        if session_id:
+                            Log.debug(f'✓ Cookies已保存到数据库（session_id={session_id}）')
                     except Exception as db_error:
                         Log.debug(f'⚠️  将cookies保存到数据库失败: {db_error}')
-                        # 不中断流程，继续使用文件方式
 
-                Log.success('✅ Cookies自动刷新成功！')
+                Log.success(f'✅ Cookies自动刷新成功！({len(cookies)} 个cookies)')
                 return True
             else:
-                Log.warning('⚠️  自动导出cookies失败')
+                Log.warning('⚠️  从浏览器读取cookies失败')
                 self._show_manual_refresh_instructions()
                 return False
+
+        except Exception as e:
+            Log.error(f'❌ 从浏览器读取cookies时出错: {e}')
+            self._show_manual_refresh_instructions()
+            return False
 
         except Exception as e:
             Log.error(f'❌ 刷新cookies时出错: {e}')
