@@ -677,24 +677,36 @@ async def _launch_playwright_browser(playwright_obj, preferred_browser: str, hea
         )
 
 
-async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str, timeout: int) -> tuple:
+async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str, timeout: int, headless: bool = False) -> tuple:
     """
     原子函数: 导航到 Moodle 并等待重定向完成
-    
+
     职责: 单一 - 仅负责导航和等待
-    
+
     Args:
         page: Playwright 页面对象
         moodle_domain: Moodle 域名
         moodle_url: 完整的 Moodle URL
         timeout: 超时时间（毫秒）
-        
+        headless: 是否为无头模式（影响等待时间）
+
     Returns:
         元组 (visited_sso, current_url, page_content)
     """
     logging.info(f'🔗 正在访问 Moodle: {moodle_url}')
     logging.info('   等待 SSO 自动登录完成...')
     logging.info('   💡 原理：只要 SSO cookies 有效，将完全自动化完成登录')
+
+    # 有头模式下使用更长的等待时间（5 分钟），给用户足够时间选择账号
+    max_wait = 300 if not headless else 15
+
+    if not headless:
+        logging.info('')
+        logging.info('🌐 有头模式已启用')
+        logging.info(f'   - 最多等待 {max_wait} 秒（5分钟）')
+        logging.info('   - 如果看到账号选择页面，请手动选择要使用的账号')
+        logging.info('   - 选择完成后，程序会自动继续')
+        logging.info('')
 
     try:
         # 使用 domcontentloaded 而不是 load - 只等DOM加载，不等所有资源
@@ -703,7 +715,7 @@ async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str
         await page.goto(moodle_url, wait_until='domcontentloaded', timeout=timeout)
 
         # 等待 SSO 重定向完成（原子函数）
-        visited_sso = await _wait_for_sso_redirect(page, moodle_domain)
+        visited_sso = await _wait_for_sso_redirect(page, moodle_domain, max_wait, headless)
 
         # 获取最终状态
         current_url = page.url
@@ -809,41 +821,57 @@ async def _save_session_cookies(context, auth_manager) -> bool:
         return False
 
 
-async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15) -> bool:
+async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15, headless: bool = False) -> bool:
     """
     原子函数: 等待并检测 SSO 重定向完成
-    
+
     职责: 单一 - 仅等待和检测重定向
-    
+
     Args:
         page: Playwright 页面对象
         moodle_domain: Moodle 域名
         max_wait: 最多等待秒数
-        
+        headless: 是否为无头模式
+
     Returns:
         True 如果访问过 SSO 提供商, False 否则
     """
     visited_sso = False
-    
+    on_account_selection_page = False
+
     for i in range(max_wait):
         await page.wait_for_timeout(1000)  # 每次等待 1 秒
         current_url = page.url
 
         # 检测是否在 SSO 提供商页面
         if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
-            visited_sso = True
-            logging.debug(f'🔐 检测到 SSO 重定向: {current_url}')
+            if not visited_sso:
+                visited_sso = True
+                logging.debug(f'🔐 检测到 SSO 重定向: {current_url}')
+
+            # 检测是否在账号选择页面（ESTSSSOTILES 或 account picker 相关）
+            if not on_account_selection_page and ('login.microsoftonline.com' in current_url or 'accounts.google.com' in current_url):
+                on_account_selection_page = True
+                if not headless:
+                    logging.info('')
+                    logging.info('⏸️  检测到账号选择页面')
+                    logging.info(f'   当前URL: {current_url}')
+                    logging.info('   💡 请在浏览器窗口中选择要使用的账号')
+                    logging.info('   ⏳ 等待你完成选择...')
+                    logging.info('')
 
         # 如果访问过 SSO 并且现在回到 Moodle 域名，说明重定向完成
         if visited_sso and moodle_domain in current_url:
             logging.debug(f'✓ SSO 重定向完成，已返回 Moodle: {current_url}')
+            if not headless and on_account_selection_page:
+                logging.info('✅ 账号选择完成，继续执行...')
             break
 
         if not visited_sso and moodle_domain in current_url:
             logging.debug(f'⏳ 等待可能的 SSO 重定向... (第{i+1}/{max_wait}秒)')
         elif not visited_sso:
             logging.debug(f'🔍 当前URL: {current_url}')
-    
+
     return visited_sso
 
 
@@ -1044,7 +1072,7 @@ async def auto_login_with_sso(
             try:
                 # 导航并等待重定向完成（原子函数）
                 visited_sso, current_url, page_content = await _navigate_to_moodle_and_wait(
-                    page, moodle_domain, moodle_url, timeout
+                    page, moodle_domain, moodle_url, timeout, headless
                 )
 
                 # 检查登录状态（原子函数）

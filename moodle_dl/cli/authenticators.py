@@ -731,7 +731,18 @@ class SSOAuthenticator(BaseAuthenticator):
             logging.info('步骤 1：使用 SSO 自动登录获取 cookies...')
             logging.info(f'   （从 {self.preferred_browser} 浏览器读取 SSO cookies，自动完成 Moodle 登录）')
             logging.info('   💡 原理：只要 Microsoft/Google 的 SSO cookies 有效，完全自动化，无需手动操作')
-            print('')
+
+            # 检查是否启用有头模式（用于多账号选择等需要手动操作的场景）
+            import os
+            use_headless = os.getenv('MOODLE_DL_HEADFUL', '0') not in ('1', 'true', 'True', 'TRUE')
+
+            if not use_headless:
+                logging.info('')
+                logging.info('🌐 已启用有头模式（Headful Mode）')
+                logging.info('   - 浏览器窗口将可见，你可以手动操作')
+                logging.info('   - 适用于多账号选择、验证码输入等场景')
+                logging.info('   - 提示：设置 MOODLE_DL_HEADFUL=1 环境变量来启用')
+                logging.info('')
 
             from moodle_dl.auto_sso_login import auto_login_with_sso_sync
 
@@ -739,7 +750,7 @@ class SSOAuthenticator(BaseAuthenticator):
                 moodle_domain=self.moodle_url.domain,
                 cookies_path=self._cookies_path,
                 preferred_browser=self.preferred_browser,
-                headless=True,
+                headless=use_headless,
                 timeout=60000,
                 auth_manager=self.config.get_auth_manager()
             )
