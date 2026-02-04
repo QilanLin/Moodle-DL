@@ -302,7 +302,14 @@ async def _launch_playwright_browser(playwright_obj, preferred_browser: str, hea
 
     if headless:
         logging.info('🌐 启动无头浏览器...')
-        return await browser_type.launch(headless=True)
+        # 使用新的 headless 模式（真正的 Chrome/Firefox），不需要 chromium_headless_shell
+        if preferred_browser == 'firefox':
+            return await browser_type.launch(headless=True)
+        else:
+            return await playwright_obj.chromium.launch(
+                headless=True,
+                channel='chromium'  # 使用新的 headless 模式
+            )
     else:
         logging.info('🌐 启动有头浏览器（可见窗口，方便调试）...')
         return await browser_type.launch(
@@ -734,9 +741,29 @@ async def auto_login_with_sso(
         return False
 
     except Exception as e:
-        logging.error(f'❌ 自动登录失败: {e}')
-        import traceback
-        logging.debug(traceback.format_exc())
+        error_str = str(e)
+        # 检测 Playwright 浏览器未安装的错误
+        if "Executable doesn't exist" in error_str and "ms-playwright" in error_str:
+            logging.error(f'❌ 自动登录失败: {e}')
+            logging.error('')
+            logging.error('╔════════════════════════════════════════════════════════════╗')
+            logging.error('║  Playwright 浏览器未安装！                                   ║')
+            logging.error('║                                                             ║')
+            logging.error('║  请运行以下命令安装浏览器：                                  ║')
+            logging.error('║                                                             ║')
+            logging.error('║     playwright install chromium                            ║')
+            logging.error('║                                                             ║')
+            logging.error('║  或者安装所有浏览器：                                        ║')
+            logging.error('║                                                             ║')
+            logging.error('║     playwright install                                      ║')
+            logging.error('║                                                             ║')
+            logging.error('║  <3 Playwright Team                                         ║')
+            logging.error('╚════════════════════════════════════════════════════════════╝')
+            logging.error('')
+        else:
+            logging.error(f'❌ 自动登录失败: {e}')
+            import traceback
+            logging.debug(traceback.format_exc())
         return False
 
 

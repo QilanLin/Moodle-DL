@@ -639,7 +639,11 @@ def extract_api_token_with_playwright(domain: str, cookies_file: str):
             captured_urls = []
 
             async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+                # 使用新的 headless 模式（真正的 Chrome），不需要 chromium_headless_shell
+                browser = await p.chromium.launch(
+                    headless=True,
+                    channel='chromium'  # 使用新的 headless 模式
+                )
                 context = await browser.new_context()
                 await context.add_cookies(playwright_cookies)
 
@@ -1044,7 +1048,11 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             
             async with async_playwright() as p:
                 logging.debug('🔍 [Playwright] 启动 Chromium 浏览器...')
-                browser = await p.chromium.launch(headless=True)
+                # 使用新的 headless 模式（真正的 Chrome），不需要 chromium_headless_shell
+                browser = await p.chromium.launch(
+                    headless=True,
+                    channel='chromium'  # 使用新的 headless 模式
+                )
                 context = await browser.new_context()
                 
                 logging.debug(f'🔍 [Playwright] 添加 {len(cleaned_cookies)} 个 cookies 到浏览器上下文...')
@@ -1246,7 +1254,37 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 return captured_urls
         
         logging.debug('🔍 [Playwright] 运行异步函数...')
-        captured = asyncio.run(get_token())
+        try:
+            captured = asyncio.run(get_token())
+        except Exception as e:
+            error_str = str(e)
+            # 检测 Playwright 浏览器未安装的错误
+            if "Executable doesn't exist" in error_str and "ms-playwright" in error_str:
+                logging.error('❌ [Playwright] API token 提取过程出错: %s', e)
+                logging.error('')
+                logging.error('╔════════════════════════════════════════════════════════════╗')
+                logging.error('║  Playwright 浏览器未安装！                                   ║')
+                logging.error('║                                                             ║')
+                logging.error('║  请运行以下命令安装浏览器：                                  ║')
+                logging.error('║                                                             ║')
+                logging.error('║     playwright install chromium                            ║')
+                logging.error('║                                                             ║')
+                logging.error('║  或者安装所有浏览器：                                        ║')
+                logging.error('║                                                             ║')
+                logging.error('║     playwright install                                      ║')
+                logging.error('║                                                             ║')
+                logging.error('║  <3 Playwright Team                                         ║')
+                logging.error('╚════════════════════════════════════════════════════════════╝')
+                logging.error('')
+                print(f"  -> ❌ API token 提取失败: {e}")
+                print('')
+                print("💡 提示：运行以下命令安装 Playwright 浏览器")
+                print("       playwright install chromium")
+                print('')
+            else:
+                logging.error('❌ [Playwright] API token 提取过程出错: %s', e)
+                print(f"  -> ❌ API token 提取失败: {e}")
+            captured = None
         
         if not captured:
             logging.warning('⚠️  [Playwright] 未捕获到任何 token URL')

@@ -18,6 +18,7 @@ from moodle_dl.types import MoodleDlOpts, MoodleURL
 from moodle_dl.utils import MoodleDLCookieJar
 from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import SslHelper
+from moodle_dl.ip_validator import IPValidator
 
 
 class RequestHelper:
@@ -149,28 +150,61 @@ class RequestHelper:
                         headers=self.RQ_HEADER,
                         timeout=timeout,
                         ssl=ssl_context,
-                        raise_for_status=True,
+                        # Don't use raise_for_status, handle status codes manually
                     ) as resp:
-                        resp_json = await resp.json()
+                        # 读取响应文本（用于错误诊断）
+                        response_text = None
+                        try:
+                            response_text = await resp.text()
+                        except Exception:
+                            pass
+
+                        # 检查 HTTP 状态码
+                        if resp.status != 200:
+                            # 403 Forbidden - 可能是 IP 白名单问题
+                            if resp.status == 403:
+                                moodle_domain = self.moodle_url.domain if hasattr(self.moodle_url, 'domain') else None
+                                _, diagnostic_message = IPValidator.diagnose_403_error(
+                                    str(resp.status),
+                                    response_text,
+                                    moodle_domain
+                                )
+                                raise MoodleAuthError(diagnostic_message) from None
+                            # 401 Unauthorized
+                            elif resp.status == 401:
+                                raise MoodleAuthError(f"认证失败 (HTTP 401): Token 可能无效或已过期") from None
+                            # 404 Not Found
+                            elif resp.status == 404:
+                                raise MoodleAPIError(f"API 不存在 (HTTP 404): {function}") from None
+                            # 可重试的错误
+                            elif resp.status in [408, 409, 429, 503]:
+                                raise aiohttp.client_exceptions.ClientResponseError(
+                                    request_info=resp.request_info,
+                                    history=resp.history,
+                                    status=resp.status,
+                                    message=f"HTTP {resp.status}"
+                                )
+                            # 其他错误
+                            else:
+                                raise MoodleAPIError(f"HTTP 错误 ({resp.status}): {response_text}") from None
+
+                        # 解析 JSON 响应
+                        try:
+                            resp_json = json.loads(response_text) if response_text else await resp.json()
+                        except (json.JSONDecodeError, ValueError):
+                            raise MoodleAPIError(f'API 返回无效 JSON: {response_text[:200] if response_text else "empty response"}') from None
+
                     self.check_json_for_moodle_error(resp_json, url, data)
                     self.log_response(function, data, str(resp.url), resp_json)
                     break
 
                 # 认证错误 - 不可重试
-                except aiohttp.client_exceptions.ClientResponseError as req_err:
-                    if req_err.status in [401, 403]:  # pylint: disable=no-member
-                        # 401 Unauthorized, 403 Forbidden
-                        raise MoodleAuthError(f"认证失败 (HTTP {req_err.status}): {req_err}") from None
-                    elif req_err.status == 404:
-                        # 404 Not Found - API 不存在
-                        raise MoodleAPIError(f"API 不存在 (HTTP 404): {req_err}") from None
-                    elif req_err.status in [408, 409, 429, 503]:
-                        # 408 (timeout), 409 (conflict), 429 (too many requests), 503 (service unavailable)
-                        # 这些是可重试的网络错误
-                        pass  # 继续到重试逻辑
-                    else:
-                        # 其他 HTTP 错误 - 不可重试
-                        raise MoodleAPIError(f"HTTP 错误 ({req_err.status}): {req_err}") from None
+                except MoodleAuthError:
+                    # 直接重新抛出认证错误，不需要重试
+                    raise
+                except MoodleAPIError:
+                    # API 错误通常不需要重试
+                    raise
 
                 # API 响应格式错误 - 不可重试
                 except aiohttp.client_exceptions.ContentTypeError as req_err:
@@ -327,10 +361,11 @@ class RequestHelper:
 
         return self._initial_parse(response, f'{self.url_base}login/token.php', data)
 
-    @staticmethod
-    def _check_response_code(response: Response) -> None:
+    def _check_response_code(self, response: Response) -> None:
         """
         检查 HTTP 响应状态码，并根据状态码抛出相应的异常
+
+        对于 403 错误，会自动诊断是否为 IP 白名单问题
         """
         # Normally Moodle answer with response 200
         if response.status_code == 200:
@@ -338,20 +373,29 @@ class RequestHelper:
 
         status_code = response.status_code
 
-        # 认证和权限错误
+        # 认证和权限错误 - 使用 IP 验证器诊断
         if status_code in [401, 403]:
-            raise MoodleAuthError(
-                f'认证或权限错误 (HTTP {status_code})'
-                + f'\nHeader: {response.headers}'
-                + f'\nResponse: {response.text}'
-            )
+            if status_code == 403:
+                # 403 Forbidden - 可能是 IP 白名单问题
+                moodle_domain = self.moodle_url.domain if hasattr(self.moodle_url, 'domain') else None
+                _, diagnostic_message = IPValidator.diagnose_403_error(
+                    f'HTTP {status_code}',
+                    response.text,
+                    moodle_domain
+                )
+                raise MoodleAuthError(diagnostic_message)
+            else:
+                # 401 Unauthorized
+                raise MoodleAuthError(
+                    f'认证失败 (HTTP 401): Token 可能无效或已过期'
+                    + f'\nResponse: {response.text[:500]}'
+                )
 
         # API 错误
         raise MoodleAPIError(
             f'Moodle 系统返回了意外的错误！'
             + f' 状态码: {status_code}'
-            + f'\nHeader: {response.headers}'
-            + f'\nResponse: {response.text}'
+            + f'\nResponse: {response.text[:500]}'
         )
 
     def _initial_parse(self, response: Response, url: str, data: Dict[str, Any]) -> Dict[str, Any]:

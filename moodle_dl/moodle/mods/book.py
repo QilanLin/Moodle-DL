@@ -616,6 +616,7 @@ class BookMod(MoodleMod):
             # Use Playwright to fetch the page with cookies
             async with async_playwright() as p:
                 # Launch headless browser
+                # 使用新的 headless 模式，不需要 chromium_headless_shell/firefox 特殊版本
                 browser = await p.firefox.launch(headless=True)
 
                 # Create context with cookies and realistic browser settings
@@ -862,9 +863,31 @@ class BookMod(MoodleMod):
                         return '', ''
 
         except Exception as e:
-            logging.error(f'❌ Exception while fetching print book HTML with Playwright: {e}')
-            import traceback
-            logging.debug(f'Traceback: {traceback.format_exc()}')
+            error_str = str(e)
+            # 检测 Playwright 浏览器未安装的错误
+            if "Executable doesn't exist" in error_str and "ms-playwright" in error_str:
+                logging.error(f'❌ Exception while fetching print book HTML: {e}')
+                logging.error('')
+                logging.error('╔════════════════════════════════════════════════════════════╗')
+                logging.error('║  Playwright 浏览器未安装！                                   ║')
+                logging.error('║                                                             ║')
+                logging.error('║  Print Book 功能需要 Playwright 浏览器                       ║')
+                logging.error('║                                                             ║')
+                logging.error('║  请运行以下命令安装浏览器：                                  ║')
+                logging.error('║                                                             ║')
+                logging.error('║     playwright install chromium                            ║')
+                logging.error('║                                                             ║')
+                logging.error('║  或者安装所有浏览器：                                        ║')
+                logging.error('║                                                             ║')
+                logging.error('║     playwright install                                      ║')
+                logging.error('║                                                             ║')
+                logging.error('║  <3 Playwright Team                                         ║')
+                logging.error('╚════════════════════════════════════════════════════════════╝')
+                logging.error('')
+            else:
+                logging.error(f'❌ Exception while fetching print book HTML with Playwright: {e}')
+                import traceback
+                logging.debug(f'Traceback: {traceback.format_exc()}')
             return '', ''
 
     def _extract_kaltura_videos_from_print_book(self, html_content: str, book_name: str) -> List[Dict]:
