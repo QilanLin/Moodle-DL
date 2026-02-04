@@ -273,8 +273,21 @@ def _detect_multiple_accounts(cookies: List[Dict], browser_name: str) -> List[Di
     # 第四步：判断是否需要多账号选择
     # 情况1：有多个 ESTSAUTHPERSISTENT cookies（不同域有不同会话）
     # 情况2：ESTSSSOTILES=1 且 ESTSUSERLIST 有多个用户（账号选择器场景）
+    # 情况3：ESTSSSOTILES=1 但没有 ESTSUSERLIST（显示警告，继续使用当前 cookies）
     has_multiple_estsp = len(ests_auth_persistent_cookies) > 1
     has_multiple_users = sso_tiles_value == '1' and len(users_list) > 1
+    has_sso_tiles_but_no_userlist = sso_tiles_value == '1' and len(users_list) == 0
+
+    if has_sso_tiles_but_no_userlist:
+        # ESTSSSOTILES=1 但没有 ESTSUSERLIST
+        # 这表示可能有多个账号，但我们无法获取用户列表
+        logging.warning('⚠️  检测到 Microsoft 账号选择器（ESTSSSOTILES=1）')
+        logging.warning('⚠️  但无法获取账号列表（ESTSUSERLIST 不存在或解析失败）')
+        logging.warning('💡 如果登录失败，请尝试：')
+        logging.warning('   1. 在浏览器中手动选择要使用的账号')
+        logging.warning('   2. 或者使用单独的浏览器配置文件登录单个账号')
+        logging.info('✓ 继续使用当前 cookies 尝试登录...')
+        # 不返回，继续使用当前的 cookies
 
     if not has_multiple_estsp and not has_multiple_users:
         # 只有一个账号，不需要选择
