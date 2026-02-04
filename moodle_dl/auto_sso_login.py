@@ -33,16 +33,17 @@ def extract_all_cookies_from_browser(
 ) -> List[Dict]:
     """
     从浏览器中提取所有 cookies（不过滤）
-    
+
     **v2: 彻底移除文件读取，只从浏览器获取**
-    
+
     核心原理：完整复制用户浏览器的所有 cookies 到 Playwright，
     这样 Playwright 就"继承"了用户的完整登录状态。
-    
+
     **重要变更：**
     - v2: 不再读取 cookies 文件（cookies_path 参数保留但不再使用）
     - v2: 只从浏览器读取 cookies
-    
+    - v3: 支持多账号选择（检测到多个 Microsoft 账号时提示用户选择）
+
     @param browser_name: 浏览器名称（firefox, chrome 等）
     @param moodle_domain: Moodle 域名（用于日志）
     @param cookies_path: [已废弃] cookies 文件路径（不再使用）
@@ -52,15 +53,26 @@ def extract_all_cookies_from_browser(
         # v2: 直接从浏览器读取 cookies（永不读取文件）
         logging.info(f'💡 正在从浏览器直接读取所有 cookies...')
         all_cookies = _read_all_cookies_from_browser(browser_name)
-        
+
         if all_cookies:
             logging.info(f'✓ 从浏览器成功读取 {len(all_cookies)} 个 cookies')
         else:
             logging.warning('⚠️  浏览器中没有找到 cookies')
             logging.info('   请确保浏览器已登录 Moodle，且 SSO cookies 有效')
-        
+            return []
+
+        # v3: 检测多账号情况
+        accounts = _detect_multiple_accounts(all_cookies, browser_name)
+
+        if len(accounts) > 1:
+            # 检测到多个账号，让用户选择
+            selected_account = _prompt_user_for_account_selection(accounts)
+            # 过滤 cookies，只保留选中账号的
+            all_cookies = _filter_cookies_by_account(all_cookies, selected_account)
+            logging.info(f'✓ 已过滤为 {len(all_cookies)} 个 cookies（选定账号）')
+
         return all_cookies
-        
+
     except Exception as e:
         logging.error(f'❌ 提取 cookies 时出错: {e}')
         return []
@@ -197,6 +209,340 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
     except Exception as e:
         logging.error(f'❌ 从浏览器读取cookies失败: {e}')
         return []
+
+
+def _detect_multiple_accounts(cookies: List[Dict], browser_name: str) -> List[Dict]:
+    """
+    检测 cookies 中是否存在多个 Microsoft 账号
+
+    **设计说明和限制：**
+    根据 Microsoft 官方文档和研究发现：
+    - ESTSAUTHPERSISTENT 通常在同一浏览器配置文件中只有一个（代表当前会话）
+    - Microsoft 官方推荐使用分离的浏览器配置文件来管理多个账号
+    - ESTSSSOTILES=1 会在需要时触发账号选择器 UI（Pick an Account）
+
+    此功能能检测的场景：
+    1. 当 Microsoft 账号选择器被触发（ESTSSSOTILES=1）
+    2. 当多个 Microsoft 服务域有独立的会话 cookies
+       （如 .microsoftonline.com 和 .live.com 各自有 ESTSAUTHPERSISTENT）
+
+    Reference: https://learn.microsoft.com/en-us/entra/identity/authentication/concept-authentication-web-browser-cookies
+             - ESTSAUTHPERSISTENT: "Contains user's session information to facilitate SSO. Persistent."
+             - ESTSSSOTILES: "When present and not expired, with value 'ESTSSSOTILES=1',
+                            it interrupts SSO... and presents tiles for user account selection."
+             - ESTSUSERLIST: "Tracks Browser SSO user's list."
+
+    Args:
+        cookies: 所有 cookies 列表
+        browser_name: 浏览器名称（用于日志）
+
+    Returns:
+        账号列表，每个账号包含标识信息和相关 cookies
+    """
+    from collections import defaultdict
+    import base64
+    import json
+
+    # 第一步：检查 ESTSSSOTILES cookie（多账号指示器）
+    sso_tiles_value = None
+    for cookie in cookies:
+        if cookie.get('name') == 'ESTSSSOTILES':
+            sso_tiles_value = cookie.get('value', '')
+            break
+
+    # 第二步：收集所有 ESTSAUTHPERSISTENT cookies（会话标识符）
+    # 每个账号会有不同的 ESTSAUTHPERSISTENT cookie
+    ests_auth_persistent_cookies = []
+    for cookie in cookies:
+        name = cookie.get('name', '')
+        domain = cookie.get('domain', '')
+
+        # 收集持久会话 cookies（Microsoft 和 Live.com 域名）
+        is_ms_domain = any(keyword in domain.lower() for keyword in ['microsoft', 'live.com', 'microsoftonline.com'])
+        if name == 'ESTSAUTHPERSISTENT' and is_ms_domain:
+            ests_auth_persistent_cookies.append(cookie)
+
+    # 如果没有找到任何 Microsoft 会话 cookie，返回空列表
+    if not ests_auth_persistent_cookies:
+        return []
+
+    # 第三步：尝试解析 ESTSUSERLIST 来获取用户信息
+    # ESTSUSERLIST 包含浏览器 SSO 用户列表，可能有多个用户
+    users_list = _parse_estsuserlist(cookies)
+
+    # 第四步：判断是否需要多账号选择
+    # 情况1：有多个 ESTSAUTHPERSISTENT cookies（不同域有不同会话）
+    # 情况2：ESTSSSOTILES=1 且 ESTSUSERLIST 有多个用户（账号选择器场景）
+    has_multiple_estsp = len(ests_auth_persistent_cookies) > 1
+    has_multiple_users = sso_tiles_value == '1' and len(users_list) > 1
+
+    if not has_multiple_estsp and not has_multiple_users:
+        # 只有一个账号，不需要选择
+        return []
+
+    # 如果只有一个 ESTSAUTHPERSISTENT 但有多个用户，需要使用 ESTSUSERLIST 创建虚拟账号
+    if not has_multiple_estsp and has_multiple_users:
+        accounts = {}
+        # 为每个用户创建一个账号条目（共享同一个 ESTSAUTHPERSISTENT）
+        base_ests_cookie = ests_auth_persistent_cookies[0]
+        base_domain = base_ests_cookie.get('domain', '')
+        base_value = base_ests_cookie.get('value', '')
+
+        for i, user_info in enumerate(users_list):
+            # 为每个用户创建唯一的 ID（使用索引区分）
+            session_id = f"{base_value[:28]}_{i:02d}"
+            accounts[session_id] = {
+                'id': session_id,
+                'ests_auth_persistent': base_value,  # 所有用户共享同一个会话 cookie
+                'domain': base_domain,
+                'user_info': user_info,
+                'cookies': []  # 稍后填充
+            }
+
+        # 收集所有 Microsoft cookies（所有账号共享）
+        all_ms_cookies = []
+        for cookie in cookies:
+            domain = cookie.get('domain', '')
+            is_ms_cookie = any(keyword in domain.lower() for keyword in ['microsoft', 'live.com', 'microsoftonline.com'])
+            if is_ms_cookie:
+                all_ms_cookies.append(cookie)
+
+        # 所有账号共享相同的 Microsoft cookies
+        for session_id in accounts:
+            accounts[session_id]['cookies'] = all_ms_cookies.copy()
+
+        # 转换为列表
+        account_list = []
+        for session_id, account_info in accounts.items():
+            display_info = account_info['user_info'] or {'email': f'Account {len(account_list) + 1}'}
+            account_list.append({
+                'id': session_id,
+                'ests_auth_persistent': account_info['ests_auth_persistent'],
+                'domain': account_info['domain'],
+                'user_info': display_info,
+                'cookies': account_info['cookies']
+            })
+
+        if len(account_list) > 1:
+            logging.warning(f'⚠️  检测到 {len(account_list)} 个 Microsoft 账号（来自 ESTSUSERLIST）')
+
+        return account_list
+
+    # 第五步：按 ESTSAUTHPERSISTENT cookie 值分组所有 Microsoft 相关 cookies
+    # （有多个 ESTSAUTHPERSISTENT cookies 的情况）
+    accounts = {}
+    for ests_cookie in ests_auth_persistent_cookies:
+        session_id = ests_cookie.get('value', '')[:32]  # 使用前32个字符作为 ID
+        accounts[session_id] = {
+            'id': session_id,
+            'ests_auth_persistent': ests_cookie.get('value', ''),
+            'domain': ests_cookie.get('domain', ''),
+            'user_info': None,
+            'cookies': []
+        }
+
+    # 第六步：遍历所有 cookies，分配到对应账号
+    for cookie in cookies:
+        domain = cookie.get('domain', '')
+        name = cookie.get('name', '')
+
+        # 检查是否是 Microsoft 相关的 cookie
+        is_ms_cookie = any(keyword in domain.lower() for keyword in ['microsoft', 'live.com', 'microsoftonline.com'])
+
+        if not is_ms_cookie:
+            continue
+
+        # 将 cookie 添加到匹配域的账号
+        matched = False
+        for session_id, account_info in accounts.items():
+            if domain == account_info['domain'] or domain.endswith(account_info['domain'].lstrip('.')):
+                account_info['cookies'].append(cookie)
+                matched = True
+                break
+
+        # 如果没有匹配，添加到所有账号（共享 cookies）
+        if not matched:
+            for session_id in accounts:
+                accounts[session_id]['cookies'].append(cookie)
+
+    # 第七步：关联用户信息（如果解析成功）
+    if users_list:
+        for i, user_info in enumerate(users_list):
+            if i < len(accounts):
+                session_id = list(accounts.keys())[i]
+                accounts[session_id]['user_info'] = user_info
+
+    # 转换为列表
+    account_list = []
+    for session_id, account_info in accounts.items():
+        if account_info['ests_auth_persistent']:
+            display_info = account_info['user_info'] or {'email': f'Account {len(account_list) + 1}'}
+            account_list.append({
+                'id': session_id,
+                'ests_auth_persistent': account_info['ests_auth_persistent'],
+                'domain': account_info['domain'],
+                'user_info': display_info,
+                'cookies': account_info['cookies']
+            })
+
+    if len(account_list) > 1:
+        logging.warning(f'⚠️  检测到 {len(account_list)} 个 Microsoft 账号在 {browser_name} 浏览器中')
+        if sso_tiles_value == '1':
+            logging.info('   检测到 ESTSSSOTILES=1，需要账号选择')
+        for i, account in enumerate(account_list, 1):
+            user_display = account.get('user_info', {}).get('email', 'Unknown')
+            logging.info(f'   账号 {i}: {user_display}')
+
+    return account_list
+
+
+def _parse_estsuserlist(cookies: List[Dict]) -> List[Dict]:
+    """
+    解析 ESTSUSERLIST cookie 来获取用户信息
+
+    ESTSUSERLIST 包含浏览器 SSO 用户列表，格式通常是 base64 编码的 JSON
+
+    Args:
+        cookies: 所有 cookies 列表
+
+    Returns:
+        用户信息列表
+    """
+    import base64
+    import json
+
+    for cookie in cookies:
+        if cookie.get('name') == 'ESTSUSERLIST':
+            try:
+                value = cookie.get('value', '')
+                # 尝试 base64 解码
+                decoded = base64.b64decode(value).decode('utf-8', errors='ignore')
+                # 尝试解析 JSON
+                data = json.loads(decoded)
+
+                # 提取用户信息
+                users = []
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict):
+                            users.append({
+                                'email': item.get('login_name') or item.get('email') or item.get('upn') or 'Unknown',
+                                'display_name': item.get('display_name') or item.get('name') or ''
+                            })
+                elif isinstance(data, dict):
+                    # 可能是包含 users 字段的对象
+                    users_list = data.get('users') or data.get('Users') or []
+                    for item in users_list:
+                        users.append({
+                            'email': item.get('login_name') or item.get('email') or item.get('upn') or 'Unknown',
+                            'display_name': item.get('display_name') or item.get('name') or ''
+                        })
+
+                return users if users else []
+            except Exception:
+                # 解析失败，返回空列表
+                pass
+
+    return []
+
+
+def _filter_cookies_by_account(all_cookies: List[Dict], selected_account: Dict) -> List[Dict]:
+    """
+    根据选定的账号过滤 cookies
+
+    Args:
+        all_cookies: 所有 cookies 列表
+        selected_account: 用户选择的账号（包含其相关 cookies）
+
+    Returns:
+        过滤后的 cookies 列表
+    """
+    selected_domain = selected_account.get('domain', '')
+    selected_ests_auth = selected_account.get('ests_auth_persistent', '')
+
+    # 保留所有非 Microsoft 域名的 cookies
+    # 以及选中账号的 Microsoft cookies
+    filtered_cookies = []
+    account_ms_domains = {selected_domain}
+
+    # 收集选中账号的 Microsoft 域名（包括子域名）
+    for cookie in selected_account.get('cookies', []):
+        domain = cookie.get('domain', '')
+        if 'microsoft' in domain.lower() or 'live.com' in domain or 'microsoftonline.com' in domain:
+            account_ms_domains.add(domain)
+
+    for cookie in all_cookies:
+        domain = cookie.get('domain', '')
+        name = cookie.get('name', '')
+        is_ms_domain = any(keyword in domain.lower() for keyword in ['microsoft', 'live.com', 'microsoftonline.com'])
+
+        if not is_ms_domain:
+            # 非 Microsoft cookies 全部保留
+            filtered_cookies.append(cookie)
+        elif name == 'ESTSAUTHPERSISTENT':
+            # 只保留选中账号的 ESTSAUTHPERSISTENT cookie
+            if cookie.get('value', '') == selected_ests_auth:
+                filtered_cookies.append(cookie)
+        else:
+            # 其他 Microsoft cookies 根据域名匹配
+            if any(domain == acc_domain or domain.endswith(acc_domain.lstrip('.')) for acc_domain in account_ms_domains):
+                filtered_cookies.append(cookie)
+
+    return filtered_cookies
+
+
+def _prompt_user_for_account_selection(accounts: List[Dict]) -> Dict:
+    """
+    提示用户选择要使用的账号
+
+    Args:
+        accounts: 检测到的账号列表
+
+    Returns:
+        用户选择的账号
+    """
+    logging.info('')
+    logging.info('╔════════════════════════════════════════════════════════════╗')
+    logging.info('║  检测到多个 Microsoft 账号登录                             ║')
+    logging.info('║  请选择要用于 Moodle 登录的账号                             ║')
+    logging.info('╚════════════════════════════════════════════════════════════╝')
+    logging.info('')
+
+    for i, account in enumerate(accounts, 1):
+        user_info = account.get('user_info', {})
+        email = user_info.get('email', 'Unknown')
+        display_name = user_info.get('display_name', '')
+
+        # 使用 ESTSAUTHPERSISTENT 的前 24 个字符作为标识
+        session_id = account.get('ests_auth_persistent', '')[:24]
+        domain = account.get('domain', '')
+
+        if display_name:
+            logging.info(f'  [{i}] {display_name} ({email})')
+        else:
+            logging.info(f'  [{i}] {email}')
+        logging.info(f'      域名: {domain}')
+        logging.info(f'      会话: {session_id}...')
+
+    logging.info('')
+    while True:
+        try:
+            choice = input('请输入账号编号 (1-{}): '.format(len(accounts)))
+            choice_num = int(choice.strip())
+            if 1 <= choice_num <= len(accounts):
+                selected = accounts[choice_num - 1]
+                user_info = selected.get('user_info', {})
+                email = user_info.get('email', f'账号 {choice_num}')
+                logging.info(f'✓ 已选择: {email}')
+                return selected
+            else:
+                logging.warning(f'⚠️  请输入 1 到 {len(accounts)} 之间的数字')
+        except ValueError:
+            logging.warning('⚠️  请输入有效的数字')
+        except (EOFError, KeyboardInterrupt):
+            # 在非交互环境中，默认选择第一个账号
+            logging.info('💡 非交互环境，自动选择第一个账号')
+            return accounts[0]
 
 
 def _read_sso_cookies_from_browser_DEPRECATED(browser_name: str, moodle_domain: str) -> List[Dict]:
