@@ -878,13 +878,13 @@ async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15, h
 async def _setup_browser_context(browser, storage_state: dict):
     """
     原子函数: 创建浏览器上下文并加载 storage state
-    
+
     职责: 单一 - 仅负责上下文创建和 storage state 加载
-    
+
     Args:
         browser: Browser 实例
         storage_state: 要加载的 storage state
-        
+
     Returns:
         BrowserContext 实例
     """
@@ -894,13 +894,50 @@ async def _setup_browser_context(browser, storage_state: dict):
         'locale': 'en-GB',
         'timezone_id': 'Europe/London',
     }
-    
+
+    # 验证和过滤 cookies，确保每个 cookie 都有必要的字段
+    # Playwright 要求每个 cookie 至少要有 domain 和 path
+    validated_cookies = []
+    skipped_count = 0
+
+    for cookie in storage_state.get('cookies', []):
+        # 检查必要的字段
+        if not cookie.get('domain'):
+            skipped_count += 1
+            continue
+
+        # 确保 path 字段存在（Playwright 要求）
+        if 'path' not in cookie:
+            cookie['path'] = '/'
+
+        # 确保 name 和 value 存在
+        if 'name' not in cookie or 'value' not in cookie:
+            skipped_count += 1
+            continue
+
+        # 确保字段类型正确
+        cookie['secure'] = bool(cookie.get('secure', False))
+        cookie['httpOnly'] = bool(cookie.get('httpOnly', False))
+
+        validated_cookies.append(cookie)
+
+    if skipped_count > 0:
+        logging.info(f'🧹 已跳过 {skipped_count} 个无效 cookies（缺少必要字段）')
+
+    # 更新 storage state，只包含有效的 cookies
+    validated_storage_state = {
+        'cookies': validated_cookies,
+        'origins': storage_state.get('origins', [])
+    }
+
+    logging.info(f'✓ 准备加载 {len(validated_cookies)} 个有效 cookies')
+
     try:
         context = await browser.new_context(
-            storage_state=storage_state,
+            storage_state=validated_storage_state,
             **context_options
         )
-        logging.info('✓ Storage State 已加载（所有 cookies 已注入）')
+        logging.info('✓ Storage State 已加载（所有有效 cookies 已注入）')
         return context
     except Exception as e:
         logging.warning(f'⚠️  Storage State 加载失败: {e}')
