@@ -273,6 +273,46 @@ class TestCheckFinalLoginStatus(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, -1)  # Failed
 
+    async def test_headful_mode_microsoft_account_selection_page(self):
+        """测试有头模式下在 Microsoft 账号选择页面返回未确定（而非失败）"""
+        page_content = '<html><body>Sign in to your account</body></html>'
+        current_url = 'https://login.microsoftonline.com/emckclac.onmicrosoft.com/oauth2/authorize'
+
+        # 有头模式：应该返回 0（未确定）而不是 -1（失败）
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=False, headless=False)
+
+        self.assertEqual(result, 0)  # Uncertain (continue waiting)
+
+    async def test_headful_mode_google_account_selection_page(self):
+        """测试有头模式下在 Google 账号选择页面返回未确定（而非失败）"""
+        page_content = '<html><body>Choose an account</body></html>'
+        current_url = 'https://accounts.google.com/accountchooser'
+
+        # 有头模式：应该返回 0（未确定）而不是 -1（失败）
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=False, headless=False)
+
+        self.assertEqual(result, 0)  # Uncertain (continue waiting)
+
+    async def test_headless_mode_microsoft_account_selection_page_fails(self):
+        """测试无头模式下在 Microsoft 账号选择页面返回失败"""
+        page_content = '<html><body>Sign in to your account</body></html>'
+        current_url = 'https://login.microsoftonline.com/emckclac.onmicrosoft.com/oauth2/authorize'
+
+        # 无头模式：应该返回 -1（失败）
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=False, headless=True)
+
+        self.assertEqual(result, -1)  # Failed
+
+    async def test_regular_login_page_still_fails_in_headful(self):
+        """测试有头模式下普通登录页面仍然返回失败"""
+        page_content = '<html><body>Please login</body></html>'
+        current_url = 'https://moodle.example.com/login/index.php'
+
+        # 即使在有头模式下，普通登录页面也应该返回失败
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=False, headless=False)
+
+        self.assertEqual(result, -1)  # Failed
+
 
 class TestCheckLoginErrors(unittest.IsolatedAsyncioTestCase):
     """_check_login_errors 异步函数测试"""
@@ -460,6 +500,106 @@ class TestSetupBrowserContext(unittest.IsolatedAsyncioTestCase):
 
         # Should have been called twice (first failed, second succeeded with fallback)
         self.assertEqual(call_count, 2)
+
+    async def test_filters_cookies_without_domain(self):
+        """测试过滤缺少 domain 字段的 cookies"""
+        mock_browser = AsyncMock()
+        mock_context = AsyncMock()
+
+        mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+        # 包含有效和无效 cookies 的 storage_state
+        storage_state = {
+            'cookies': [
+                {'name': 'valid1', 'value': 'val1', 'domain': '.example.com', 'path': '/'},
+                {'name': 'valid2', 'value': 'val2', 'domain': '.test.com'},  # 缺少 path
+                {'name': 'invalid_no_domain', 'value': 'val3'},  # 缺少 domain
+                {'name': 'invalid_no_value', 'domain': '.example.com'},  # 缺少 value
+                {'name': 'valid3', 'value': 'val4', 'domain': '.moodle.com', 'path': '/', 'secure': True},
+            ]
+        }
+
+        result = await self.module._setup_browser_context(mock_browser, storage_state)
+
+        # 应该创建 context
+        self.assertEqual(result, mock_context)
+
+        # 检查 new_context 被调用，并且 storage_state 被修改过
+        mock_browser.new_context.assert_called_once()
+        call_args = mock_browser.new_context.call_args
+        passed_storage_state = call_args[1]['storage_state']
+
+        # 应该只包含有效的 cookies（3个），跳过无效的（2个）
+        self.assertEqual(len(passed_storage_state['cookies']), 3)
+
+        # 验证有效 cookies 的字段
+        for cookie in passed_storage_state['cookies']:
+            self.assertIn('domain', cookie)
+            self.assertIn('path', cookie)
+            self.assertIn('name', cookie)
+            self.assertIn('value', cookie)
+
+    async def test_adds_default_path_to_cookies(self):
+        """测试为缺少 path 的 cookies 添加默认值"""
+        mock_browser = AsyncMock()
+        mock_context = AsyncMock()
+
+        mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+        storage_state = {
+            'cookies': [
+                {'name': 'test1', 'value': 'val1', 'domain': '.example.com'},
+                {'name': 'test2', 'value': 'val2', 'domain': '.test.com', 'path': '/custom'},
+            ]
+        }
+
+        result = await self.module._setup_browser_context(mock_browser, storage_state)
+
+        call_args = mock_browser.new_context.call_args
+        passed_storage_state = call_args[1]['storage_state']
+
+        # 第一个 cookie 应该有默认的 path='/'
+        cookie1 = next(c for c in passed_storage_state['cookies'] if c['name'] == 'test1')
+        self.assertEqual(cookie1['path'], '/')
+
+        # 第二个 cookie 应该保持原路径
+        cookie2 = next(c for c in passed_storage_state['cookies'] if c['name'] == 'test2')
+        self.assertEqual(cookie2['path'], '/custom')
+
+    async def test_normalizes_boolean_fields(self):
+        """测试将 secure 和 httpOnly 字段规范化为布尔值"""
+        mock_browser = AsyncMock()
+        mock_context = AsyncMock()
+
+        mock_browser.new_context = AsyncMock(return_value=mock_context)
+
+        storage_state = {
+            'cookies': [
+                {'name': 'test1', 'value': 'val1', 'domain': '.example.com', 'secure': 1, 'httpOnly': 0},
+                {'name': 'test2', 'value': 'val2', 'domain': '.test.com', 'secure': True, 'httpOnly': False},
+                {'name': 'test3', 'value': 'val3', 'domain': '.moodle.com'},  # 缺少 secure/httpOnly
+            ]
+        }
+
+        result = await self.module._setup_browser_context(mock_browser, storage_state)
+
+        call_args = mock_browser.new_context.call_args
+        passed_storage_state = call_args[1]['storage_state']
+
+        # 所有 cookies 的 secure 和 httpOnly 都应该是布尔值
+        for cookie in passed_storage_state['cookies']:
+            self.assertIsInstance(cookie['secure'], bool)
+            self.assertIsInstance(cookie['httpOnly'], bool)
+
+        # test1: secure 从 1 转换为 True，httpOnly 从 0 转换为 False
+        cookie1 = next(c for c in passed_storage_state['cookies'] if c['name'] == 'test1')
+        self.assertTrue(cookie1['secure'])  # 1 -> True
+        self.assertFalse(cookie1['httpOnly'])  # 0 -> False
+
+        # test3: 缺少 secure/httpOnly 的应该默认为 False
+        cookie3 = next(c for c in passed_storage_state['cookies'] if c['name'] == 'test3')
+        self.assertFalse(cookie3['secure'])
+        self.assertFalse(cookie3['httpOnly'])
 
 
 class TestHandleUncertainLoginStatus(unittest.IsolatedAsyncioTestCase):
