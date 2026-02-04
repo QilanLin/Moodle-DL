@@ -388,6 +388,13 @@ def convert_to_aiohttp_cookie_jar(mozilla_cookie_jar: http.cookiejar.MozillaCook
                     }
                 )
                 # pylint: disable=protected-access
+                # 跳过保留的 cookie 名称，避免 "Attempt to set a reserved key" 错误
+                # http.cookies 模块保留了一些键名（如 'path', 'version', 'port' 等）
+                # 注意：需要检查小写形式，因为某些浏览器可能导出大写的 cookie 名称
+                reserved_cookie_names = {'path', 'version', 'port', 'domain', 'secure', 'expires', 'comment', 'max-age'}
+                if cookie.name.lower() in reserved_cookie_names:
+                    continue
+
                 morsel.set(cookie.name, cookie.value, http.cookies._quote(cookie.value))
                 aiohttp_cookie_jar._cookies[(cookie_domain, cookie_path)][cookie_name] = morsel
 
