@@ -731,28 +731,35 @@ async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str
         return False, page.url, ''
 
 
-async def _check_final_login_status(page_content: str, current_url: str, visited_sso: bool) -> int:
+async def _check_final_login_status(page_content: str, current_url: str, visited_sso: bool, headless: bool = False) -> int:
     """
     原子函数: 检查最终的登录状态
-    
+
     职责: 单一 - 仅检查登录是否成功
-    
+
     Args:
         page_content: 页面 HTML 内容
         current_url: 当前 URL
         visited_sso: 是否经历过 SSO 重定向
-        
+        headless: 是否为无头模式
+
     Returns:
         登录状态码:
         1 - 登录成功（找到 logout 链接或访问过 SSO）
-        0 - 登录状态未确定
+        0 - 登录状态未确定（或有头模式下在账号选择页面）
         -1 - 在登录页面或有错误
     """
+    # 在有头模式下，如果检测到账号选择页面，返回 0（未确定）而不是 -1（失败）
+    # 这样主循环会继续等待，给用户时间选择账号
+    if not headless and ('login.microsoftonline.com' in current_url or 'accounts.google.com' in current_url):
+        logging.info('⏸️  仍在账号选择页面，继续等待...')
+        return 0  # 返回未确定，让循环继续
+
     # 检查是否在登录页面
     if '/login' in current_url.lower() or 'accounts.microsoft' in current_url or 'accounts.google' in current_url:
         logging.warning('⚠️  仍然在登录/认证页面，登录可能失败')
         return -1
-    
+
     # 检查错误标志
     error_indicators = [
         'Sign in to your account',
@@ -763,17 +770,17 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
         '403',
         'Unauthorized',
     ]
-    
+
     for indicator in error_indicators:
         if indicator in page_content:
             logging.warning(f'⚠️  页面中检测到错误指示: {indicator}')
             return -1
-    
+
     # 检查成功标志
     if 'login/logout.php' in page_content or visited_sso:
         logging.debug('✅ 检测到登录成功标志')
         return 1
-    
+
     # 状态未确定
     logging.debug('⚠️  无法确定登录状态')
     return 0
@@ -1107,37 +1114,52 @@ async def auto_login_with_sso(
             moodle_url = f'https://{moodle_domain}/' if not moodle_domain.startswith('http') else moodle_domain
 
             try:
-                # 导航并等待重定向完成（原子函数）
-                visited_sso, current_url, page_content = await _navigate_to_moodle_and_wait(
-                    page, moodle_domain, moodle_url, timeout, headless
-                )
+                # 在有头模式下，使用循环来持续检查登录状态
+                # 这样用户有时间手动选择账号
+                max_attempts = 10 if not headless else 1  # 有头模式最多尝试 10 次（5分钟）
 
-                # 检查登录状态（原子函数）
-                login_status = await _check_final_login_status(page_content, current_url, visited_sso)
+                for attempt in range(max_attempts):
+                    # 导航并等待重定向完成（原子函数）
+                    visited_sso, current_url, page_content = await _navigate_to_moodle_and_wait(
+                        page, moodle_domain, moodle_url, timeout, headless
+                    )
 
-                if login_status == -1:
-                    # 登录失败
-                    await browser.close()
-                    return False
+                    # 检查登录状态（原子函数）
+                    login_status = await _check_final_login_status(page_content, current_url, visited_sso, headless)
 
-                elif login_status == 1:
-                    # 登录成功
-                    if visited_sso:
-                        Log.success('✅ SSO 自动登录成功！（经历完整 SSO 重定向）')
+                    if login_status == -1:
+                        # 登录失败
+                        if not headless and attempt < max_attempts - 1:
+                            logging.info('⏳ 等待用户完成操作...（重试中）')
+                            continue
+                        await browser.close()
+                        return False
+
+                    elif login_status == 1:
+                        # 登录成功
+                        if visited_sso:
+                            Log.success('✅ SSO 自动登录成功！（经历完整 SSO 重定向）')
+                        else:
+                            Log.success('✅ SSO 自动登录成功！（使用现有 cookies）')
+
+                        # 5 & 6. 提取并保存 cookies（原子函数）
+                        save_success = await _save_session_cookies(context, auth_manager)
+
+                        await browser.close()
+                        return save_success
+
                     else:
-                        Log.success('✅ SSO 自动登录成功！（使用现有 cookies）')
+                        # 登录状态未确定
+                        if not headless:
+                            # 有头模式：继续等待用户操作
+                            if attempt < max_attempts - 1:
+                                logging.info(f'⏳ 继续等待...（第 {attempt + 1}/{max_attempts} 次尝试）')
+                                continue
 
-                    # 5 & 6. 提取并保存 cookies（原子函数）
-                    save_success = await _save_session_cookies(context, auth_manager)
-                    
-                    await browser.close()
-                    return save_success
-
-                else:
-                    # 登录状态未确定（原子函数）
-                    await _handle_uncertain_login_status(current_url, page_content)
-                    await browser.close()
-                    return False
+                        # 无头模式或已达到最大尝试次数
+                        await _handle_uncertain_login_status(current_url, page_content)
+                        await browser.close()
+                        return False
 
             except Exception as page_error:
                 logging.error(f'❌ 页面加载出错: {page_error}')
