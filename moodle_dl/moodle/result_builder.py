@@ -16,11 +16,13 @@ class ResultBuilder:
     Combines all fetched mod files and core course files to one result based on File objects
     """
 
-    def __init__(self, moodle_url: MoodleURL, version: int, mod_plurals: Dict):
+    def __init__(self, moodle_url: MoodleURL, version: int, mod_plurals: Dict, token: str = ''):
         self.version = version
         self.moodle_url = moodle_url
         self.moodle_domain = moodle_url.domain
+        self.moodle_base_url = moodle_url.url_base
         self.mod_plurals = mod_plurals
+        self.token = token or ''
 
     def get_files_in_sections(self, course_sections: List[Dict], fetched_mods: Dict[str, Dict]) -> List[File]:
         """
@@ -567,6 +569,19 @@ class ResultBuilder:
             content_filename = content.get('filename', '')
             content_filepath = content.get('filepath', '/') or '/'
             content_fileurl = content.get('fileurl', '')
+            if content_fileurl is None:
+                content_fileurl = ''
+
+            # Moodle book "structure" is a content entry with fileurl=null in core.
+            # Some instances return type="file" but still include content; normalize to "content".
+            if (
+                content_type != 'content'
+                and location.get('module_modname') == 'book'
+                and content_filename == 'structure'
+                and content.get('content') is not None
+                and content_fileurl == ''
+            ):
+                content_type = 'content'
 
             # 🔧 修复 pluginfile URL（关键修复）
             # 确保 URL 包含正确的认证参数和端点路径
@@ -574,8 +589,8 @@ class ResultBuilder:
                 try:
                     content_fileurl = UrlHelper.fix_pluginfile_url(
                         content_fileurl,
-                        token=self.moodle_url.token,
-                        moodle_base_url=self.moodle_domain
+                        token=self.token,
+                        moodle_base_url=self.moodle_base_url,
                     )
                     logging.debug(f'   🔧 Fixed pluginfile URL: {content_fileurl[:80]}...')
                 except Exception as e:

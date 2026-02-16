@@ -49,7 +49,7 @@ class File:
 
         self.content_filepath = content_filepath
         self.content_filename = content_filename
-        self.content_fileurl = content_fileurl
+        self.content_fileurl = content_fileurl if content_fileurl is not None else ''
         self.content_filesize = content_filesize
         self.content_timemodified = 0
         if content_timemodified is not None:
@@ -258,7 +258,7 @@ class File:
             )
         else:
             message += f', content_filename: "{valid_content_filename}"'
-        if len(self.content_fileurl) > 256:
+        if self.content_fileurl and len(self.content_fileurl) > 256:
             message += (
                 f', content_fileurl (longer than 256 chars): "{self.content_fileurl[:200]}[...]'
                 + f'{self.content_fileurl[-50:]}"'
@@ -389,6 +389,9 @@ class TaskStatus:
         if str_error != '':
             return str_error
         return repr(self.error)
+
+    def set_error(self, error: Any) -> None:
+        self.error = error
 
 
 @dataclass
