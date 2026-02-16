@@ -97,26 +97,36 @@ class TestRetryFailedDownloadsAtomization(unittest.TestCase):
 
     def test_load_failed_files_as_courses_success(self):
         """Test loading failed files as courses"""
-        database = MagicMock()
-        courses_dict = {
-            1: {
-                'course_fullname': 'Course 1',
-                'files': [MagicMock(file_id=10), MagicMock(file_id=11)]
-            },
-            2: {
-                'course_fullname': 'Course 2',
-                'files': [MagicMock(file_id=20)]
+        from moodle_dl.utils import PathTools
+
+        # Save original state and force to False for this test
+        original_restricted = PathTools.restricted_filenames
+        PathTools.restricted_filenames = False
+
+        try:
+            database = MagicMock()
+            courses_dict = {
+                1: {
+                    'course_fullname': 'Course 1',
+                    'files': [MagicMock(file_id=10), MagicMock(file_id=11)]
+                },
+                2: {
+                    'course_fullname': 'Course 2',
+                    'files': [MagicMock(file_id=20)]
+                }
             }
-        }
-        database.get_failed_files_with_course_info.return_value = courses_dict
-        
-        courses = _load_failed_files_as_courses(database)
-        
-        self.assertEqual(len(courses), 2)
-        self.assertEqual(courses[0].fullname, 'Course 1')
-        self.assertEqual(courses[1].fullname, 'Course 2')
-        self.assertEqual(len(courses[0].files), 2)
-        self.assertEqual(len(courses[1].files), 1)
+            database.get_failed_files_with_course_info.return_value = courses_dict
+
+            courses = _load_failed_files_as_courses(database)
+
+            self.assertEqual(len(courses), 2)
+            self.assertEqual(courses[0].fullname, 'Course 1')
+            self.assertEqual(courses[1].fullname, 'Course 2')
+            self.assertEqual(len(courses[0].files), 2)
+            self.assertEqual(len(courses[1].files), 1)
+        finally:
+            # Restore original state
+            PathTools.restricted_filenames = original_restricted
 
     @patch('moodle_dl.main.logging')
     def test_load_failed_files_as_courses_empty(self, mock_logging):

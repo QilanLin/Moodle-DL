@@ -1205,8 +1205,9 @@ class BookMod(MoodleMod):
         def search_toc(items: List[Dict], target_id: str) -> str:
             for item in items:
                 # TOC中的href格式如 "691946/index.html" 或 "691946/"
-                href = item.get('href', '')
-                if href.startswith(target_id + '/'):
+                # 使用 or '' 确保即使 href 是 None 也能获得空字符串
+                href = item.get('href') or ''
+                if href and href.startswith(target_id + '/'):
                     title = item.get('title', f'Chapter {target_id}')
                     return title
                 # 递归搜索子项

@@ -1654,17 +1654,22 @@ class Task:
         elif self.file.module_modname.startswith('cookie_mod'):
             await self._download_cookie_mod_file()
         
-        elif self.file.module_modname.startswith('url') and not self.file.content_fileurl.startswith('data:'):
+        elif self.file.module_modname.startswith('url') and (not self.file.content_fileurl or not self.file.content_fileurl.startswith('data:')):
             await self._download_external_url_with_fallback()
-        
-        elif self.file.content_fileurl.startswith('data:'):
+
+        elif self.file.content_fileurl and self.file.content_fileurl.startswith('data:'):
             await self.create_data_url_file()
-        
+
         else:
             # 常规 HTTP 下载
-            url_to_download = self.add_token_to_url(self.file.content_fileurl)
-            logging.debug('[%d] Downloading %s', self.task_id, url_to_download)
-            await self.download_url(url_to_download, self.file.saved_to)
+            if self.file.content_fileurl:
+                url_to_download = self.add_token_to_url(self.file.content_fileurl)
+                logging.debug('[%d] Downloading %s', self.task_id, url_to_download)
+                await self.download_url(url_to_download, self.file.saved_to)
+            else:
+                # 没有 URL，跳过下载
+                logging.warning('[%d] 没有可用的下载 URL，跳过文件: %s', self.task_id, self.file.content_filename)
+                self.status.set_error('No URL available for download')
     
     async def _download_cookie_mod_file(self):
         """

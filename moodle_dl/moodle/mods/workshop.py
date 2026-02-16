@@ -22,11 +22,16 @@ class WorkshopMod(MoodleMod):
     async def real_fetch_mod_entries(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]
     ) -> Dict[int, Dict[int, Dict]]:
-        workshops = (
-            await self.client.async_post(
-                'mod_workshop_get_workshops_by_courses', self.get_data_for_mod_entries_endpoint(courses)
-            )
-        ).get('workshops', [])
+        # 尝试使用 Mobile API 获取研讨会列表
+        try:
+            workshops = (
+                await self.client.async_post(
+                    'mod_workshop_get_workshops_by_courses', self.get_data_for_mod_entries_endpoint(courses)
+                )
+            ).get('workshops', [])
+        except (RequestRejectedError, Exception) as e:
+            logging.warning(f'❌ Mobile API 获取研讨会失败: {e}，尝试使用 Web API fallback...')
+            workshops = await self._fetch_workshops_web_api(courses, core_contents)
 
         result = {}
         for workshop in workshops:
@@ -170,6 +175,88 @@ class WorkshopMod(MoodleMod):
 
         await self.run_async_load_function_on_mod_entries(workshops, self.load_workshop_files)
 
+    async def _fetch_workshops_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        使用 Web API fallback 获取研讨会基本信息。
+
+        注意: 此方法只能获取研讨会的基本元数据，无法获取：
+        - 提交列表 (submissions)
+        - 评审数据 (assessments)
+        - 用户计划 (user plan)
+        - 评分信息 (grades)
+
+        这些详细数据需要通过 Mobile API 获取。
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 Workshop 模块信息...')
+
+        modules_by_course = self.extract_modules_from_core_contents(
+            courses, core_contents, 'workshop'
+        )
+
+        workshops = []
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+
+            for module in modules_by_course[course_id]:
+                workshop = {
+                    'id': module.get('instance', 0),
+                    'coursemodule': module.get('id', 0),
+                    'course': course_id,
+                    'name': module.get('name', 'Workshop'),
+                    'intro': module.get('description', ''),
+                    'introformat': 1,
+                    'introattachments': [],
+                    'instructauthors': '',
+                    'instructauthorsformat': 1,
+                    'instructreviewers': '',
+                    'instructreviewersformat': 1,
+                    'instructauthorsfiles': [],
+                    'instructreviewersfiles': [],
+                    'conclusion': '',
+                    'conclusionformat': 1,
+                    'conclusionfiles': [],
+                    # Grading settings (默认值)
+                    'grade': 100,
+                    'gradinggrade': 20,
+                    'strategy': 'accumulative',
+                    'evaluation': 'best',
+                    'gradedecimals': 2,
+                    # Submission settings (默认值)
+                    'nattachments': 1,
+                    'attachmentextensions': '',
+                    'submissionfiletypes': '',
+                    'maxbytes': 0,
+                    'latesubmissions': 0,
+                    # Assessment settings (默认值)
+                    'useselfassessment': 0,
+                    'overallfeedbackmode': 1,
+                    'overallfeedbackfiles': 0,
+                    'overallfeedbackmaxbytes': 0,
+                    'overallfeedbackfiletypes': '',
+                    # Example submissions settings (默认值)
+                    'useexamples': 0,
+                    'examplesmode': 0,
+                    # Availability settings (默认值)
+                    'submissionstart': 0,
+                    'submissionend': 0,
+                    'assessmentstart': 0,
+                    'assessmentend': 0,
+                    # Phase settings (默认值)
+                    'phase': 0,
+                    'phaseswitchassessment': 0,
+                    # Timestamps
+                    'timemodified': module.get('timemodified', 0),
+                    'timecreated': module.get('timecreated', 0),
+                }
+                workshops.append(workshop)
+
+        logging.debug(f'✅ Web API 成功获取 {len(workshops)} 个研讨会的基本信息')
+        return workshops
+
     async def load_workshop_files(self, workshop: Dict):
         """
         加载研讨会文件，支持 Mobile API 和 Web API fallback。
@@ -223,7 +310,7 @@ class WorkshopMod(MoodleMod):
     async def _fetch_workshop_submissions_mobile_api(self, data: Dict) -> List[Dict]:
         """
         使用 Mobile API (mod_workshop_get_submissions) 获取研讨会提交。
-        
+
         Return: 提交列表
         """
         logging.debug('📱 使用 Mobile API 获取研讨会提交...')

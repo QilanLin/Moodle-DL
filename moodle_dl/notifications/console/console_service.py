@@ -64,24 +64,27 @@ class ConsoleService(NotificationService):
             # 文件名（带序号前缀，如 *01*，来自 Task 对象）
             filename = task.filename if hasattr(task, 'filename') else PT.to_valid_name(task.file.content_filename, is_file=True)
             Log.cyan(filename)
-            
+
             # 错误信息
             Log.error(f'  错误: {task.status.get_error_text()}')
-            
+
             # 目标路径（从数据库 file.saved_to 读取的完整目标文件路径）
             target_path = task.file.saved_to if task.file.saved_to else '(未知路径)'
             Log.info(f'  目标: {target_path}')
-            
+
             # 源 URL（从数据库 file.content_fileurl 读取）
             source_url = task.file.content_fileurl
+            if source_url is None:
+                source_url = '(未知 URL)'
             # 如果 URL 太长，截断中间部分
-            max_url_length = 120
-            if len(source_url) > max_url_length:
-                url_prefix = source_url[:60]
-                url_suffix = source_url[-50:]
-                source_url = f'{url_prefix}...{url_suffix}'
+            else:
+                max_url_length = 120
+                if len(source_url) > max_url_length:
+                    url_prefix = source_url[:60]
+                    url_suffix = source_url[-50:]
+                    source_url = f'{url_prefix}...{url_suffix}'
             Log.info(f'  来源: {source_url}')
-            
+
             print('')  # 每个失败项之间空一行
 
         print('')

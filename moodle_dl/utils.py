@@ -395,8 +395,18 @@ def convert_to_aiohttp_cookie_jar(mozilla_cookie_jar: http.cookiejar.MozillaCook
                 if cookie.name.lower() in reserved_cookie_names:
                     continue
 
-                morsel.set(cookie.name, cookie.value, http.cookies._quote(cookie.value))
-                aiohttp_cookie_jar._cookies[(cookie_domain, cookie_path)][cookie_name] = morsel
+                try:
+                    morsel.set(cookie.name, cookie.value, http.cookies._quote(cookie.value))
+                    aiohttp_cookie_jar._cookies[(cookie_domain, cookie_path)][cookie_name] = morsel
+                except http.cookies.CookieError as e:
+                    # 跳过包含非法字符的 cookie 名称（如方括号、花括号等）
+                    # 这些 cookie 不符合 RFC 6265 规范，但某些网站可能会设置
+                    import logging
+                    logging.warning(
+                        f'⚠️  跳过非法 cookie 名称: {cookie.name} (域名: {cookie.domain})'
+                        f' - 原因: {e}'
+                    )
+                    continue
 
     return aiohttp_cookie_jar
 
