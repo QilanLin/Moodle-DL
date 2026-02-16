@@ -11,3 +11,6 @@ MoodleDL.log
 /moodle_dl.egg-info
 /.vscode/launch.json
 .DS_Store
+.coverage
+.pytest_cache/
+htmlcov/
