@@ -28,6 +28,7 @@ class GlossaryMod(MoodleMod):
     MOD_NAME = 'glossary'
     MOD_PLURAL_NAME = 'glossaries'
     MOD_MIN_VERSION = 2015111600  # 3.0
+    ENTRY_PAGE_SIZE = 100
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
@@ -155,6 +156,7 @@ class GlossaryMod(MoodleMod):
                     'name': glossary_name,
                     'files': glossary_files,
                     'entries': glossary.get('entries', 0),  # Number of entries
+                    'browsemodes': glossary.get('browsemodes', []),
                 },
             )
 
@@ -186,23 +188,7 @@ class GlossaryMod(MoodleMod):
         glossary_id = glossary.get('id', 0)
 
         try:
-            # Get all entries using 'ALL' letter (gets all entries regardless of first letter)
-            # We can also iterate through alphabet letters, but 'ALL' is more efficient
-            entries_response = await self.client.async_post(
-                'mod_glossary_get_entries_by_letter',
-                {
-                    'id': glossary_id,
-                    'letter': 'ALL',
-                    'from': 0,
-                    'limit': 0,  # 0 means no limit
-                    'options': {
-                        'includenotapproved': False,
-                    },
-                },
-            )
-
-            entries = entries_response.get('entries', [])
-
+            entries = await self._fetch_all_glossary_entries(glossary)
         except RequestRejectedError:
             logging.debug("No access rights for glossary %d", glossary_id)
             return
@@ -214,6 +200,100 @@ class GlossaryMod(MoodleMod):
         for entry in entries:
             entry_files = self._create_entry_files(entry)
             glossary['files'] += entry_files
+
+    async def _fetch_all_glossary_entries(self, glossary: Dict) -> List[Dict]:
+        glossary_id = glossary.get('id', 0)
+
+        for mode in self._get_glossary_browse_modes(glossary):
+            try:
+                return await self._fetch_glossary_entries_by_mode(glossary_id, mode)
+            except Exception as exc:
+                if self._is_invalid_browse_mode_error(exc):
+                    logging.debug(
+                        'Glossary %d does not support browse mode %s, trying next mode',
+                        glossary_id,
+                        mode,
+                    )
+                    continue
+                raise
+
+        return []
+
+    def _get_glossary_browse_modes(self, glossary: Dict) -> List[str]:
+        supported_modes = glossary.get('browsemodes') or []
+        preferred_modes = ['letter', 'date', 'author', 'cat']
+
+        ordered_modes = [mode for mode in preferred_modes if mode in supported_modes]
+        if ordered_modes:
+            return ordered_modes
+        return preferred_modes
+
+    async def _fetch_glossary_entries_by_mode(self, glossary_id: int, mode: str) -> List[Dict]:
+        entries: List[Dict] = []
+
+        while True:
+            response = await self.client.async_post(
+                *self._build_glossary_entries_request(glossary_id, mode, len(entries), self.ENTRY_PAGE_SIZE)
+            )
+
+            page_entries = response.get('entries', [])
+            entries.extend(page_entries)
+
+            total_count = response.get('count', len(entries))
+            if not page_entries or len(entries) >= total_count:
+                return entries
+
+    def _build_glossary_entries_request(self, glossary_id: int, mode: str, offset: int, limit: int):
+        common = {
+            'id': glossary_id,
+            'from': offset,
+            'limit': limit,
+            'options': {
+                'includenotapproved': False,
+            },
+        }
+
+        if mode == 'letter':
+            return (
+                'mod_glossary_get_entries_by_letter',
+                {
+                    **common,
+                    'letter': 'ALL',
+                },
+            )
+        if mode == 'date':
+            return (
+                'mod_glossary_get_entries_by_date',
+                {
+                    **common,
+                    'order': 'CREATION',
+                    'sort': 'DESC',
+                },
+            )
+        if mode == 'author':
+            return (
+                'mod_glossary_get_entries_by_author',
+                {
+                    **common,
+                    'letter': 'ALL',
+                    'field': 'LASTNAME',
+                    'sort': 'ASC',
+                },
+            )
+        if mode == 'cat':
+            return (
+                'mod_glossary_get_entries_by_category',
+                {
+                    **common,
+                    'categoryid': 0,
+                },
+            )
+
+        raise ValueError(f'Unsupported glossary browse mode: {mode}')
+
+    @staticmethod
+    def _is_invalid_browse_mode_error(exc: Exception) -> bool:
+        return 'invalidbrowsemode' in str(exc).lower()
 
     def _create_entry_files(self, entry: Dict) -> List[Dict]:
         """

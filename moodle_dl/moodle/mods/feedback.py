@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.moodle.mods import MoodleMod
@@ -218,6 +218,14 @@ class FeedbackMod(MoodleMod):
         Returns analysis data including response statistics
         """
         try:
+            access_info = await self._get_feedback_access_information(feedback_id)
+            if access_info is not None and not access_info.get('canviewanalysis', False):
+                logging.debug(
+                    "Skipping analysis for feedback %d because the current user cannot view it",
+                    feedback_id,
+                )
+                return {}
+
             response = await self.client.async_post(
                 'mod_feedback_get_analysis',
                 {
@@ -236,6 +244,16 @@ class FeedbackMod(MoodleMod):
         except Exception as e:
             logging.debug(f"Could not fetch analysis for feedback {feedback_id}: {e}")
             return {}
+
+    async def _get_feedback_access_information(self, feedback_id: int) -> Optional[Dict]:
+        try:
+            return await self.client.async_post(
+                'mod_feedback_get_feedback_access_information',
+                {'feedbackid': feedback_id},
+            )
+        except Exception as e:
+            logging.debug(f"Could not fetch access info for feedback {feedback_id}: {e}")
+            return None
 
     async def _fetch_feedbacks_web_api(
         self, courses: List[Course], core_contents: Dict[int, List[Dict]]

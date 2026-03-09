@@ -143,10 +143,12 @@ class H5PActivityMod(MoodleMod):
         h5p_id = h5p.get('id', 0)
 
         try:
-            # Get user attempts
+            # Mirror the official mobile app: fetch the current user's attempts via
+            # mod_h5pactivity_get_attempts instead of the teacher-facing
+            # mod_h5pactivity_get_user_attempts endpoint.
             attempts_response = await self.client.async_post(
-                'mod_h5pactivity_get_user_attempts',
-                {'h5pactivityid': h5p_id, 'userid': self.user_id},
+                'mod_h5pactivity_get_attempts',
+                {'h5pactivityid': h5p_id, 'userids': [self.user_id]},
             )
 
             attempts = attempts_response.get('usersattempts', [])
