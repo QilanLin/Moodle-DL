@@ -469,7 +469,7 @@ class TestAsyncLoadCourseCore(unittest.TestCase):
         self.assertNotIn('options[0][name]', call_args[0][1])
 
     def test_async_load_course_core_new_version(self):
-        """测试新版本 Moodle（使用选项）"""
+        """测试新版本 Moodle（必须保留 section modules）"""
         self.core_handler.version = 2015051100  # Moodle 2.9+
         self.request_helper.async_post.return_value = [
             {'id': 1, 'name': 'Section 1'},
@@ -482,10 +482,10 @@ class TestAsyncLoadCourseCore(unittest.TestCase):
 
         self.assertEqual(len(result), 2)
 
-        # Check that options were added
+        # Do not request excludemodules here; section matching depends on modules.
         call_args = self.request_helper.async_post.call_args
-        self.assertIn('options[0][name]', call_args[0][1])
         self.assertEqual(call_args[0][1]['courseid'], 123)
+        self.assertNotIn('options[0][name]', call_args[0][1])
 
     def test_async_load_course_core_with_warnings(self):
         """测试带警告的响应"""

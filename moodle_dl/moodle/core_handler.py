@@ -233,13 +233,10 @@ class CoreHandler:
             List[Dict]: 课程的核心内容列表
         """
         data = {'courseid': course.id}
-
-        # 对于 Moodle 2.9+，添加选项参数以减少不必要的数据传输
-        if self.version >= 2015051100:
-            options = [
-                {'name': 'excludemodules', 'value': 'true'},
-            ]
-            data.update(self._build_api_options(options))
+        # Keep section modules in the response. ResultBuilder uses them to map
+        # fetched module data back into the real course sections.
+        # Requesting excludemodules=true here collapses files into
+        # "<modplural> not on main page" synthetic sections.
 
         result = await self.client.async_post('core_course_get_contents', data)
 
