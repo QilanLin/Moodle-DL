@@ -284,7 +284,7 @@ class DownloadService:
             # 在每个任务之间添加随机延迟（0.7 到 1.3 秒）
             # 避免对服务器造成过大压力，模拟自然的下载行为
             if i < len(self.all_tasks) - 1:  # 最后一个任务后不需要等待
-                delay = 0.7 + random.uniform(0, 0.6)
+                delay = 0.3 + random.uniform(0, 0.3)
                 logging.debug(f'等待 {delay:.2f} 秒后继续下一个任务...')
                 await asyncio.sleep(delay)
 

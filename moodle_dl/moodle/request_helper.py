@@ -483,25 +483,38 @@ class RequestHelper:
         @return: the url encoded data
         """
 
-        def recursion(data: Dict[str, Any], base: Optional[List[str]] = None) -> List[str]:
+        def encode_leaf(value: Any) -> str:
+            if isinstance(value, bool):
+                return '1' if value else '0'
+            return str(value)
+
+        def format_key(parts: List[Any]) -> str:
+            first = urllib.parse.quote(str(parts[0]))
+            if len(parts) == 1:
+                return first
+            rest = map(lambda part: urllib.parse.quote(str(part)), parts[1:])
+            return f"{first}[{']['.join(rest)}]"
+
+        def recursion(value: Any, base: Optional[List[Any]] = None) -> List[str]:
             if base is None:
                 base = []
-            pairs: List[str] = []
 
-            for key, value in data.items():
-                new_base = base + [key]
-                if hasattr(value, 'values') and isinstance(value, dict):
-                    pairs += recursion(value, new_base)
-                else:
-                    new_pair: str
-                    if len(new_base) > 1:
-                        first = urllib.parse.quote(new_base.pop(0))
-                        rest = map(urllib.parse.quote, new_base)
-                        new_pair = f"{first}[{']['.join(rest)}]={urllib.parse.quote(str(value))}"
-                    else:
-                        new_pair = f'{urllib.parse.quote(str(key))}={urllib.parse.quote(str(value))}'
-                    pairs.append(new_pair)
-            return pairs
+            if isinstance(value, dict):
+                pairs: List[str] = []
+                for key, nested_value in value.items():
+                    pairs += recursion(nested_value, base + [key])
+                return pairs
+
+            if isinstance(value, (list, tuple)):
+                pairs: List[str] = []
+                for idx, nested_value in enumerate(value):
+                    pairs += recursion(nested_value, base + [idx])
+                return pairs
+
+            if not base:
+                return []
+
+            return [f'{format_key(base)}={urllib.parse.quote(encode_leaf(value))}']
 
         return '&'.join(recursion(data))
 

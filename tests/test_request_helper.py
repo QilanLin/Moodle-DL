@@ -103,6 +103,34 @@ class TestRecursiveUrlencode(unittest.TestCase):
         # Should be URL encoded
         self.assertIn('course_name=', result)
 
+    def test_list_values(self):
+        """测试列表编码为 Moodle 风格数组参数"""
+        data = {'userids': [936373, 936374]}
+        result = RequestHelper.recursive_urlencode(data)
+        self.assertIn('userids[0]=936373', result)
+        self.assertIn('userids[1]=936374', result)
+
+    def test_list_of_dicts(self):
+        """测试列表中的字典编码"""
+        data = {
+            'options': [
+                {'name': 'excludemodules', 'value': 'true'},
+                {'name': 'excludecontents', 'value': 'false'},
+            ]
+        }
+        result = RequestHelper.recursive_urlencode(data)
+        self.assertIn('options[0][name]=excludemodules', result)
+        self.assertIn('options[0][value]=true', result)
+        self.assertIn('options[1][name]=excludecontents', result)
+        self.assertIn('options[1][value]=false', result)
+
+    def test_bool_values(self):
+        """测试布尔值编码为 1/0，兼容 Moodle PARAM_BOOL"""
+        data = {'options': {'includenotapproved': False, 'showall': True}}
+        result = RequestHelper.recursive_urlencode(data)
+        self.assertIn('options[includenotapproved]=0', result)
+        self.assertIn('options[showall]=1', result)
+
 
 class TestCheckResponseCode(unittest.TestCase):
     """_check_response_code 方法测试"""

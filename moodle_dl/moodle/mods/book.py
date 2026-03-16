@@ -560,6 +560,56 @@ class BookMod(MoodleMod):
 
         return video_files
 
+    @staticmethod
+    def _is_interactive_auth_url(url: str) -> bool:
+        """Return True when the browser was redirected to a login / SSO page."""
+        if not url:
+            return False
+
+        parsed = urllib.parse.urlparse(url)
+        host = parsed.netloc.lower()
+        path = parsed.path.lower()
+
+        return (
+            host.endswith('login.microsoftonline.com')
+            or host.endswith('login.live.com')
+            or path.startswith('/login/')
+            or path.startswith('/auth/oidc/')
+        )
+
+    @staticmethod
+    def _detect_interactive_auth_page(html_content: str) -> str:
+        """
+        Detect Microsoft / Moodle interactive auth pages without false-positively
+        matching normal book titles such as "Introduction to Microsoft Teams".
+        """
+        if not html_content:
+            return ''
+
+        html_snippet = re.sub(r'\s+', ' ', html_content[:12000]).lower()
+
+        if 'sign in to your account' in html_snippet:
+            return 'microsoft_sign_in'
+
+        if 'pick an account' in html_snippet and 'use another account' in html_snippet:
+            return 'microsoft_account_picker'
+
+        if 'login.microsoftonline.com' in html_snippet or 'login.live.com' in html_snippet:
+            return 'microsoft_auth_host'
+
+        if 'name="loginfmt"' in html_snippet or 'id="i0116"' in html_snippet:
+            return 'microsoft_sign_in_form'
+
+        return ''
+
+    @classmethod
+    def _detect_interactive_auth_requirement(cls, url: str, html_content: str = '') -> str:
+        """Return a reason string when Print Book fetch requires interactive auth."""
+        if cls._is_interactive_auth_url(url):
+            return 'redirected_to_auth_url'
+
+        return cls._detect_interactive_auth_page(html_content)
+
     # Note: Cookies auto-refresh logic is now integrated directly into _fetch_print_book_html()
     # using the retry_count parameter. This follows DRY principle by reusing CookieManager.
 
@@ -633,16 +683,11 @@ class BookMod(MoodleMod):
                 moodle_sessions = [c for c in playwright_cookies if c['name'] == 'MoodleSession']
                 logging.debug(f'🔍 准备添加 {len(playwright_cookies)} 个cookies')
                 logging.debug(f'🔍 其中MoodleSession cookies: {len(moodle_sessions)} 个')
-                for ms_cookie in moodle_sessions:
-                    logging.debug(f'🔍 MoodleSession完整信息:')
-                    logging.debug(f'   name={ms_cookie["name"]}')
-                    logging.debug(f'   value={ms_cookie["value"][:20]}...')
-                    logging.debug(f'   domain={ms_cookie["domain"]}')
-                    logging.debug(f'   path={ms_cookie["path"]}')
-                    logging.debug(f'   httpOnly={ms_cookie["httpOnly"]}')
-                    logging.debug(f'   secure={ms_cookie["secure"]}')
-                    logging.debug(f'   sameSite={ms_cookie["sameSite"]}')
-                    logging.debug(f'   expires={ms_cookie["expires"]}')
+                if moodle_sessions:
+                    logging.debug(
+                        '🔍 MoodleSession cookie domains: %s',
+                        [cookie.get('domain', '') for cookie in moodle_sessions],
+                    )
 
                 await context.add_cookies(playwright_cookies)
 
@@ -670,15 +715,7 @@ class BookMod(MoodleMod):
                             logging.debug(f'🔍 第一个HTTP请求: {request.url[:100]}')
                             logging.debug(f'🔍 Cookie header长度: {len(cookie_header)} 字符')
                             logging.debug(f'🔍 Cookie header有MoodleSession: {has_moodle_session}')
-                            if cookie_header:
-                                logging.debug(f'🔍 Cookie header完整内容: {cookie_header[:500]}')
-
-                                # 显示MoodleSession的值
-                                if has_moodle_session:
-                                    for part in cookie_header.split('; '):
-                                        if 'MoodleSession' in part:
-                                            logging.debug(f'🔍 Cookie值: {part}')
-                            else:
+                            if not cookie_header:
                                 logging.debug(f'🔍 ❌ Cookie header为空！')
                             first_request_logged[0] = True
 
@@ -716,22 +753,29 @@ class BookMod(MoodleMod):
                         await browser.close()
                         return '', ''
 
-                    # Check if we got redirected to login page
+                    # Check if we got redirected to an interactive auth page
                     current_url = page.url
-                    if 'login' in current_url.lower() or 'microsoft' in current_url.lower():
-                        logging.warning(f'⚠️  Redirected to login page: {current_url}')
-                        logging.warning(f'⚠️  Cookies may have expired, please run: moodle-dl --init --sso')
+                    auth_reason = self._detect_interactive_auth_requirement(current_url)
+                    if auth_reason:
+                        logging.warning(f'⚠️  Print Book request requires interactive authentication: {current_url}')
+                        logging.warning(
+                            f'⚠️  Reason: {auth_reason}. SSO session likely needs re-authentication or account '
+                            f'selection; please run: moodle-dl --init --sso'
+                        )
                         await browser.close()
                         return '', ''
 
                     # Get the HTML content
                     html_content = await page.content()
 
-                    # Check if we got actual book content or login page
-                    is_login_page = 'Sign in to your account' in html_content or 'Microsoft' in html_content[:500]
-                    if is_login_page:
-                        logging.warning(f'⚠️  Received login page instead of print book content')
-                        logging.warning(f'⚠️  Cookies may have expired, please run: moodle-dl --init --sso')
+                    # Check if we got actual book content or an interactive auth page
+                    auth_reason = self._detect_interactive_auth_requirement(current_url, html_content)
+                    if auth_reason:
+                        logging.warning('⚠️  Received interactive authentication page instead of print book content')
+                        logging.warning(
+                            f'⚠️  Reason: {auth_reason}. SSO session likely needs re-authentication or account '
+                            f'selection; please run: moodle-dl --init --sso'
+                        )
                         await browser.close()
                         return '', ''
 
