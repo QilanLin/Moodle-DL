@@ -1,156 +1,346 @@
 <div align="center">
     <br>
     <h2>Moodle-DL</h2>
-    Because manually downloading all the course files every few days is just <del>way too easy</del> inefficient.
+    一个用于批量下载 Moodle 课程资料的命令行工具。
     <br>
-    Built with ❤︎
+    当前仓库为带中文界面和若干下载逻辑改动的维护分支。
 </div>
 
 ---
 
+`moodle-dl` 是一个控制台程序，用来下载 Moodle 课程中日常学习所需的内容。它还支持通知、增量下载、课程筛选，以及对多种 Moodle 模块和外部链接的处理。
 
-`moodle-dl` is a console application that can download all the files from your Moodle courses that are necessary for your daily study routine.
-Furthermore, moodle-dl can notify you about various activities on your Moodle server. Notifications can be sent to Telegram, Discord, XMPP and Mail. The current implementation includes:
+## 功能概览
 
-- Download files, assignments including submissions, books, calendar events, forums, workshops, lessons, quizzes, descriptions, as well as external links (OpenCast, Youtube, Sciebo, Owncloud, Kaltura, Helixmedia, Google drive,... videos/files).
-- Notifications about all downloaded files
-- Text from your Moodle courses (like pages, descriptions or forum posts) will be directly attached to the notifications, so you can read them directly in your messaging app.
-- A configuration wizard is also included, allowing all settings to be made very easily.
-- Running moodle-dl again will only download files that have not been downloaded yet. Do not miss any files, if files are deleted online, they are still available offline.
-- It is possible to download Moodle courses you are enrolled in, as well as courses that are publicly visible to you.
+- 下载课程文件、作业、作业提交、Book、日历事件、论坛、Workshop、Lesson、Quiz、描述内容等。
+- 处理外部链接和外部文件，例如 OpenCast、YouTube、Sciebo、OwnCloud、Kaltura、Helixmedia、Google Drive 等。
+- 支持增量下载：再次运行时只下载新增或变更内容。
+- 支持通知：Telegram、Discord、XMPP、邮件等。
+- 支持配置向导，初始化和后续配置都可以通过 CLI 完成。
+- 支持下载你已选课的课程，以及你可见的公开课程。
 
-Discussions about the development take place mainly on [GitHub](https://github.com/C0D3D3V/Moodle-DL/issues), but also on [Discord](https://discord.gg/HNg7CsqEnZ).
+开发讨论主要在 GitHub Issues：<https://github.com/C0D3D3V/Moodle-DL/issues>
 
-## 🚀 Setup
+## 安装
 
-> **Note**: This is a modified version with Chinese localization and optimized download logic. Install from source instead of PyPI.
+> 注意：这是一个带中文本地化和行为调整的源码分支，建议直接从源码安装，不要依赖 PyPI。
 
-### Install from Source
+### 环境要求
 
-1. Install [Python](https://www.python.org/) >=3.7
-2. Clone this repository:
-   ```bash
-   git clone <repository-url>
-   cd Moodle-DL
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -e .
-   ```
-   <sup>(This installs the package in editable mode, allowing you to use your local modifications)</sup>
-4. **[Windows only]**
-<details>
-<summary markdown="span">If step 3 failed, you may need to do additional steps. Click here to see the additional Instructions</summary>
+- Python `>= 3.7`
+- 建议优先使用你准备运行 `moodle-dl` 的那个 Python 解释器来安装，例如 `python3 -m pip ...`
 
+### 从源码安装
 
-You may need to install [Visual C++ compiler for Python](https://wiki.python.org/moin/WindowsCompilers#Microsoft_Visual_C.2B-.2B-_14.2_standalone:_Build_Tools_for_Visual_Studio_2019_.28x86.2C_x64.2C_ARM.2C_ARM64.29) to build all the dependencies successfully:
+```bash
+git clone <repository-url>
+cd Moodle-DL
+python3 -m pip install -e .
+```
 
-  - Download and Install Microsoft [Build Tools for Visual Studio 2019 from here](https://aka.ms/vs/16/release/vs_buildtools.exe)
-  - In Build tools, install C++ build tools and ensure the latest versions of MSVCv142 - VS 2019 C++ x64/x86 build tools and Windows 10 SDK are checked.
-  - In some very edge cases, you may also need [Visual C++ 14.0 Redistribution Packages](https://aka.ms/vs/17/release/vc_redist.x64.exe)
-</details>
+这里使用的是 editable install。优点是：
+- 你 `git pull` 后通常不需要重新安装。
+- 本地代码修改会直接生效。
 
-If you run the program on **Windows**, please use [Powershell or CMD](https://www.isunshare.com/windows-10/5-ways-to-open-windows-powershell-in-windows-10.html). Please do not use a mintty like MINGW or similar.
+### 更稳的运行方式
 
-5. Run `moodle-dl --help` to see all available options.
+有些机器即使执行了 `pip install -e .`，也可能因为 `PATH`、`conda`、`venv` 或用户脚本目录配置问题，导致找不到 `moodle-dl` 命令。
 
-### Key Modifications in This Fork
+这个仓库自带可执行脚本 `moodle-dl`，所以最稳的方式是直接在项目目录里运行：
 
-- **Complete Chinese localization**: All user interfaces, configuration wizards, and download messages are in Chinese
-- **Improved navigation**: Added back/forward navigation in the configuration wizard
-- **Better UX**: Different checkbox symbols (✅/✗) for whitelist vs blacklist modes
-- **Optimized download logic**:
-  - yt-dlp 仅在需要浏览器 cookies 的嵌入式视频（如 kalvidres、helixmedia、LTI）上启用，其余内容走轻量下载路径
-  - Only creates shortcuts for HTML pages (YouTube, Tumblr, etc.) instead of downloading page source
-  - Downloads actual files (PDFs, videos, ZIP files) when linked externally
+```bash
+./moodle-dl --help
+```
 
- 
+如果你想完全绕开 PATH，也可以这样运行：
 
-### Usage
-Moodle-dl uses the Moodle mobile API. If your Moodle does not allow access via [the Moodle app](https://download.moodle.org/mobile/), Moodle-dl will not be able to connect to your Moodle.
+```bash
+python3 -m moodle_dl.main --help
+```
 
-If you don't want moodle-dl to use the current working directory, then you should set the `--path` option on all commands.
+如果你确认已经安装成功但命令仍然找不到，请检查：
 
-- `moodle-dl --init`
-    - Create an initial configuration. A CLI configuration wizard will lead you through the initial configuration.
-    - If you have to log in with Single Sign On (SSO, something like Shibboleth or OAuth2), you can set the option `--sso` additionally.
-    - If at any point in time, the saved token gets rejected by Moodle use `moodle-dl --new-token` instead
-    - To automate the login you can use the additional options `--username` and `--password` or `--token`.
+```bash
+which python3
+python3 -m pip --version
+python3 -m pip show moodle-dl
+python3 -c "import shutil; print(shutil.which('moodle-dl'))"
+```
 
-- `moodle-dl`
-    - After configuring moodle-dl, this command is sufficient to download all files from your Moodle account and notify you about the result.
+常见原因通常是：
+- `pip` 安装到了另一个 Python 环境
+- 脚本被安装到了 `~/.local/bin` 或某个虚拟环境的 `bin/`，但不在 `PATH` 里
+- 你在当前目录里直接输入 `moodle-dl`，但 shell 默认不会搜索当前目录，这种情况应该写成 `./moodle-dl`
 
-- `moodle-dl --config`
-    - A CLI configuration wizard will lead you through the additional configuration of moodle-dl.
-    - You can start the wizard after the initial configuration if you want to change any of the settings.
-    - The wizard allows you to change nearly all settings of moodle-dl
-      - select the courses that will be downloaded
-      - rename each course individually
-      - decide if subfolders should be created inside a course folder
-      - set whether submissions (files uploaded to assignments by yourself or a teacher), descriptions, links inside descriptions, databases, quizzes, lessons, workshops and forum discussions should be downloaded
-      - set if external files should be downloaded (files like Youtube videos)
-      - set if files on moodle that require a cookie should be downloaded
-      - to add extra courses to your download list which you can see but you are not enrolled in, check out [this wiki entry](https://github.com/C0D3D3V/Moodle-DL/wiki/Download-public-courses)
-    - Not all moodle-dl settings are available in the CLI configuration wizard for configuration, see [the wiki](https://github.com/C0D3D3V/Moodle-DL/wiki/Example-Config.json-and-Options) for more available options.
+### Windows 说明
 
-By default a private token is stored in the initial configuration, this is only needed for special Moodle modules that cannot be queried via the Moodle API. If no such module is available in your Moodle you are welcome to delete this token.
+如果你在 Windows 上运行，建议使用 `PowerShell` 或 `CMD`，不要使用 `mintty`、`MINGW` 等终端。
 
-If you need help configuring telegram notifications [click here](https://github.com/C0D3D3V/Moodle-DL/wiki/Telegram-Notification)
+如果依赖编译失败，可能需要安装 Visual C++ Build Tools。
 
+## 快速开始
 
+### 初始化配置
 
-### Notes
-- Use a separate E-Mail/XMPP - Account for sending out the notifications, as its login data is saved in cleartext.
-- The Login-Information for your Moodle-Account is secure, it isn't saved in any way. Only a Login-Token is saved.
-- Your Moodle token is stored in the configuration file (`config.json`). Be careful that no unauthorized person reads this file, especially the token must not be given to an unauthorized person, this can cause a lot of trouble.
-- The `privatetoken` can be used to create a cookie for your Moodle account. A Cookie is what is used to tell Moodle that you are logged in. The `cookie.txt` always keeps a valid cookie for you, take great care of this file, if it falls into the wrong hands someone can take over your entire Moodle account. This feature is only important for Moodles with plugins installed that are not supported by the Moodle app. If you do not want to generate cookies, remove the `privatetoken` from the `config.json`.
+普通登录：
 
+```bash
+./moodle-dl --init
+```
 
-### Alternative downloader
+如果学校使用 SSO：
 
-[webeep-sync](https://github.com/toto04/webeep-sync#english-version)
-- Written with node.js
-- Has a nice GUI that allows you to sync your courses easily
-- Is only built for the moodle of the Polytechnic University of Milan 
+```bash
+./moodle-dl --init --sso
+```
 
-[syncMyMoodle](https://github.com/Romern/syncMyMoodle)
-- Has pretty much the same goals as moodle-dl
-- Is only built for the moodle of the Rhenish-Westphalian Technical University (RWTH) Aachen
+如果要启用有头模式进行 SSO 调试：
 
-[edu-sync](https://github.com/mkroening/edu-sync)
-- Is built in Rust and therefore quite fast
+```bash
+MOODLE_DL_HEADFUL=1 ./moodle-dl --init --sso
+```
 
-[tum-moodle-downloader](https://github.com/omareldeeb/tum-moodle-downloader)
-- Uses a web scraper instead of the moodle mobile API
-- It has some interesting commands implemented to download only specific content
-- Is only built for the moodle of the Munich University of Technology (TUM)
+如果你更喜欢 `python -m` 方式，也可以写成：
 
-[moodle-buddy](https://github.com/marcelreppi/moodle-buddy)
-- Plugin for Firefox and Chrome
-- Mass file download and notification functionality for the Moodle
+```bash
+MOODLE_DL_HEADFUL=1 python3 -m moodle_dl.main --init --sso
+```
 
-[moodle-downloader](https://github.com/harsilspatel/moodle-downloader)
-- A chrome extension for batch downloading Moodle resources
+### 开始下载
 
-[Orga Bot](https://github.com/YoshiiPlayzz/orga_bot)
-- Utilizes moodle-dl to send moodle files via Discord
+```bash
+./moodle-dl
+```
 
-[discord-moodle-bot](https://github.com/tjarbo/discord-moodle-bot)
-- Discord Notification Service for your moodle courses
+### 查看帮助
 
-If someone wants to link another downloader here, which offers e.g. functions that moodle-dl does not offer, feel free to open an issue. 
+```bash
+./moodle-dl --help
+```
 
+## 常用命令
 
----
+- 初始化配置：
 
+```bash
+./moodle-dl --init
+```
 
+- 使用 SSO 初始化配置：
 
+```bash
+./moodle-dl --init --sso
+```
 
-## 🏆 Contributing
-You would like to become a maintainer of this project? Then contact me!
+- 下载课程内容：
 
-Do you have a great new feature idea or just want to be part of the project? Awesome! Every contribution is welcome! If you want to find out more about how to contribute to the project, please check out our [CONTRIBUTING.md](CONTRIBUTING.md)!
+```bash
+./moodle-dl
+```
 
+- 打开配置向导：
 
-## ⚖️ License
-This project is licensed under the GPL-3.0 License - see the [LICENSE](LICENSE) file for details
+```bash
+./moodle-dl --config
+```
+
+- Token 失效后重新获取：
+
+```bash
+./moodle-dl --new-token
+```
+
+- 使用 SSO 重新获取 Token：
+
+```bash
+./moodle-dl --new-token --sso
+```
+
+- 刷新浏览器 Cookies：
+
+```bash
+./moodle-dl --refresh-cookies
+```
+
+- 重试失败下载：
+
+```bash
+./moodle-dl --retry-failed
+```
+
+- 指定下载目录：
+
+```bash
+./moodle-dl --path /your/download/path
+```
+
+- 重置已下载文件状态：
+
+```bash
+./moodle-dl --reset-downloaded-files
+```
+
+中文别名：
+
+```bash
+./moodle-dl --重置下载文件
+```
+
+## 使用说明
+
+`moodle-dl` 主要依赖 Moodle Mobile API。如果你的 Moodle 站点禁用了官方 Moodle App 所使用的接口，那么本工具将无法正常连接。
+
+如果你不希望把当前工作目录作为下载目录，请在命令里显式传入 `--path`。
+
+### `--init`
+
+- 创建初始配置。
+- CLI 配置向导会引导你完成首次设置。
+- 如果学校使用 SSO，可以额外加上 `--sso`。
+- 如果后续保存的 token 被 Moodle 拒绝，可使用 `--new-token` 重新获取。
+- 如需自动化登录，也可以额外提供 `--username`、`--password` 或 `--token`。
+
+### `moodle-dl`
+
+- 完成配置后，通常执行这一条命令就足够下载所有课程内容并输出结果。
+
+### `--config`
+
+- 打开 CLI 配置向导。
+- 可修改几乎所有常用设置，例如：
+  - 选择要下载的课程
+  - 重命名课程目录
+  - 是否为课程创建子目录结构
+  - 是否下载 submissions、descriptions、description 内链接、database、quiz、lesson、workshop、forum 等
+  - 是否下载外部文件
+  - 是否下载依赖 cookies 的内容
+
+并不是所有高级配置都在向导中可见，更多细项可直接查看配置文件。
+
+## 这个分支的主要改动
+
+相较于上游版本，这个分支包含以下定制：
+
+- 完整中文本地化：界面、向导、日志和提示信息都尽量中文化。
+- 更适合实际使用的交互体验：配置向导支持更顺畅的前进/后退导航。
+- 下载逻辑调整：
+  - `yt-dlp` 只在确实需要浏览器 cookies 的嵌入式视频场景启用，例如 `kalvidres`、`helixmedia`、部分 `LTI`。
+  - 普通网页链接优先生成快捷方式，而不是盲目保存整页源码。
+  - 对真实外部文件优先尝试下载文件本体。
+- 更强的 SSO / cookies / 数据库状态跟踪支持。
+
+## 常见问题
+
+### 1. `moodle-dl: command not found`
+
+优先使用下面任意一种：
+
+```bash
+./moodle-dl --help
+```
+
+或：
+
+```bash
+python3 -m moodle_dl.main --help
+```
+
+如果你坚持使用全局命令，再去排查 `PATH` 和安装环境。
+
+### 2. SSO 登录失败
+
+可以先用有头模式：
+
+```bash
+MOODLE_DL_HEADFUL=1 ./moodle-dl --init --sso
+```
+
+如果浏览器里登录了多个 Microsoft / Google / 学校账号，建议：
+- 手动先在浏览器里选好正确账号
+- 或者使用单独浏览器 profile
+
+### 3. Cookies 过期
+
+重新运行：
+
+```bash
+./moodle-dl --refresh-cookies
+```
+
+或者重新初始化：
+
+```bash
+./moodle-dl --init --sso
+```
+
+### 4. Git 更新后要不要重新安装
+
+如果你是通过：
+
+```bash
+python3 -m pip install -e .
+```
+
+安装的，那么 `git pull` 之后通常不需要重新安装。
+
+## 配置与日志文件
+
+常见文件位置：
+
+- 配置：`~/.moodle-dl/config.json`
+- 日志：`~/.moodle-dl/MoodleDL.log`
+- 状态数据库：`~/.moodle-dl/moodle_state.db`
+
+某些自定义运行目录下，也可能在当前目录生成对应的 `config.json`、`MoodleDL.log`、`moodle_state.db`。
+
+## 安全说明
+
+- Moodle 账号密码本身不会被明文长期保存在标准配置流程里，但 token、cookies、通知账号等数据依然是敏感信息。
+- `config.json` 中保存的 token 属于高敏感凭据，不应泄露。
+- 如果启用了 cookie 相关功能，cookies 文件或数据库中的会话信息同样属于高敏感数据。
+- 邮件 / XMPP 等通知服务的登录信息可能以明文形式保存，建议使用专门的通知账号，而不是主账号。
+
+## 替代下载器
+
+以下项目和 `moodle-dl` 目标相近，但各自面向的学校、技术路线和功能重点不同：
+
+- [webeep-sync](https://github.com/toto04/webeep-sync#english-version)
+  - 使用 Node.js 编写
+  - 提供 GUI
+  - 面向米兰理工大学 Moodle
+
+- [syncMyMoodle](https://github.com/Romern/syncMyMoodle)
+  - 与 `moodle-dl` 目标接近
+  - 面向亚琛工业大学 Moodle
+
+- [edu-sync](https://github.com/mkroening/edu-sync)
+  - 使用 Rust 编写
+  - 性能较好
+
+- [tum-moodle-downloader](https://github.com/omareldeeb/tum-moodle-downloader)
+  - 偏向网页抓取而不是 Moodle Mobile API
+  - 提供一些更细粒度的下载命令
+  - 面向慕尼黑工业大学 Moodle
+
+- [moodle-buddy](https://github.com/marcelreppi/moodle-buddy)
+  - Firefox / Chrome 插件
+  - 支持批量下载和通知
+
+- [moodle-downloader](https://github.com/harsilspatel/moodle-downloader)
+  - Chrome 扩展
+  - 批量下载 Moodle 资源
+
+- [Orga Bot](https://github.com/YoshiiPlayzz/orga_bot)
+  - 基于 `moodle-dl`
+  - 用 Discord 发送 Moodle 文件
+
+- [discord-moodle-bot](https://github.com/tjarbo/discord-moodle-bot)
+  - 为 Moodle 课程提供 Discord 通知能力
+
+## 贡献
+
+如果你希望参与维护或提交改动，请查看 `CONTRIBUTING.md`。
+
+## 许可证
+
+本项目使用 GPL-3.0 许可证，详见 `LICENSE`。
