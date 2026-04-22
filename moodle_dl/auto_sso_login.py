@@ -21,6 +21,7 @@ import glob
 import logging
 import os
 import re
+import urllib.parse
 from typing import Tuple, List, Dict, Optional
 
 from moodle_dl.utils import Log
@@ -774,6 +775,9 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
     for indicator in error_indicators:
         if indicator in page_content:
             logging.warning(f'⚠️  页面中检测到错误指示: {indicator}')
+            if _is_headless_moodle_auth_replay_failure(current_url, page_content, headless):
+                logging.info('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复')
+                logging.info('   建议改用有头模式重新初始化：MOODLE_DL_HEADFUL=1 moodle-dl --init --sso')
             return -1
 
     # 检查成功标志
@@ -784,6 +788,36 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
     # 状态未确定
     logging.debug('⚠️  无法确定登录状态')
     return 0
+
+
+def _is_headless_moodle_auth_replay_failure(current_url: str, page_content: str, headless: bool) -> bool:
+    """
+    判断是否属于“无头模式下复用现有 SSO 状态失败”的典型场景。
+
+    特征：
+    - 当前是无头模式
+    - 最终页面已经回到 Moodle 域
+    - 页面里出现 401/403/Unauthorized 等授权失败标志
+    - 不是停留在外部 SSO 提供商页面
+    """
+    if not headless or not current_url:
+        return False
+
+    parsed = urllib.parse.urlparse(current_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.lower()
+
+    if any(provider in host for provider in ('login.microsoftonline.com', 'login.live.com', 'accounts.google.com')):
+        return False
+
+    if not host:
+        return False
+
+    auth_error_indicators = ('401', '403', 'Unauthorized')
+    if not any(indicator in page_content for indicator in auth_error_indicators):
+        return False
+
+    return path.startswith('/my/') or '/my/' in path or '/course/' in path or path == '/'
 
 
 async def _save_session_cookies(context, auth_manager) -> bool:

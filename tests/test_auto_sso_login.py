@@ -313,6 +313,50 @@ class TestCheckFinalLoginStatus(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, -1)  # Failed
 
+    async def test_headless_moodle_401_page_is_treated_as_failure(self):
+        """测试无头模式下回到 Moodle 页面但出现 401 时返回失败"""
+        page_content = '<html><body>401 Unauthorized</body></html>'
+        current_url = 'https://keats.kcl.ac.uk/my/'
+
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=False, headless=True)
+
+        self.assertEqual(result, -1)
+
+
+class TestHeadlessReplayFailureDetection(unittest.TestCase):
+    """_is_headless_moodle_auth_replay_failure 测试"""
+
+    def setUp(self):
+        from moodle_dl import auto_sso_login
+        self.module = auto_sso_login
+
+    def test_detect_headless_moodle_401_failure(self):
+        self.assertTrue(
+            self.module._is_headless_moodle_auth_replay_failure(
+                'https://keats.kcl.ac.uk/my/',
+                '<html><body>401 Unauthorized</body></html>',
+                True,
+            )
+        )
+
+    def test_do_not_detect_in_headful_mode(self):
+        self.assertFalse(
+            self.module._is_headless_moodle_auth_replay_failure(
+                'https://keats.kcl.ac.uk/my/',
+                '<html><body>401 Unauthorized</body></html>',
+                False,
+            )
+        )
+
+    def test_do_not_detect_external_sso_page(self):
+        self.assertFalse(
+            self.module._is_headless_moodle_auth_replay_failure(
+                'https://login.microsoftonline.com/emckclac.onmicrosoft.com/oauth2/authorize',
+                '<html><body>401 Unauthorized</body></html>',
+                True,
+            )
+        )
+
 
 class TestCheckLoginErrors(unittest.IsolatedAsyncioTestCase):
     """_check_login_errors 异步函数测试"""

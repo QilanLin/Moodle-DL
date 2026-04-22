@@ -218,9 +218,13 @@ class ConfigHelper:
             # 这是一个轻量级操作，只在首次运行时会创建表
             StateRecorder(self, opts)
         except Exception as e:
-            import logging
-            logging.warning(f'⚠️  数据库初始化过程中出现警告: {e}')
-            # 不抛出异常，继续进行，因为表可能已经存在
+            raise RuntimeError(
+                '❌ 数据库初始化失败，程序已中止。\n'
+                f'数据库文件: {self._db_file}\n'
+                f'原因: {e}\n'
+                '这不是浏览器类型问题，而是 SQLite 当前无法在该目录完成初始化。\n'
+                '请检查目标目录/卷当前是否接受 SQLite 写入；如需继续排查，可先确认普通文件写入和 sqlite3 建表是否都正常。'
+            ) from e
         
         from moodle_dl.auth_session_manager import AuthSessionManager
         self._auth_manager = AuthSessionManager(self._db_file)

@@ -11,6 +11,34 @@ from moodle_dl.types import Course, File, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
 
 
+def _configure_sqlite_connection(conn: sqlite3.Connection) -> str:
+    """
+    配置 SQLite 连接的 journal 模式。
+
+    某些卷上默认的 DELETE journal 会触发:
+      sqlite3.OperationalError: attempt to write a readonly database
+
+    策略：
+    1. 优先 WAL（持久、正常模式）
+    2. WAL 不可用时退回 MEMORY（只对当前连接生效，但可完成初始化）
+    """
+    try:
+        row = conn.execute('PRAGMA journal_mode=WAL;').fetchone()
+        mode = (row[0] if row else '').lower()
+        if mode == 'wal':
+            return 'wal'
+    except sqlite3.OperationalError as exc:
+        logging.debug(f'切换 SQLite WAL 模式失败: {exc}')
+
+    row = conn.execute('PRAGMA journal_mode=MEMORY;').fetchone()
+    mode = (row[0] if row else '').lower()
+    if mode == 'memory':
+        logging.warning('⚠️  SQLite WAL 模式不可用，已回退到 MEMORY journal 模式')
+        return 'memory'
+
+    return mode or 'unknown'
+
+
 class StateRecorder:
     """
     Saves the state and provides utilities to detect changes in the current
@@ -76,7 +104,12 @@ class StateRecorder:
 
         try:
             conn = sqlite3.connect(self.db_file)
+            journal_mode = _configure_sqlite_connection(conn)
             c = conn.cursor()
+            if getattr(opts, 'init', False):
+                logging.info('🗃️ SQLite journal_mode: %s', journal_mode.upper())
+            else:
+                logging.debug('SQLite journal_mode: %s', journal_mode)
 
             # 检查数据库版本
             current_version = c.execute('pragma user_version').fetchone()[0]

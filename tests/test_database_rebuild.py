@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from moodle_dl.config import ConfigHelper
-from moodle_dl.database import StateRecorder
+from moodle_dl.database import StateRecorder, _configure_sqlite_connection
 from moodle_dl.types import MoodleDlOpts
 
 
@@ -69,6 +69,30 @@ class TestStateRecorderRebuild(unittest.TestCase):
         version = cursor.execute('PRAGMA user_version;').fetchone()[0]
         self.assertEqual(version, 9)
         conn.close()
+
+
+class TestSqliteJournalModeConfiguration(unittest.TestCase):
+    def test_prefers_wal_mode(self):
+        conn = MagicMock()
+        conn.execute.return_value.fetchone.return_value = ('wal',)
+
+        mode = _configure_sqlite_connection(conn)
+
+        self.assertEqual(mode, 'wal')
+        conn.execute.assert_called_once_with('PRAGMA journal_mode=WAL;')
+
+    def test_falls_back_to_memory_when_wal_not_available(self):
+        conn = MagicMock()
+        conn.execute.side_effect = [
+            sqlite3.OperationalError('attempt to write a readonly database'),
+            MagicMock(fetchone=MagicMock(return_value=('memory',))),
+        ]
+
+        mode = _configure_sqlite_connection(conn)
+
+        self.assertEqual(mode, 'memory')
+        self.assertEqual(conn.execute.call_args_list[0].args[0], 'PRAGMA journal_mode=WAL;')
+        self.assertEqual(conn.execute.call_args_list[1].args[0], 'PRAGMA journal_mode=MEMORY;')
 
 
 if __name__ == '__main__':
