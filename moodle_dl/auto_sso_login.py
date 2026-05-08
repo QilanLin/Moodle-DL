@@ -777,7 +777,8 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
             logging.warning(f'⚠️  页面中检测到错误指示: {indicator}')
             if _is_headless_moodle_auth_replay_failure(current_url, page_content, headless):
                 logging.info('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复')
-                logging.info('   建议改用有头模式重新初始化：MOODLE_DL_HEADFUL=1 moodle-dl --init --sso')
+                logging.info('   建议改用默认有头模式重新初始化：moodle-dl --init --sso')
+                logging.info('   如果设置了 MOODLE_DL_HEADFUL=0，请移除或改为 MOODLE_DL_HEADFUL=1')
             return -1
 
     # 检查成功标志

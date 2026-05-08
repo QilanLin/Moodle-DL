@@ -94,16 +94,22 @@ python3 -c "import shutil; print(shutil.which('moodle-dl'))"
 ./moodle-dl --init --sso
 ```
 
-如果要启用有头模式进行 SSO 调试：
+SSO 默认使用有头模式，便于完成账号选择、MFA 和浏览器 cookie 恢复：
 
 ```bash
-MOODLE_DL_HEADFUL=1 ./moodle-dl --init --sso
+./moodle-dl --init --sso
 ```
 
 如果你更喜欢 `python -m` 方式，也可以写成：
 
 ```bash
-MOODLE_DL_HEADFUL=1 python3 -m moodle_dl.main --init --sso
+python3 -m moodle_dl.main --init --sso
+```
+
+如果确实需要无头模式，可以显式设置：
+
+```bash
+MOODLE_DL_HEADFUL=0 ./moodle-dl --init --sso
 ```
 
 ### 开始下载
@@ -249,10 +255,10 @@ python3 -m moodle_dl.main --help
 
 ### 2. SSO 登录失败
 
-可以先用有头模式：
+默认已经使用有头模式：
 
 ```bash
-MOODLE_DL_HEADFUL=1 ./moodle-dl --init --sso
+./moodle-dl --init --sso
 ```
 
 如果浏览器里登录了多个 Microsoft / Google / 学校账号，建议：

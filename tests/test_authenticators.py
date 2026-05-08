@@ -346,6 +346,32 @@ class TestSSOAuthenticator(unittest.TestCase):
         self.assertEqual(result.private_token, None)
         self.assertEqual(result.extra_properties['preferred_browser'], 'firefox')
 
+    def test_sso_auto_login_defaults_to_headful(self):
+        """测试 SSO 自动登录默认使用有头模式"""
+        authenticator = SSOAuthenticator(self.config, self.opts, self.moodle_url)
+        authenticator.preferred_browser = 'firefox'
+        self.config.get_auth_manager.return_value = Mock()
+
+        with patch.dict('os.environ', {}, clear=True):
+            with patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=True) as mock_auto_login:
+                self.assertTrue(authenticator._perform_sso_auto_login())
+
+        call_kwargs = mock_auto_login.call_args.kwargs
+        self.assertFalse(call_kwargs['headless'])
+
+    def test_sso_auto_login_can_be_forced_headless(self):
+        """测试设置 MOODLE_DL_HEADFUL=0 时使用无头模式"""
+        authenticator = SSOAuthenticator(self.config, self.opts, self.moodle_url)
+        authenticator.preferred_browser = 'firefox'
+        self.config.get_auth_manager.return_value = Mock()
+
+        with patch.dict('os.environ', {'MOODLE_DL_HEADFUL': '0'}, clear=True):
+            with patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=True) as mock_auto_login:
+                self.assertTrue(authenticator._perform_sso_auto_login())
+
+        call_kwargs = mock_auto_login.call_args.kwargs
+        self.assertTrue(call_kwargs['headless'])
+
 
 class TestAuthenticatorIntegration(unittest.TestCase):
     """集成测试 - 测试多个组件的协作"""
