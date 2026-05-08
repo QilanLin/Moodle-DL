@@ -648,8 +648,9 @@ class AuthSessionManager:
                 'user_id': row[6],
                 'ip_address': row[7],
                 'user_agent': row[8],
-                'timestamp': row[9],
-                'details': json.loads(row[10]) if row[10] else None
+                'context_id': row[9],
+                'timestamp': row[10],
+                'details': json.loads(row[11]) if row[11] else None
             })
 
         return logs
