@@ -762,15 +762,17 @@ class ConfigHelper:
                         #   （表现为你看到的 “skipping cookie file entry due to invalid expires at -1”）
                         # - 为了兼容，它们期望会话 cookie 用 0 或空字符串
                         expires_raw = cookie.get('expires', 0)
-                        if expires_raw is None or expires_raw <= 0:
+                        try:
+                            expires_int = int(expires_raw) if expires_raw is not None else 0
+                        except (TypeError, ValueError):
+                            # 异常情况安全回退为 0（会话）
+                            expires_int = 0
+
+                        if expires_int <= 0:
                             # 统一映射为 0，表示「会话 cookie」，避免被 yt-dlp 跳过
                             expires = '0'
                         else:
-                            try:
-                                expires = str(int(expires_raw))
-                            except (TypeError, ValueError):
-                                # 异常情况安全回退为 0（会话）
-                                expires = '0'
+                            expires = str(expires_int)
 
                         name = cookie.get('name', '')
                         value = cookie.get('value', '')

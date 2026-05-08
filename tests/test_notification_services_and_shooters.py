@@ -522,9 +522,10 @@ class TestConsoleService(unittest.TestCase):
         task.file.content_fileurl = None
         task.status.get_error_text.return_value = 'not found'
 
-        with patch('moodle_dl.notifications.console.console_service.Log') as log:
-            with patch('builtins.print'):
-                ConsoleService(MagicMock()).notify_about_failed_downloads([task])
+        with patch('moodle_dl.notifications.console.console_service.PT.restricted_filenames', False):
+            with patch('moodle_dl.notifications.console.console_service.Log') as log:
+                with patch('builtins.print'):
+                    ConsoleService(MagicMock()).notify_about_failed_downloads([task])
 
         log.cyan.assert_called_once_with('raw\u29f8name\uff1f.pdf')
         log.info.assert_any_call('  \u76ee\u6807: (\u672a\u77e5\u8def\u5f84)')
