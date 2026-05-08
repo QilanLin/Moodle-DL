@@ -9,11 +9,16 @@ from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
 from moodle_dl.notifications.discord.discord_service import DiscordService
 from moodle_dl.notifications.mail.mail_shooter import MailShooter
 from moodle_dl.notifications.mail.mail_service import MailService
+from moodle_dl.notifications import get_all_notify_services, get_remote_notify_services
+from moodle_dl.notifications import REMOTE_SERVICES
+from moodle_dl.notifications.console.console_service import ConsoleService
+from moodle_dl.notifications.notification_service import NotificationService
 from moodle_dl.notifications.ntfy.ntfy_shooter import NtfyShooter
 from moodle_dl.notifications.ntfy.ntfy_service import NtfyService
 from moodle_dl.notifications.telegram.telegram_shooter import RequestRejectedError, TelegramShooter
 from moodle_dl.notifications.telegram.telegram_service import TelegramService
 from moodle_dl.notifications.xmpp.xmpp_formatter import XmppFormatter
+from moodle_dl.notifications.xmpp.xmpp_shooter import XmppShooter
 from moodle_dl.notifications.xmpp.xmpp_service import XmppService
 from moodle_dl.types import Course, MoodleURL
 
@@ -362,6 +367,60 @@ class TestShooters(unittest.TestCase):
         self.assertEqual(payload['actions'][0]['url'], 'https://moodle.example/course')
         response.raise_for_status.assert_called_once()
 
+    def test_xmpp_shooter_connects_authenticates_and_sends_message(self):
+        sender_jid = MagicMock()
+        sender_jid.getDomain.return_value = 'example.com'
+        sender_jid.getNode.return_value = 'bot'
+        sender_jid.getResource.return_value = 'resource'
+        recipient_jid = MagicMock()
+        connection = MagicMock()
+        connection.Bind.session = 1
+        message = MagicMock()
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_shooter.check_verbose', return_value=True):
+            with patch('moodle_dl.notifications.xmpp.xmpp_shooter.xmpp') as xmpp_module:
+                xmpp_module.protocol.JID.side_effect = [sender_jid, recipient_jid]
+                xmpp_module.Client.return_value = connection
+                xmpp_module.protocol.Message.return_value = message
+
+                shooter = XmppShooter('bot@example.com/resource', 'secret', 'user@example.com')
+                shooter.send('hello')
+
+        xmpp_module.Client.assert_called_once_with(server='example.com', debug=True)
+        connection.connect.assert_called_once_with()
+        connection.auth.assert_called_once_with(user='bot', password='secret', resource='resource')
+        xmpp_module.protocol.Message.assert_called_once_with(to=recipient_jid, body='hello')
+        connection.send.assert_called_once_with(message)
+        self.assertTrue(shooter.is_connected)
+
+    def test_xmpp_shooter_reuses_existing_connection(self):
+        connection = MagicMock()
+        connection.Bind.session = 1
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_shooter.xmpp') as xmpp_module:
+            xmpp_module.protocol.JID.return_value = MagicMock()
+            xmpp_module.Client.return_value = connection
+            shooter = XmppShooter('bot@example.com/resource', 'secret', 'user@example.com')
+            shooter.send('first')
+            shooter.send('second')
+
+        connection.connect.assert_called_once_with()
+        self.assertEqual(connection.send.call_count, 2)
+
+    def test_xmpp_shooter_raises_when_session_is_not_bound(self):
+        connection = MagicMock()
+        connection.Bind.session = 0
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_shooter.xmpp') as xmpp_module:
+            xmpp_module.protocol.JID.return_value = MagicMock()
+            xmpp_module.Client.return_value = connection
+            shooter = XmppShooter('bot@example.com/resource', 'secret', 'user@example.com')
+
+            with self.assertRaisesRegex(ConnectionError, 'Session could not be opend'):
+                shooter.send('hello')
+
+        connection.send.assert_not_called()
+
     def test_xmpp_formatter_uses_plain_text_bold_and_message_limit(self):
         messages = []
 
@@ -391,6 +450,114 @@ class TestShooters(unittest.TestCase):
         self.assertEqual(sent_message['Subject'], 'Subject')
         self.assertEqual(sent_message['From'], 'from@example.com')
         self.assertEqual(sent_message['To'], 'to@example.com')
+
+
+class TestConsoleService(unittest.TestCase):
+    def test_notify_changes_prints_each_file_state(self):
+        modified = MagicMock(saved_to='modified.pdf', new_file=None, modified=True, moved=False, deleted=False)
+        moved = MagicMock(
+            saved_to='old.pdf',
+            new_file=MagicMock(saved_to='new.pdf'),
+            modified=False,
+            moved=True,
+            deleted=False,
+        )
+        deleted = MagicMock(saved_to='deleted.pdf', new_file=None, modified=False, moved=False, deleted=True)
+        added = MagicMock(saved_to='added.pdf', new_file=None, modified=False, moved=False, deleted=False)
+        course = MagicMock(fullname='Course', files=[modified, moved, deleted, added])
+        empty_course = MagicMock(fullname='Empty', files=[])
+
+        with patch('moodle_dl.notifications.console.console_service.Log') as log:
+            log.cyan_str.return_value = 'cyan'
+            log.green_str.return_value = 'green'
+            log.magenta_str.return_value = 'magenta'
+            with patch('builtins.print') as print_mock:
+                ConsoleService(MagicMock()).notify_about_changes_in_moodle([empty_course, course])
+
+        log.success.assert_called_once()
+        self.assertIn('4', log.success.call_args.args[0])
+        log.blue.assert_called_once_with('Course')
+        log.yellow.assert_called_once_with('\u2260\tmodified.pdf')
+        log.cyan_str.assert_called_once_with('<->\told.pdf')
+        log.green_str.assert_any_call(' ==> new.pdf')
+        log.green_str.assert_any_call('+\tadded.pdf')
+        log.magenta_str.assert_called_once_with('-\tdeleted.pdf')
+        print_mock.assert_any_call('cyangreen')
+        print_mock.assert_any_call('magenta')
+        print_mock.assert_any_call(log.green_str.return_value)
+
+    def test_notify_error_writes_error_message(self):
+        with patch('moodle_dl.notifications.console.console_service.Log') as log:
+            ConsoleService(MagicMock()).notify_about_error('traceback')
+
+        log.error.assert_called_once()
+        self.assertIn('traceback', log.error.call_args.args[0])
+
+    def test_notify_failed_downloads_prints_task_details_and_truncates_long_url(self):
+        task = MagicMock()
+        task.filename = 'lecture.pdf'
+        task.status.get_error_text.return_value = 'timeout'
+        task.file.saved_to = '/downloads/lecture.pdf'
+        task.file.content_fileurl = 'https://example.com/' + ('a' * 130) + '/lecture.pdf'
+
+        with patch('moodle_dl.notifications.console.console_service.Log') as log:
+            with patch('builtins.print'):
+                ConsoleService(MagicMock()).notify_about_failed_downloads([task])
+
+        log.warning.assert_called_once()
+        log.cyan.assert_called_once_with('lecture.pdf')
+        log.error.assert_called_once_with('  \u9519\u8bef: timeout')
+        log.info.assert_any_call('  \u76ee\u6807: /downloads/lecture.pdf')
+        source_lines = [
+            call.args[0] for call in log.info.call_args_list if call.args[0].startswith('  \u6765\u6e90:')
+        ]
+        source_line = source_lines[0]
+        self.assertIn('...', source_line)
+        self.assertLess(len(source_line), 140)
+
+    def test_notify_failed_downloads_uses_fallbacks_for_partial_task(self):
+        task = MagicMock(spec=['file', 'status'])
+        task.file.content_filename = 'raw/name?.pdf'
+        task.file.saved_to = None
+        task.file.content_fileurl = None
+        task.status.get_error_text.return_value = 'not found'
+
+        with patch('moodle_dl.notifications.console.console_service.Log') as log:
+            with patch('builtins.print'):
+                ConsoleService(MagicMock()).notify_about_failed_downloads([task])
+
+        log.cyan.assert_called_once_with('raw\u29f8name\uff1f.pdf')
+        log.info.assert_any_call('  \u76ee\u6807: (\u672a\u77e5\u8def\u5f84)')
+        log.info.assert_any_call('  \u6765\u6e90: (\u672a\u77e5 URL)')
+
+
+class TestNotificationFactories(unittest.TestCase):
+    def test_notification_service_base_stores_config_when_implemented(self):
+        class ConcreteNotificationService(NotificationService):
+            def notify_about_changes_in_moodle(self, changes):
+                return None
+
+            def notify_about_error(self, error_description):
+                return None
+
+            def notify_about_failed_downloads(self, failed_downloads):
+                return None
+
+        config = MagicMock()
+        service = ConcreteNotificationService(config)
+
+        self.assertIs(service.config, config)
+
+    def test_get_notify_services_instantiates_expected_services(self):
+        config = MagicMock()
+
+        remote_services = get_remote_notify_services(config)
+        all_services = get_all_notify_services(config)
+
+        self.assertEqual([type(service) for service in remote_services], REMOTE_SERVICES)
+        self.assertIsInstance(all_services[0], ConsoleService)
+        self.assertEqual([type(service) for service in all_services[1:]], REMOTE_SERVICES)
+        self.assertTrue(all(service.config is config for service in all_services))
 
 
 if __name__ == '__main__':
