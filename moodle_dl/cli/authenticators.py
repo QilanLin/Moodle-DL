@@ -24,6 +24,38 @@ from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.utils import Log
 
 
+TRUE_ENV_VALUES = {'1', 'true', 'yes', 'y', 'on'}
+FALSE_ENV_VALUES = {'0', 'false', 'no', 'n', 'off'}
+
+
+def _read_bool_env(name: str) -> Optional[bool]:
+    value = os.getenv(name)
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    if normalized in TRUE_ENV_VALUES:
+        return True
+    if normalized in FALSE_ENV_VALUES:
+        return False
+
+    logging.warning('⚠️  环境变量 %s=%r 无法识别，将忽略', name, value)
+    return None
+
+
+def _should_use_headless_sso() -> bool:
+    """Return whether SSO auto login should use a headless Playwright browser."""
+    headless = _read_bool_env('MOODLE_DL_HEADLESS')
+    if headless is not None:
+        return headless
+
+    headful = _read_bool_env('MOODLE_DL_HEADFUL')
+    if headful is not None:
+        return not headful
+
+    return False
+
+
 # ==================== 异常定义 ====================
 
 class AuthenticationError(Exception):
@@ -729,20 +761,21 @@ class SSOAuthenticator(BaseAuthenticator):
         """
         try:
             logging.info('步骤 1：使用 SSO 自动登录获取 cookies...')
-            logging.info(f'   （从 {self.preferred_browser} 浏览器读取 SSO cookies，自动完成 Moodle 登录）')
-            logging.info('   💡 原理：只要 Microsoft/Google 的 SSO cookies 有效，完全自动化，无需手动操作')
+            logging.info(f'   （从 {self.preferred_browser} 浏览器读取 SSO cookies，并在 Playwright 中恢复 Moodle 登录状态）')
 
-            # 默认使用有头模式，便于完成 SSO 账号选择、MFA 和 cookie 恢复。
-            import os
-            use_headless = os.getenv('MOODLE_DL_HEADFUL', '1') not in ('1', 'true', 'True', 'TRUE')
+            use_headless = _should_use_headless_sso()
 
             if not use_headless:
                 logging.info('')
                 logging.info('🌐 已启用有头模式（Headful Mode）')
                 logging.info('   - 浏览器窗口将可见，你可以手动操作')
                 logging.info('   - 适用于多账号选择、验证码输入等场景')
-                logging.info('   - 如需无头模式，可设置 MOODLE_DL_HEADFUL=0')
+                logging.info('   - 如需无头模式，可设置 MOODLE_DL_HEADLESS=1（或兼容写法 MOODLE_DL_HEADFUL=0）')
                 logging.info('')
+            else:
+                logging.info('🌐 已启用无头模式（Headless Mode）')
+                logging.info('   - 不会显示浏览器窗口')
+                logging.info('   - 如遇账号选择、MFA 或重新授权，请改用默认有头模式')
 
             from moodle_dl.auto_sso_login import auto_login_with_sso_sync
 

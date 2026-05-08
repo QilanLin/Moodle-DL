@@ -24,6 +24,7 @@ from moodle_dl.cli.authenticators import (
     NormalAuthenticator,
     SSOAuthenticator,
     BrowserSelector,
+    _should_use_headless_sso,
 )
 
 
@@ -360,7 +361,20 @@ class TestSSOAuthenticator(unittest.TestCase):
         self.assertFalse(call_kwargs['headless'])
 
     def test_sso_auto_login_can_be_forced_headless(self):
-        """测试设置 MOODLE_DL_HEADFUL=0 时使用无头模式"""
+        """测试设置 MOODLE_DL_HEADLESS=1 时使用无头模式"""
+        authenticator = SSOAuthenticator(self.config, self.opts, self.moodle_url)
+        authenticator.preferred_browser = 'firefox'
+        self.config.get_auth_manager.return_value = Mock()
+
+        with patch.dict('os.environ', {'MOODLE_DL_HEADLESS': '1'}, clear=True):
+            with patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=True) as mock_auto_login:
+                self.assertTrue(authenticator._perform_sso_auto_login())
+
+        call_kwargs = mock_auto_login.call_args.kwargs
+        self.assertTrue(call_kwargs['headless'])
+
+    def test_sso_auto_login_accepts_legacy_headful_zero(self):
+        """测试兼容写法 MOODLE_DL_HEADFUL=0 仍使用无头模式"""
         authenticator = SSOAuthenticator(self.config, self.opts, self.moodle_url)
         authenticator.preferred_browser = 'firefox'
         self.config.get_auth_manager.return_value = Mock()
@@ -371,6 +385,14 @@ class TestSSOAuthenticator(unittest.TestCase):
 
         call_kwargs = mock_auto_login.call_args.kwargs
         self.assertTrue(call_kwargs['headless'])
+
+    def test_headless_env_takes_precedence_over_headful_env(self):
+        """测试 MOODLE_DL_HEADLESS 优先于兼容的 MOODLE_DL_HEADFUL"""
+        with patch.dict('os.environ', {'MOODLE_DL_HEADLESS': '1', 'MOODLE_DL_HEADFUL': '1'}, clear=True):
+            self.assertTrue(_should_use_headless_sso())
+
+        with patch.dict('os.environ', {'MOODLE_DL_HEADLESS': '0', 'MOODLE_DL_HEADFUL': '0'}, clear=True):
+            self.assertFalse(_should_use_headless_sso())
 
 
 class TestAuthenticatorIntegration(unittest.TestCase):

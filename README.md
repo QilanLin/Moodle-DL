@@ -88,13 +88,7 @@ python3 -c "import shutil; print(shutil.which('moodle-dl'))"
 ./moodle-dl --init
 ```
 
-如果学校使用 SSO：
-
-```bash
-./moodle-dl --init --sso
-```
-
-SSO 默认使用有头模式，便于完成账号选择、MFA 和浏览器 cookie 恢复：
+如果学校使用 SSO，默认会打开可见浏览器窗口，便于完成账号选择、MFA 和浏览器 cookie 恢复：
 
 ```bash
 ./moodle-dl --init --sso
@@ -109,7 +103,7 @@ python3 -m moodle_dl.main --init --sso
 如果确实需要无头模式，可以显式设置：
 
 ```bash
-MOODLE_DL_HEADFUL=0 ./moodle-dl --init --sso
+MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 ```
 
 ### 开始下载
@@ -260,6 +254,8 @@ python3 -m moodle_dl.main --help
 ```bash
 ./moodle-dl --init --sso
 ```
+
+如果你之前设置过 `MOODLE_DL_HEADLESS=1` 或 `MOODLE_DL_HEADFUL=0`，请先移除该环境变量。
 
 如果浏览器里登录了多个 Microsoft / Google / 学校账号，建议：
 - 手动先在浏览器里选好正确账号
