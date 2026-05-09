@@ -16,14 +16,22 @@ class PageMod(MoodleMod):
     MOD_MIN_VERSION = 2017051500  # 3.3
 
     # Display mode constants (RESOURCELIB_DISPLAY_*)
+    DISPLAY_AUTO = 0
+    DISPLAY_EMBED = 1
+    DISPLAY_FRAME = 2
+    DISPLAY_NEW = 3
+    DISPLAY_DOWNLOAD = 4
+    DISPLAY_OPEN = 5
+    DISPLAY_POPUP = 6
+
     DISPLAY_MODES = {
-        0: {'name': 'AUTOMATIC', 'description': 'Automatic - best option for file type'},
-        1: {'name': 'EMBED', 'description': 'Embed - display in page'},
-        2: {'name': 'FRAME', 'description': 'Open in frame'},
-        3: {'name': 'NEW', 'description': 'Open in new window'},
-        4: {'name': 'DOWNLOAD', 'description': 'Force download'},
-        5: {'name': 'OPEN', 'description': 'Open directly (default for page)'},
-        6: {'name': 'POPUP', 'description': 'Open in popup window'},
+        DISPLAY_AUTO: {'name': 'AUTOMATIC', 'description': 'Automatic - best option for file type'},
+        DISPLAY_EMBED: {'name': 'EMBED', 'description': 'Embed - display in page'},
+        DISPLAY_FRAME: {'name': 'FRAME', 'description': 'Open in frame'},
+        DISPLAY_NEW: {'name': 'NEW', 'description': 'Open in new window'},
+        DISPLAY_DOWNLOAD: {'name': 'DOWNLOAD', 'description': 'Force download'},
+        DISPLAY_OPEN: {'name': 'OPEN', 'description': 'Open directly (default for page)'},
+        DISPLAY_POPUP: {'name': 'POPUP', 'description': 'Open in popup window'},
     }
 
     @classmethod
