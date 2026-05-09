@@ -251,3 +251,50 @@ class H5PActivityMod(MoodleMod):
             logging.debug("Error getting results for attempt %d: %s", attempt_id, str(e))
 
         return result
+
+    async def _fetch_h5pactivities_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        Use core course contents as a fallback when the H5P Mobile API is unavailable.
+
+        Core contents can expose the downloadable H5P package as module contents, so
+        those files are mapped into the same package shape used by real_fetch_mod_entries.
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 H5P Activity 模块信息...')
+
+        h5pactivities = []
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'h5pactivity')
+
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+
+            for module in modules_by_course[course_id]:
+                h5pactivities.append(
+                    {
+                        'id': module.get('instance', 0),
+                        'coursemodule': module.get('id', 0),
+                        'course': course_id,
+                        'name': module.get('name', 'H5P Activity'),
+                        'intro': module.get('description', ''),
+                        'introformat': 1,
+                        'introfiles': module.get('introfiles', []),
+                        'package': module.get('contents', []),
+                        'deployedfile': {},
+                        'grade': None,
+                        'grademethod': 0,
+                        'enabletracking': 0,
+                        'displayoptions': 0,
+                        'timecreated': module.get('timecreated', 0),
+                        'timemodified': module.get('timemodified', 0),
+                    }
+                )
+
+        if not h5pactivities:
+            logging.warning('⚠️ Web API fallback 未找到任何 H5P Activity 模块')
+            raise ValueError('Web API 未能检索任何 H5P Activity 模块信息')
+
+        logging.debug(f'✅ Web API fallback 成功获取 {len(h5pactivities)} 个 H5P Activity 模块')
+        return h5pactivities
