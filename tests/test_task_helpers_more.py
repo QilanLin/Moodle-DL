@@ -11,6 +11,17 @@ from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, HeadInfo, MoodleDlOpts, TaskState
 
 
+class FakeAsyncContext:
+    def __init__(self, value):
+        self.value = value
+
+    async def __aenter__(self):
+        return self.value
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
 @pytest.fixture
 def task_factory(tmp_path):
     pools = []
@@ -890,3 +901,437 @@ async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory)
     missing_session.get.return_value = SimpleNamespace(status_code=200, text='<html>No iframe</html>')
     missing_iframe._create_session_with_retry = MagicMock(return_value=missing_session)
     assert await missing_iframe.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+class FakeYoutubeDL:
+    result = 0
+    error = None
+    set_generic_extractor_warning = False
+    instances = []
+
+    def __init__(self, opts):
+        self.opts = opts
+        self.params = {}
+        self._download_retcode = 99
+        FakeYoutubeDL.instances.append(self)
+
+    def download(self, dl_url):
+        if FakeYoutubeDL.error is not None:
+            raise FakeYoutubeDL.error
+        if FakeYoutubeDL.set_generic_extractor_warning:
+            self.opts['logger'].warning('Falling back on generic information extractor')
+        return FakeYoutubeDL.result
+
+
+@pytest.fixture
+def fake_yt_dlp():
+    FakeYoutubeDL.result = 0
+    FakeYoutubeDL.error = None
+    FakeYoutubeDL.set_generic_extractor_warning = False
+    FakeYoutubeDL.instances = []
+
+    with (
+        patch('moodle_dl.downloader.task.yt_dlp.YoutubeDL', FakeYoutubeDL),
+        patch('moodle_dl.downloader.task.add_additional_extractors') as add_extractors,
+    ):
+        yield FakeYoutubeDL, add_extractors
+
+
+@pytest.mark.asyncio
+async def test_download_using_yt_dlp_success_sets_options_and_password(task_factory, fake_yt_dlp):
+    fake_cls, add_extractors = fake_yt_dlp
+    task = task_factory(
+        content_type='description-url',
+        content_filename='lecture.url',
+        cookies_text='cookie-data',
+    )
+    task.opts.video_passwords = {'video.example.com': 'secret'}
+    infos = HeadInfo(
+        content_type='text/html',
+        content_length=1,
+        last_modified=None,
+        final_url='https://video.example.com/watch',
+        guessed_file_name='watch',
+        host='video.example.com',
+    )
+
+    assert await task.download_using_yt_dlp(
+        'https://video.example.com/watch',
+        infos,
+        delete_if_successful=True,
+    ) is True
+
+    ydl = fake_cls.instances[0]
+    assert '%(title).180B' in ydl.opts['outtmpl']
+    assert ydl.params['videopassword'] == 'secret'
+    assert 'cookiefile' in ydl.opts
+    add_extractors.assert_called_once_with(ydl)
+
+
+@pytest.mark.asyncio
+async def test_download_using_yt_dlp_returns_false_for_legacy_pages_and_generic_extractor(
+    task_factory,
+    fake_yt_dlp,
+):
+    fake_cls, _add_extractors = fake_yt_dlp
+    infos = HeadInfo(
+        content_type='text/html',
+        content_length=1,
+        last_modified=None,
+        final_url='https://video.example.com/watch',
+        guessed_file_name='watch',
+        host='video.example.com',
+    )
+
+    legacy_page = task_factory(content_filename='page.html')
+    legacy_page.file.module_name = 'index_mod-page'
+    assert await legacy_page.download_using_yt_dlp(
+        'https://video.example.com/watch',
+        infos,
+        delete_if_successful=True,
+    ) is False
+
+    fake_cls.set_generic_extractor_warning = True
+    generic = task_factory(content_filename='video.mp4')
+    assert await generic.download_using_yt_dlp(
+        'https://video.example.com/watch',
+        infos,
+        delete_if_successful=True,
+    ) is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'error_message',
+    [
+        'DRM protected stream',
+        '403 Forbidden',
+        '404 Not Found',
+        '503 Service Unavailable',
+        'Timeout while connecting',
+        'InvalidURL bad url',
+        'unexpected extractor failure',
+    ],
+)
+async def test_download_using_yt_dlp_raises_helpful_error_for_failures(
+    task_factory,
+    fake_yt_dlp,
+    error_message,
+):
+    fake_cls, _add_extractors = fake_yt_dlp
+    fake_cls.error = RuntimeError(error_message)
+    task = task_factory(content_filename='video.mp4')
+    task.file.saved_to = str(Path(task.destination) / 'video.mp4.url')
+    infos = HeadInfo(
+        content_type='text/html',
+        content_length=1,
+        last_modified=None,
+        final_url='https://video.example.com/watch',
+        guessed_file_name='watch',
+        host='video.example.com',
+    )
+
+    with patch('moodle_dl.downloader.task.PT.remove_file') as remove_file:
+        with pytest.raises(RuntimeError, match='yt-dlp 无法下载该 URL'):
+            await task.download_using_yt_dlp(
+                'https://video.example.com/watch',
+                infos,
+                delete_if_successful=False,
+            )
+
+    remove_file.assert_called_once_with(task.file.saved_to)
+    assert task.status.yt_dlp_failed_with_error is True
+
+
+@pytest.mark.asyncio
+async def test_download_using_yt_dlp_ignores_errors_when_configured(task_factory, fake_yt_dlp):
+    fake_cls, _add_extractors = fake_yt_dlp
+    fake_cls.error = RuntimeError('403 Forbidden')
+    task = task_factory(content_filename='video.mp4')
+    task.opts.global_opts.ignore_ytdl_errors = True
+    infos = HeadInfo(
+        content_type='text/html',
+        content_length=1,
+        last_modified=None,
+        final_url='https://video.example.com/watch',
+        guessed_file_name='watch',
+        host='video.example.com',
+    )
+
+    assert await task.download_using_yt_dlp(
+        'https://video.example.com/watch',
+        infos,
+        delete_if_successful=False,
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_download_using_external_downloader_success_and_failures(task_factory):
+    success = task_factory(content_filename='video.mp4')
+    Path(success.destination).mkdir(parents=True, exist_ok=True)
+    proc = SimpleNamespace(
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=b'')),
+        communicate=AsyncMock(return_value=(b'', b'')),
+        returncode=0,
+    )
+
+    with patch('moodle_dl.downloader.task.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)) as create_proc:
+        await success.download_using_external_downloader(
+            'https://video.example.com/watch',
+            'downloader %U',
+            delete_if_successful=True,
+        )
+
+    create_proc.assert_awaited_once()
+    assert success.file.saved_to == str(Path(success.destination) / success.filename)
+
+    failing = task_factory(content_filename='video.mp4')
+    failing.file.saved_to = str(Path(failing.destination) / 'video.mp4.url')
+    failing_proc = SimpleNamespace(
+        stdout=SimpleNamespace(readline=AsyncMock(return_value=b'')),
+        communicate=AsyncMock(return_value=(b'', b'bad')),
+        returncode=2,
+    )
+
+    with (
+        patch('moodle_dl.downloader.task.asyncio.create_subprocess_exec', AsyncMock(return_value=failing_proc)),
+        patch('moodle_dl.downloader.task.PT.remove_file') as remove_file,
+    ):
+        with pytest.raises(RuntimeError, match='external downloader'):
+            await failing.download_using_external_downloader(
+                'https://video.example.com/watch',
+                'downloader %U',
+                delete_if_successful=False,
+            )
+
+    remove_file.assert_called_once_with(failing.file.saved_to)
+
+    broken = task_factory(content_filename='video.mp4')
+    with patch(
+        'moodle_dl.downloader.task.asyncio.create_subprocess_exec',
+        AsyncMock(side_effect=ValueError('bad command')),
+    ):
+        with pytest.raises(RuntimeError, match='external downloader'):
+            await broken.download_using_external_downloader(
+                'https://video.example.com/watch',
+                'downloader %U',
+                delete_if_successful=True,
+            )
+
+
+def test_save_incomplete_download_persists_existing_file_id(task_factory):
+    task = task_factory()
+    task.file.file_id = 123
+
+    with (
+        patch('moodle_dl.config.ConfigHelper') as config_cls,
+        patch('moodle_dl.database.StateRecorder') as recorder_cls,
+    ):
+        task._save_incomplete_download('/tmp/file.bin', 'https://example.com/file.bin', 50, 100)
+
+    recorder_cls.assert_called_once_with(config_cls.return_value, task.opts)
+    recorder_cls.return_value.save_incomplete_download.assert_called_once_with(
+        file_id=123,
+        file_url='https://example.com/file.bin',
+        file_path='/tmp/file.bin',
+        total_bytes=100,
+        downloaded_bytes=50,
+        server_supports_range=True,
+        etag=None,
+        last_modified=None,
+    )
+
+
+def test_save_incomplete_download_creates_file_id_when_missing(task_factory):
+    task = task_factory()
+    task.file.file_id = None
+    database = MagicMock(db_file='/tmp/moodle.db')
+    cursor = MagicMock()
+    cursor.fetchone.return_value = (456,)
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with (
+        patch('moodle_dl.config.ConfigHelper') as config_cls,
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+        patch('sqlite3.connect', return_value=conn) as connect,
+    ):
+        task._save_incomplete_download('/tmp/file.bin', 'https://example.com/file.bin', 50, 100)
+
+    database.new_file.assert_called_once_with(task.file, task.course.id, task.course.fullname)
+    connect.assert_called_once_with('/tmp/moodle.db')
+    cursor.execute.assert_called_once()
+    conn.close.assert_called_once()
+    database.save_incomplete_download.assert_called_once()
+    assert database.save_incomplete_download.call_args.kwargs['file_id'] == 456
+
+
+def test_save_incomplete_download_returns_when_new_file_id_cannot_be_loaded(task_factory):
+    task = task_factory()
+    task.file.file_id = None
+    database = MagicMock(db_file='/tmp/moodle.db')
+    cursor = MagicMock()
+    cursor.fetchone.return_value = None
+    conn = MagicMock()
+    conn.cursor.return_value = cursor
+
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+        patch('sqlite3.connect', return_value=conn),
+    ):
+        task._save_incomplete_download('/tmp/file.bin', 'https://example.com/file.bin', 50, 100)
+
+    database.new_file.assert_called_once()
+    database.save_incomplete_download.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resume_incomplete_download_short_circuit_paths(task_factory, tmp_path):
+    no_file_id = task_factory()
+    no_file_id.file.file_id = None
+    assert await no_file_id._resume_incomplete_download(
+        str(tmp_path / 'file.bin'),
+        'https://example.com/file.bin',
+        MagicMock(),
+        {},
+        None,
+    ) == (0, None)
+
+    task = task_factory()
+    task.file.file_id = 123
+    database = MagicMock()
+    database.get_incomplete_download.return_value = None
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        assert await task._resume_incomplete_download(
+            str(tmp_path / 'file.bin'),
+            'https://example.com/file.bin',
+            MagicMock(),
+            {},
+            None,
+        ) == (0, None)
+
+    mismatched = task_factory()
+    mismatched.file.file_id = 456
+    mismatch_path = tmp_path / 'mismatch.bin'
+    mismatch_path.write_bytes(b'abc')
+    database = MagicMock()
+    database.get_incomplete_download.return_value = {
+        'download_id': 9,
+        'downloaded_bytes': 10,
+        'server_supports_range': True,
+    }
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        assert await mismatched._resume_incomplete_download(
+            str(mismatch_path),
+            'https://example.com/file.bin',
+            MagicMock(),
+            {},
+            None,
+        ) == (0, None)
+
+    database.increment_incomplete_download_attempt.assert_called_once_with(9, '文件大小不匹配')
+
+
+@pytest.mark.asyncio
+async def test_resume_incomplete_download_head_checks_and_success(task_factory, tmp_path):
+    file_path = tmp_path / 'partial.bin'
+    file_path.write_bytes(b'12345')
+
+    no_range = task_factory()
+    no_range.file.file_id = 123
+    database = MagicMock()
+    database.get_incomplete_download.return_value = {
+        'download_id': 1,
+        'downloaded_bytes': 5,
+        'server_supports_range': False,
+    }
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        assert await no_range._resume_incomplete_download(
+            str(file_path),
+            'https://example.com/file.bin',
+            MagicMock(),
+            {},
+            None,
+        ) == (0, None)
+
+    class FakeHeadSession:
+        def __init__(self, response):
+            self.response = response
+
+        def head(self, *args, **kwargs):
+            return FakeAsyncContext(self.response)
+
+    bad_head = task_factory()
+    bad_head.file.file_id = 124
+    database = MagicMock()
+    database.get_incomplete_download.return_value = {
+        'download_id': 2,
+        'downloaded_bytes': 5,
+        'server_supports_range': True,
+    }
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        assert await bad_head._resume_incomplete_download(
+            str(file_path),
+            'https://example.com/file.bin',
+            FakeHeadSession(SimpleNamespace(status=500, content_length=10)),
+            {'User-Agent': 'test'},
+            None,
+        ) == (0, None)
+
+    complete = task_factory()
+    complete.file.file_id = 125
+    database = MagicMock()
+    database.get_incomplete_download.return_value = {
+        'download_id': 3,
+        'downloaded_bytes': 5,
+        'server_supports_range': True,
+    }
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        assert await complete._resume_incomplete_download(
+            str(file_path),
+            'https://example.com/file.bin',
+            FakeHeadSession(SimpleNamespace(status=200, content_length=5)),
+            {'User-Agent': 'test'},
+            None,
+        ) == (0, None)
+    database.mark_download_complete.assert_called_once_with(125, str(file_path))
+
+    resumable = task_factory()
+    resumable.file.file_id = 126
+    database = MagicMock()
+    database.get_incomplete_download.return_value = {
+        'download_id': 4,
+        'downloaded_bytes': 5,
+        'server_supports_range': True,
+    }
+    file_obj = SimpleNamespace(close=AsyncMock())
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+        patch('moodle_dl.downloader.task.aiofiles.open', AsyncMock(return_value=file_obj)) as open_file,
+    ):
+        assert await resumable._resume_incomplete_download(
+            str(file_path),
+            'https://example.com/file.bin',
+            FakeHeadSession(SimpleNamespace(status=206, content_length=10)),
+            {'User-Agent': 'test'},
+            None,
+        ) == (5, file_obj)
+
+    open_file.assert_awaited_once_with(str(file_path), 'a+b')
