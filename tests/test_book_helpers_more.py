@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import json
+import sys
 import tempfile
+from types import SimpleNamespace
 from urllib.parse import quote
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -40,6 +42,63 @@ def make_lti_src(entry_id, html_escaped=True):
         'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php'
         f'?foo=1{separator}source={source}'
     )
+
+
+class FakeAsyncPlaywrightContext:
+    def __init__(self, playwright):
+        self.playwright = playwright
+
+    async def __aenter__(self):
+        return self.playwright
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+def install_fake_playwright(monkeypatch, playwright):
+    async_api = SimpleNamespace(async_playwright=lambda: FakeAsyncPlaywrightContext(playwright))
+    monkeypatch.setitem(sys.modules, 'playwright', SimpleNamespace(async_api=async_api))
+    monkeypatch.setitem(sys.modules, 'playwright.async_api', async_api)
+
+
+def make_fake_print_book_playwright(html='<div class="book_chapter">Book</div>', current_url=None):
+    page = MagicMock()
+    page.url = current_url or 'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20'
+    page.goto = AsyncMock(side_effect=[MagicMock(), MagicMock()])
+    page.content = AsyncMock(side_effect=['<html>course</html>', html])
+    page.title = AsyncMock(return_value='Course page')
+    page.wait_for_timeout = AsyncMock()
+    page.on = MagicMock()
+
+    context = MagicMock()
+    context.add_cookies = AsyncMock()
+    context.cookies = AsyncMock(return_value=[
+        {'name': 'MoodleSession', 'value': 'abc', 'domain': 'keats.kcl.ac.uk'}
+    ])
+    context.new_page = AsyncMock(return_value=page)
+
+    browser = MagicMock()
+    browser.new_context = AsyncMock(return_value=context)
+    browser.close = AsyncMock()
+
+    firefox = MagicMock()
+    firefox.launch = AsyncMock(return_value=browser)
+    playwright = SimpleNamespace(firefox=firefox)
+    return playwright, browser, context, page
+
+
+def make_cookie_manager(cookies=None, refresh_result=False):
+    cookie_manager = MagicMock()
+    cookie_manager.get_cookies_from_db.return_value = cookies if cookies is not None else [
+        {
+            'name': 'MoodleSession',
+            'value': 'abc',
+            'domain': 'keats.kcl.ac.uk',
+            'path': '/',
+        }
+    ]
+    cookie_manager.refresh_cookies.return_value = refresh_result
+    return cookie_manager
 
 
 def test_download_condition_keeps_deleted_files_only_when_book_downloads_are_enabled():
@@ -493,3 +552,113 @@ async def test_real_fetch_mod_entries_returns_empty_when_book_downloads_are_disa
 
     assert await book.real_fetch_mod_entries([Course(1, 'Course One')], {}) == {}
     book.client.async_post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_returns_empty_when_cookie_database_is_empty(monkeypatch):
+    book = make_book()
+    playwright, _, _, _ = make_fake_print_book_playwright()
+    install_fake_playwright(monkeypatch, playwright)
+    cookie_manager = make_cookie_manager(cookies=[])
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        assert await book._fetch_print_book_html(20, 1) == ('', '')
+
+    playwright.firefox.launch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monkeypatch):
+    book = make_book()
+    html = '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
+    playwright, browser, context, page = make_fake_print_book_playwright(html=html)
+    install_fake_playwright(monkeypatch, playwright)
+    cookie_manager = make_cookie_manager()
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        with patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=False):
+            result = await book._fetch_print_book_html(20, 1)
+
+    assert result == (
+        html,
+        'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+    )
+    playwright.firefox.launch.assert_awaited_once_with(headless=True)
+    browser.new_context.assert_awaited_once()
+    context.add_cookies.assert_awaited_once_with(cookie_manager.get_cookies_from_db.return_value)
+    assert page.goto.await_args_list[0].args[0] == 'https://keats.kcl.ac.uk/course/view.php?id=1'
+    assert page.goto.await_args_list[1].args[0] == (
+        'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20'
+    )
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_returns_empty_for_interactive_auth_redirect(monkeypatch):
+    book = make_book()
+    playwright, browser, _, _ = make_fake_print_book_playwright(
+        current_url='https://login.microsoftonline.com/common/oauth2/authorize'
+    )
+    install_fake_playwright(monkeypatch, playwright)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        result = await book._fetch_print_book_html(20, 1)
+
+    assert result == ('', '')
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_refreshes_expired_cookies_once(monkeypatch):
+    book = make_book()
+    original_fetch_print_book_html = BookMod._fetch_print_book_html
+    book._fetch_print_book_html = AsyncMock(return_value=('retried html', 'retried url'))
+    playwright, browser, _, _ = make_fake_print_book_playwright(
+        html='<div class="book_chapter">Session expired</div>',
+        current_url='https://keats.kcl.ac.uk/course/view.php?id=1',
+    )
+    install_fake_playwright(monkeypatch, playwright)
+    cookie_manager = make_cookie_manager(refresh_result=True)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        with patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=True):
+            result = await original_fetch_print_book_html(book, 20, 1)
+
+    assert result == ('retried html', 'retried url')
+    cookie_manager.refresh_cookies.assert_called_once_with(auto_get_token=False)
+    book._fetch_print_book_html.assert_awaited_once_with(20, 1, retry_count=1)
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_returns_empty_when_timeout_refresh_fails(monkeypatch):
+    book = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright()
+    page.goto = AsyncMock(side_effect=[MagicMock(), RuntimeError('Timeout 60000ms exceeded')])
+    install_fake_playwright(monkeypatch, playwright)
+    cookie_manager = make_cookie_manager(refresh_result=False)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        result = await book._fetch_print_book_html(20, 1)
+
+    assert result == ('', '')
+    cookie_manager.refresh_cookies.assert_called_once_with(auto_get_token=False)
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_reports_missing_playwright_browser(monkeypatch):
+    book = make_book()
+    firefox = MagicMock()
+    firefox.launch = AsyncMock(
+        side_effect=RuntimeError("Executable doesn't exist at /Users/test/ms-playwright/firefox")
+    )
+    playwright = SimpleNamespace(firefox=firefox)
+    install_fake_playwright(monkeypatch, playwright)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        with patch('moodle_dl.moodle.mods.book.logging') as mock_logging:
+            result = await book._fetch_print_book_html(20, 1)
+
+    assert result == ('', '')
+    assert any('Playwright 浏览器未安装' in args[0] for args, _kwargs in mock_logging.error.call_args_list)
