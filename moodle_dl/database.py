@@ -1768,7 +1768,7 @@ class StateRecorder:
         import hashlib
         key_parts = [method_name] + [str(arg) for arg in args] + [f"{k}={v}" for k, v in kwargs.items()]
         key_str = "|".join(key_parts)
-        return hashlib.md5(key_str.encode()).hexdigest()
+        return f'{method_name}:{hashlib.md5(key_str.encode()).hexdigest()}'
     
     def _get_cached(self, cache_key: str, query_func, *args, **kwargs):
         """
