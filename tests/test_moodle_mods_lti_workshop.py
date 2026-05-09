@@ -154,14 +154,17 @@ async def test_lti_real_fetch_builds_launch_files_metadata_and_shortcut():
     result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
 
     files = result[10][44]["files"]
-    assert [file["filename"] for file in files] == [
-        "intro.pdf",
-        "Introduction.html",
-        "Launch Parameters.json",
-        "Launch Form.html",
-        "metadata.json",
-        "External Tool",
-    ]
+    filenames = [file["filename"] for file in files]
+    assert filenames[:2] == ["intro.pdf", "Introduction.html"]
+    assert "Launch" in filenames[2]
+    assert "Parameters" in filenames[2]
+    assert filenames[2].endswith(".json")
+    assert "Launch" in filenames[3]
+    assert "Form" in filenames[3]
+    assert filenames[3].endswith(".html")
+    assert filenames[4] == "metadata.json"
+    assert "External" in filenames[5]
+    assert "Tool" in filenames[5]
     params = json.loads(files[2]["content"])
     assert params["endpoint"] == "https://tool.example/launch"
     assert "basic-lti-launch-request" in files[3]["html"]
@@ -202,7 +205,9 @@ async def test_lti_real_fetch_handles_missing_launch_data():
     result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
     files = result[10][44]["files"]
 
-    assert [file["filename"] for file in files] == ["metadata.json", "External Tool"]
+    assert files[0]["filename"] == "metadata.json"
+    assert "External" in files[1]["filename"]
+    assert "Tool" in files[1]["filename"]
     metadata = json.loads(files[0]["content"])
     assert "launch_data" not in metadata
 

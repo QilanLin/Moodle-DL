@@ -326,3 +326,46 @@ class ImscpMod(MoodleMod):
             )
 
         return result
+
+    async def _fetch_imscps_web_api(
+        self, courses: List[Course], core_contents: Dict[int, List[Dict]]
+    ) -> List[Dict]:
+        """
+        Use core course contents as a fallback when the IMSCP Mobile API is unavailable.
+
+        The returned shape mirrors mod_imscp_get_imscps_by_courses closely enough for
+        real_fetch_mod_entries to process the module and its core contents.
+        """
+        logging.debug('🌐 使用 Web API fallback 获取 IMSCP 模块信息...')
+
+        imscps = []
+        modules_by_course = self.extract_modules_from_core_contents(courses, core_contents, 'imscp')
+
+        for course in courses:
+            course_id = course.id
+            if course_id not in modules_by_course:
+                continue
+
+            for module in modules_by_course[course_id]:
+                imscps.append(
+                    {
+                        'id': module.get('instance', 0),
+                        'coursemodule': module.get('id', 0),
+                        'course': course_id,
+                        'name': module.get('name', 'IMS Content Package'),
+                        'intro': module.get('description', ''),
+                        'introformat': 1,
+                        'revision': 0,
+                        'keepold': 0,
+                        'structure': '',
+                        'timemodified': module.get('timemodified', 0),
+                        'introfiles': module.get('introfiles', []),
+                    }
+                )
+
+        if not imscps:
+            logging.warning('⚠️ Web API fallback 未找到任何 IMSCP 模块')
+            raise ValueError('Web API 未能检索任何 IMSCP 模块信息')
+
+        logging.debug(f'✅ Web API fallback 成功获取 {len(imscps)} 个 IMSCP 模块')
+        return imscps
