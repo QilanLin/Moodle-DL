@@ -140,6 +140,7 @@ class RequestHelper:
         base_delay = 1  # 初始延迟1秒
         attempt = 0
         resp_json = None
+        last_retryable_error = None
 
         async with self.semaphore, aiohttp.ClientSession() as session:
             while attempt < self.MAX_RETRIES:
@@ -221,6 +222,7 @@ class RequestHelper:
                     OSError,
                 ) as req_err:
                     # 这些都是可重试的网络错误
+                    last_retryable_error = req_err
                     pass  # 继续到重试逻辑
 
                 # 执行重试逻辑（只有可重试的错误才会到达这里）
@@ -233,13 +235,15 @@ class RequestHelper:
                         delay,
                         attempt,
                         self.MAX_RETRIES,
-                        req_err,
+                        last_retryable_error,
                     )
                     await asyncio.sleep(delay)
                     continue
                 else:
                     # 最后一次尝试失败
-                    raise MoodleNetworkError(f"网络错误，已重试 {self.MAX_RETRIES} 次: {req_err}") from None
+                    raise MoodleNetworkError(
+                        f"网络错误，已重试 {self.MAX_RETRIES} 次: {last_retryable_error}"
+                    ) from None
 
         return resp_json
 
