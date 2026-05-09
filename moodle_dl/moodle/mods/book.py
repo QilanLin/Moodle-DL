@@ -1020,18 +1020,17 @@ class BookMod(MoodleMod):
             # We need to match the complete iframe tag, not just the src
             iframe_pattern = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*>.*?</iframe>'
 
-            # Try with closing tag
-            if re.search(iframe_pattern, modified_html, re.DOTALL):
+            # Try self-closing tags first. Otherwise the closing-tag pattern can consume
+            # the next iframe when HTML contains adjacent tags like <iframe ... /><iframe ...></iframe>.
+            iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
+            if re.search(iframe_pattern_selfclose, modified_html):
+                modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
+                logging.debug(f'✅ Replaced self-closing iframe with video tag for: {video_name}')
+            elif re.search(iframe_pattern, modified_html, re.DOTALL):
                 modified_html = re.sub(iframe_pattern, video_tag, modified_html, flags=re.DOTALL)
                 logging.debug(f'✅ Replaced iframe with video tag for: {video_name}')
             else:
-                # Try self-closing tag
-                iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
-                if re.search(iframe_pattern_selfclose, modified_html):
-                    modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
-                    logging.debug(f'✅ Replaced self-closing iframe with video tag for: {video_name}')
-                else:
-                    logging.warning(f'⚠️  Could not find iframe tag to replace for: {video_name}')
+                logging.warning(f'⚠️  Could not find iframe tag to replace for: {video_name}')
 
         logging.info(f'✅ Replaced {len(video_list)} Kaltura iframe(s) with HTML5 video tags')
         return modified_html
@@ -1154,15 +1153,13 @@ class BookMod(MoodleMod):
 
             # 替换iframe
             iframe_pattern = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*>.*?</iframe>'
-            if re.search(iframe_pattern, modified_html, re.DOTALL):
+            iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
+            if re.search(iframe_pattern_selfclose, modified_html):
+                modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
+                logging.debug(f'✅ Replaced iframe with video: {chapter_video_path}')
+            elif re.search(iframe_pattern, modified_html, re.DOTALL):
                 modified_html = re.sub(iframe_pattern, video_tag, modified_html, flags=re.DOTALL)
                 logging.debug(f'✅ Replaced iframe with video: {chapter_video_path}')
-            else:
-                # Try self-closing iframe
-                iframe_pattern_selfclose = r'<iframe[^>]*src="' + re.escape(iframe_src) + r'"[^>]*/>'
-                if re.search(iframe_pattern_selfclose, modified_html):
-                    modified_html = re.sub(iframe_pattern_selfclose, video_tag, modified_html)
-                    logging.debug(f'✅ Replaced iframe with video: {chapter_video_path}')
 
         logging.info(f'✅ Replaced {len(print_book_videos)} video iframe(s) in print book')
         return modified_html
