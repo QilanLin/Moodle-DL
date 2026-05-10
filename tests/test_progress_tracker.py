@@ -142,6 +142,9 @@ def test_progress_and_summary_output(fake_time):
     assert "❌" in stats_line
     assert "⊘" in stats_line
 
+    full_status = tracker.get_full_status()
+    assert "\n   " in full_status
+
     summary = tracker.get_summary()
     assert "总文件数" in summary
 
@@ -149,3 +152,84 @@ def test_progress_and_summary_output(fake_time):
     assert bar.startswith("[")
     assert "50%" in bar
     assert "█" in bar
+
+
+def test_percentage_and_eta_edge_cases(fake_time):
+    tracker = ProgressTracker()
+
+    tracker.total_bytes = 0
+    assert tracker.get_percentage() is None
+
+    tracker.total_bytes = 100
+    tracker.downloaded_bytes = 150
+    assert tracker.get_percentage() is None
+
+    tracker.downloaded_bytes = 100
+    tracker.ema_speed = 0
+    assert tracker._get_eta_by_speed() == 0.0
+
+    tracker.downloaded_bytes = 50
+    tracker.ema_speed = 0
+    assert tracker._get_eta_by_speed() is None
+
+    tracker.total_files = 10
+    tracker.completed_files = 4
+    tracker.failed_files = 0
+    tracker.skipped_files = 0
+    assert tracker._get_eta_by_files() is None
+
+    tracker.completed_files = 5
+    tracker.start_time = fake_time.time()
+    assert tracker._get_eta_by_files() is None
+
+    tracker.completed_files = 8
+    tracker.failed_files = 1
+    tracker.skipped_files = 1
+    assert tracker._get_eta_by_files() == 0.0
+
+
+def test_eta_formatting_smoothing_and_limits(fake_time):
+    tracker = ProgressTracker()
+
+    assert tracker.format_eta(None) == "计算中..."
+    assert tracker.get_eta_seconds() is None
+
+    fake_time.advance(11)
+    assert tracker.format_eta(None) == ">1天"
+    assert tracker.format_eta(59) == "59秒"
+    assert tracker.format_eta(61) == "1分1秒"
+    assert tracker.format_eta(3661) == "1小时1分"
+
+    tracker.WARMUP_SECONDS = 0
+    tracker._get_eta_by_speed = lambda: 1000
+    tracker._get_eta_by_files = lambda: None
+    tracker.last_eta = 100
+    assert tracker.get_eta_seconds() == 550
+
+    tracker.last_eta = None
+    tracker.MAX_ETA_SECONDS = 100
+    assert tracker.get_eta_seconds() is None
+
+    tracker.MAX_ETA_SECONDS = 86400
+    tracker._get_eta_by_speed = lambda: -5
+    tracker.last_eta = None
+    assert tracker.get_eta_seconds() == 0
+
+    tracker._get_eta_by_speed = lambda: None
+    assert tracker.get_eta_seconds() is None
+
+
+def test_empty_statistics_full_status_and_unknown_progress_bar(fake_time):
+    tracker = ProgressTracker()
+    tracker.WARMUP_SECONDS = 0
+    tracker.format_eta = lambda eta_seconds: ''
+
+    assert tracker.get_statistics_line() == ''
+
+    full_status = tracker.get_full_status()
+    assert '\n' not in full_status
+    assert ' NA%' in full_status
+
+    bar = SimpleProgressBar(width=5)
+    assert bar.render(None) == '[     ]'
+    assert bar.get_progress_with_bar(None).endswith(' NA%')

@@ -51,6 +51,151 @@ def test_get_mod_plural_name_uses_moodle_plural_map_or_capitalizes_name():
     assert builder.get_mod_plural_name('forum') == 'Forum'
 
 
+def test_get_files_in_sections_adds_summary_positions_and_kaltura_total():
+    builder = make_builder()
+    course_sections = [
+        {
+            'id': 1,
+            'name': 'Week 1',
+            'summary': '<p>Summary <a href="https://example.com/summary">link</a></p>',
+            'modules': [
+                {
+                    'id': 20,
+                    'name': 'Lecture Video',
+                    'modname': 'kalvidres',
+                    'url': 'https://keats.kcl.ac.uk/mod/kalvidres/view.php?id=20',
+                }
+            ],
+        }
+    ]
+
+    files = builder.get_files_in_sections(course_sections, fetched_mods={})
+
+    summary = next(file for file in files if file.module_modname == 'section_summary')
+    summary_url = next(file for file in files if file.content_fileurl == 'https://example.com/summary')
+    video = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
+
+    assert summary.content_filename == 'Section summary'
+    assert video.position_in_section == 0
+    assert summary.position_in_section == 1
+    assert summary_url.position_in_section == 2
+    assert video.content_filename == 'Lecture Video'
+
+
+def test_system_file_detection_and_position_assignment():
+    builder = make_builder()
+    system_names = [
+        '.hidden',
+        'chapter_metadata.json',
+        'metadata.json',
+        'Table of Contents.html',
+        'video_info',
+        'video_notes.md',
+        'anything.json',
+        'questions.json',
+        'session_1.json',
+    ]
+
+    assert all(ResultBuilder._is_system_file(name) for name in system_names)
+    assert ResultBuilder._is_system_file('lecture.pdf') is False
+
+    files = [
+        type('FileLike', (), {'content_filename': 'metadata.json'})(),
+        type('FileLike', (), {'content_filename': 'lecture.pdf'})(),
+        type('FileLike', (), {'content_filename': 'notes.docx'})(),
+    ]
+    builder._assign_positions_to_files(files)
+
+    assert files[0].position_in_section is None
+    assert files[1].position_in_section == 0
+    assert files[2].position_in_section == 1
+    assert ResultBuilder._get_extension_from_mimetype('') == ''
+
+
+def test_get_files_in_modules_handles_special_and_unhandled_modules():
+    legacy_builder = make_builder(version=2016052300)
+    modules = [
+        {
+            'id': 1,
+            'name': 'Week 1 Software Page',
+            'modname': 'page',
+            'contents': [
+                {
+                    'type': 'html',
+                    'filename': 'index.html',
+                    'html': '<p>Legacy</p>',
+                    'fileurl': 'https://example.com/legacy',
+                }
+            ],
+        },
+        {
+            'id': 2,
+            'name': 'Video Page',
+            'modname': 'moodecvideo',
+            'contents': [
+                {
+                    'type': 'html',
+                    'filename': 'index.html',
+                    'html': '<p>Video</p>',
+                    'fileurl': 'https://example.com/video',
+                }
+            ],
+        },
+        {
+            'id': 3,
+            'name': 'Folder Index',
+            'modname': 'akarifolder',
+            'contents': [{'type': 'file', 'filename': 'folder.pdf', 'fileurl': 'https://example.com/folder.pdf'}],
+        },
+        {
+            'id': 4,
+            'name': 'Book Missing From Fetched Mods',
+            'modname': 'book',
+            'contents': [],
+        },
+        {
+            'id': 5,
+            'name': 'Unhandled',
+            'modname': 'unknownmod',
+            'url': 'https://example.com/unhandled',
+        },
+    ]
+
+    files = legacy_builder._get_files_in_modules(
+        modules,
+        fetched_mods={},
+        section_id=1,
+        section_name='Week 1',
+    )
+
+    assert any(file.module_modname == 'index_mod-page' for file in files)
+    assert any(file.module_modname == 'index_mod-moodecvideo' for file in files)
+    assert any(file.content_filename == 'folder.pdf' for file in files)
+
+
+def test_get_files_in_modules_marks_fetched_book_modules_on_main_page():
+    builder = make_builder()
+    fetched_book = {
+        'book': {
+            42: {
+                'id': 42,
+                'name': 'Fetched Book',
+                'files': [{'type': 'file', 'filename': 'chapter.pdf', 'fileurl': 'https://example.com/chapter.pdf'}],
+            }
+        }
+    }
+
+    files = builder._get_files_in_modules(
+        [{'id': 42, 'name': 'Fetched Book', 'modname': 'book'}],
+        fetched_book,
+        section_id=1,
+        section_name='Week 1',
+    )
+
+    assert fetched_book['book'][42]['on_main_page'] is True
+    assert files[0].content_filename == 'chapter.pdf'
+
+
 def test_get_files_not_on_main_page_skips_marked_modules_and_handles_legacy_pages():
     builder = make_builder(version=2016052300)
     fetched_mods = {
@@ -138,6 +283,74 @@ def test_find_all_urls_skips_moodle_domain_urls_and_detects_helixmedia():
     assert files[0].content_fileurl == 'https://media.example.com/mod/helixmedia/view.php?id=2'
 
 
+def test_find_all_urls_handles_large_data_unknown_mime_and_long_urls():
+    builder = make_builder()
+    large_data = 'a' * 100001
+    long_url = 'https://external.example.com/' + ('x' * 300)
+    html = (
+        f'<img src="data:application/x-custom,{large_data}">'
+        f'<a href="{long_url}">Long</a>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='page', content_filepath='/'),
+    )
+
+    data_file = next(file for file in files if file.content_fileurl.startswith('data:application/x-custom'))
+    long_file = next(file for file in files if file.content_fileurl.startswith('https://external.example.com/'))
+
+    assert data_file.content_filename.startswith('embedded_application (')
+    assert data_file.content_filename.endswith('.application')
+    assert len(long_file.content_filename) == 254
+
+
+def test_find_all_urls_converts_kaltura_variants_and_moodle_webservice_links():
+    builder = make_builder()
+    html = (
+        '<a href="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_lti%2F">LTI</a>'
+        '<a href="https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_direct/">Direct</a>'
+        '<a href="https://kaf.keats.kcl.ac.uk/player/entryid/1_generic/">Generic</a>'
+        '<a href="https://keats.kcl.ac.uk/webservice/pluginfile.php/1/file.pdf">Pluginfile</a>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='label', content_filepath='/'),
+    )
+
+    kaltura_files = [file for file in files if file.module_modname == 'cookie_mod-kalvidres']
+
+    assert len(kaltura_files) == 3
+    assert {file.content_filename for file in kaltura_files} == {
+        'Kaltura Video 1_lti',
+        'Kaltura Video 1_direct',
+        'Kaltura Video 1_generic',
+    }
+    assert any(
+        file.content_fileurl.startswith('https://keats.kcl.ac.uk/browseandembed/index/media/entryid/')
+        for file in kaltura_files
+    )
+
+
+def test_find_all_urls_skips_empty_and_filter_matched_urls():
+    builder = make_builder()
+    files = builder._find_all_urls(
+        '<a href="">Empty</a><a href="https://blocked.example.com/file.pdf">Blocked</a>',
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=['blocked.example.com'],
+        **make_location(module_modname='page', content_filepath='/'),
+    )
+
+    assert len(files) == 1
+    assert files[0].content_fileurl == 'https://blocked.example.com/file.pdf'
+
+
 def test_handle_cookie_mod_uses_module_name_and_timemodified():
     builder = make_builder()
 
@@ -214,6 +427,54 @@ def test_handle_files_processes_directory_placeholders_and_nested_contents():
     assert [file.content_filename for file in files] == ['Chapter 1', 'page.html']
     assert files[0].content_type == 'directory_placeholder'
     assert files[1].content == '<p>Hello</p>'
+
+
+def test_handle_files_empty_directory_placeholder_and_pluginfile_fix_failure():
+    builder = make_builder()
+    contents = [
+        {'type': 'directory_placeholder', 'filename': '', 'filepath': '/empty/'},
+        {
+            'type': 'file',
+            'filename': 'broken.pdf',
+            'filepath': '/',
+            'fileurl': 'https://keats.kcl.ac.uk/pluginfile.php/1/mod_resource/content/broken.pdf',
+        },
+    ]
+
+    with patch('moodle_dl.moodle.result_builder.UrlHelper.fix_pluginfile_url', side_effect=RuntimeError('bad url')):
+        files = builder._handle_files(contents, **make_location(module_modname='book'))
+
+    assert files[0].content_filename == '__empty_chapter__'
+    assert files[1].content_fileurl.endswith('broken.pdf')
+
+
+def test_handle_files_skips_empty_url_modules_and_recurses_nested_regular_contents():
+    builder = make_builder()
+    contents = [
+        {'type': 'file', 'filename': 'skip.url', 'fileurl': ''},
+        {
+            'type': 'content',
+            'filename': 'parent.json',
+            'content': '{}',
+            'contents': [
+                {
+                    'type': 'kalvidres_embedded',
+                    'filename': 'Nested Video',
+                    'fileurl': 'https://keats.kcl.ac.uk/mod/kalvidres/view.php?id=7',
+                }
+            ],
+        },
+    ]
+
+    assert builder._handle_files(
+        [{'type': 'file', 'filename': 'skip.url', 'fileurl': ''}],
+        **make_location(module_modname='url'),
+    ) == []
+
+    files = builder._handle_files(contents[1:], **make_location(module_modname='book'))
+
+    assert [file.content_filename for file in files] == ['parent.json', 'Nested Video']
+    assert files[1].content_type == 'cookie_mod'
 
 
 def test_handle_files_creates_description_hash_html_content_and_url_files():
