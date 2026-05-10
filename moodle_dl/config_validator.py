@@ -307,24 +307,25 @@ class ConfigValidator:
             # 确保 domain 是字符串（类型检查已经在 _validate_types 中完成，这里是防御性编程）
             if not isinstance(domain, str):
                 # 跳过格式检查，因为类型错误已经在 _validate_types 中报告
-                return
+                domain = None
             
-            # 简单的域名格式检查
-            if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$', domain):
-                result.add_warning('moodle_domain', 
-                                 f'域名格式可能不正确: {domain}',
-                                 suggestion='域名应该类似 "moodle.example.com"')
-            
-            # 检查是否包含协议（不应该包含）
-            if domain.startswith('http://') or domain.startswith('https://'):
-                result.add_error('moodle_domain',
-                               '域名不应包含协议 (http:// 或 https://)',
-                               suggestion=f'使用 "{domain.replace("https://", "").replace("http://", "")}"')
+            if domain is not None:
+                # 简单的域名格式检查
+                if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-\.]*[a-zA-Z0-9])?$', domain):
+                    result.add_warning('moodle_domain', 
+                                     f'域名格式可能不正确: {domain}',
+                                     suggestion='域名应该类似 "moodle.example.com"')
+                
+                # 检查是否包含协议（不应该包含）
+                if domain.startswith('http://') or domain.startswith('https://'):
+                    result.add_error('moodle_domain',
+                                   '域名不应包含协议 (http:// 或 https://)',
+                                   suggestion=f'使用 "{domain.replace("https://", "").replace("http://", "")}"')
         
         # Moodle 路径格式检查
         if 'moodle_path' in config and config['moodle_path']:
             path = config['moodle_path']
-            if not path.startswith('/'):
+            if isinstance(path, str) and not path.startswith('/'):
                 result.add_warning('moodle_path',
                                  '路径通常应以 / 开头',
                                  suggestion=f'考虑使用 "/{path}"')
@@ -333,7 +334,7 @@ class ConfigValidator:
         id_list_fields = ['download_course_ids', 'download_public_course_ids', 
                          'dont_download_course_ids']
         for field in id_list_fields:
-            if field in config and config[field]:
+            if field in config and isinstance(config[field], list) and config[field]:
                 for i, course_id in enumerate(config[field]):
                     if not isinstance(course_id, int) or course_id <= 0:
                         result.add_error(f'{field}[{i}]',
@@ -342,25 +343,26 @@ class ConfigValidator:
         # Token 长度检查（Moodle token 通常是 32 个字符）
         if 'token' in config and config['token']:
             token = config['token']
-            if len(token) < 20:
-                result.add_warning('token', 
-                                 f'Token 长度似乎太短 (当前: {len(token)} 字符)',
-                                 suggestion='Moodle token 通常是 32 个字符')
-            if not re.match(r'^[a-f0-9]+$', token):
-                result.add_warning('token',
-                                 'Token 格式可能不正确（通常是十六进制字符串）')
+            if isinstance(token, str):
+                if len(token) < 20:
+                    result.add_warning('token', 
+                                     f'Token 长度似乎太短 (当前: {len(token)} 字符)',
+                                     suggestion='Moodle token 通常是 32 个字符')
+                if not re.match(r'^[a-f0-9]+$', token):
+                    result.add_warning('token',
+                                     'Token 格式可能不正确（通常是十六进制字符串）')
         
         if 'privatetoken' in config and config['privatetoken']:
             token = config['privatetoken']
-            if len(token) < 20:
+            if isinstance(token, str) and len(token) < 20:
                 result.add_warning('privatetoken',
                                  f'Private token 长度似乎太短 (当前: {len(token)} 字符)')
     
     def _validate_logic(self, config: Dict[str, Any], result: ValidationResult):
         """验证逻辑关系"""
         # 检查课程过滤逻辑冲突
-        download_ids = set(config.get('download_course_ids', []))
-        dont_download_ids = set(config.get('dont_download_course_ids', []))
+        download_ids = self._safe_course_id_set(config.get('download_course_ids', []))
+        dont_download_ids = self._safe_course_id_set(config.get('dont_download_course_ids', []))
         
         # 同一课程不能既在下载列表又在排除列表
         conflict_ids = download_ids & dont_download_ids
@@ -377,7 +379,7 @@ class ConfigValidator:
                              suggestion='运行 "moodle-dl --init" 或 "moodle-dl --init --sso"')
         
         # 检查下载选项的逻辑性
-        if 'download_options' in config:
+        if 'download_options' in config and isinstance(config['download_options'], dict):
             opts = config['download_options']
             
             # 如果禁用了 descriptions，那么 links_in_descriptions 也没有意义
@@ -393,7 +395,7 @@ class ConfigValidator:
                                  suggestion='至少启用一些下载选项')
         
         # 检查通知配置的完整性
-        if 'notifications' in config and config['notifications']:
+        if 'notifications' in config and isinstance(config['notifications'], dict) and config['notifications']:
             notif = config['notifications']
             
             # 邮件通知需要必要的字段
@@ -432,7 +434,7 @@ class ConfigValidator:
         """验证安全性"""
         # 警告：Token 不应该包含明显的占位符
         placeholder_patterns = ['xxx', 'replace', 'your', 'token', 'here', 'example']
-        if 'token' in config and config['token']:
+        if 'token' in config and config['token'] and isinstance(config['token'], str):
             token_lower = config['token'].lower()
             for pattern in placeholder_patterns:
                 if pattern in token_lower:
@@ -442,17 +444,26 @@ class ConfigValidator:
                     break
         
         # 检查通知中的敏感信息
-        if 'notifications' in config:
+        if 'notifications' in config and isinstance(config['notifications'], dict):
             notif = config['notifications']
             
             # 邮件密码不应该是明显的弱密码
             if notif.get('mail', {}).get('password'):
                 password = notif['mail']['password']
                 weak_passwords = ['password', '123456', 'admin', 'test']
-                if password.lower() in weak_passwords:
+                if isinstance(password, str) and password.lower() in weak_passwords:
                     result.add_warning('notifications.mail.password',
                                      '邮件密码似乎太弱或是默认密码',
                                      suggestion='使用强密码')
+
+    @staticmethod
+    def _safe_course_id_set(value: Any) -> set:
+        if not isinstance(value, list):
+            return set()
+        try:
+            return set(value)
+        except TypeError:
+            return set()
 
 
 def validate_config_file(config_path: str, strict: bool = False) -> ValidationResult:
@@ -497,6 +508,22 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     """
     fixes = []
     fixed_config = config.copy()
+
+    def normalize_list_field(field: str):
+        if field not in fixed_config:
+            return
+
+        value = fixed_config[field]
+        if not isinstance(value, list):
+            value = [value] if value else []
+            fixed_config[field] = value
+            fixes.append(f'将 {field} 转换为列表')
+
+        try:
+            set(fixed_config[field])
+        except TypeError:
+            fixed_config[field] = []
+            fixes.append(f'将 {field} 重置为空列表（无法转换）')
     
     # 修复 1: 移除域名中的协议
     if 'moodle_domain' in fixed_config and fixed_config['moodle_domain']:
@@ -515,23 +542,8 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
             fixes.append(f'路径添加前导斜杠: {path} -> {new_path}')
     
     # 修复 3: 移除课程过滤冲突（但首先确保它们是列表）
-    if 'download_course_ids' in fixed_config:
-        if not isinstance(fixed_config['download_course_ids'], list):
-            try:
-                fixed_config['download_course_ids'] = [fixed_config['download_course_ids']] if fixed_config['download_course_ids'] else []
-                fixes.append('将 download_course_ids 转换为列表')
-            except Exception:
-                fixed_config['download_course_ids'] = []
-                fixes.append('将 download_course_ids 重置为空列表')
-    
-    if 'dont_download_course_ids' in fixed_config:
-        if not isinstance(fixed_config['dont_download_course_ids'], list):
-            try:
-                fixed_config['dont_download_course_ids'] = [fixed_config['dont_download_course_ids']] if fixed_config['dont_download_course_ids'] else []
-                fixes.append('将 dont_download_course_ids 转换为列表')
-            except Exception:
-                fixed_config['dont_download_course_ids'] = []
-                fixes.append('将 dont_download_course_ids 重置为空列表')
+    normalize_list_field('download_course_ids')
+    normalize_list_field('dont_download_course_ids')
     
     # 现在可以安全地处理课程 ID 冲突
     download_ids = set(fixed_config.get('download_course_ids', []))
@@ -556,14 +568,7 @@ def auto_fix_config(config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
     list_fields = ['courses_to_filter', 'download_course_ids', 
                   'download_public_course_ids', 'dont_download_course_ids']
     for field in list_fields:
-        if field in fixed_config and not isinstance(fixed_config[field], list):
-            # 尝试转换为列表
-            try:
-                fixed_config[field] = [fixed_config[field]] if fixed_config[field] else []
-                fixes.append(f'将 {field} 转换为列表')
-            except Exception:
-                fixed_config[field] = []
-                fixes.append(f'将 {field} 重置为空列表（无法转换）')
+        normalize_list_field(field)
     
     # 修复 6: 将 restricted_filenames 统一为布尔值
     if 'restricted_filenames' in fixed_config and not isinstance(fixed_config['restricted_filenames'], bool):

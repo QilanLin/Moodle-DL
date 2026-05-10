@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+from yarl import URL
 
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, HeadInfo, MoodleDlOpts, TaskState
@@ -172,6 +173,26 @@ def test_yt_logger_uses_quieter_paths_for_expected_messages(task_factory):
     assert mock_logging.debug.call_count == 2
 
 
+def test_yt_logger_logs_normal_debug_and_warning_messages(task_factory):
+    task = task_factory()
+    logger = Task.YtLogger(task)
+
+    with patch('moodle_dl.downloader.task.logging') as mock_logging:
+        logger.debug('line\nwith\rtoken=secret123\033[K')
+        logger.warning('plain warning')
+
+    mock_logging.debug.assert_called_once_with(
+        '[%d] yt-dlp Debug: %s',
+        task.task_id,
+        'linewithcensored_sensitive_data',
+    )
+    mock_logging.warning.assert_called_once_with(
+        '[%d] yt-dlp Warning: %s',
+        task.task_id,
+        'plain warning',
+    )
+
+
 def test_yt_hook_tracks_total_size_received_bytes_and_ignores_incomplete_events(task_factory):
     task = task_factory()
 
@@ -248,6 +269,31 @@ def test_set_utime_prefers_valid_server_timestamp_and_falls_back_to_file_timesta
         task.set_utime('bad date')
 
     utime.assert_called_once_with(str(target), (1000, 123))
+
+
+def test_set_utime_ignores_missing_files_and_os_errors(task_factory, tmp_path):
+    task = task_factory()
+    missing = tmp_path / 'missing.pdf'
+    task.file.saved_to = str(missing)
+
+    with patch('moodle_dl.downloader.task.os.utime') as utime:
+        task.set_utime('Wed, 21 Oct 2015 07:28:00 GMT')
+
+    utime.assert_not_called()
+
+    target = tmp_path / 'downloaded.pdf'
+    target.write_text('data', encoding='utf-8')
+    task.file.saved_to = str(target)
+
+    with (
+        patch('moodle_dl.downloader.task.timeconvert', return_value=111),
+        patch('moodle_dl.downloader.task.os.utime', side_effect=OSError('permission denied')) as utime,
+        patch('moodle_dl.downloader.task.logging.debug') as debug,
+    ):
+        task.set_utime('Wed, 21 Oct 2015 07:28:00 GMT')
+
+    utime.assert_called_once()
+    debug.assert_called_once()
 
 
 def test_is_filtered_external_domain_handles_invalid_blacklisted_and_whitelisted_domains(task_factory):
@@ -705,6 +751,107 @@ async def test_cookie_jar_and_range_download_helpers(task_factory):
             raise RuntimeError('network failed')
 
     assert await task.check_range_download_opt('https://example.com/file', RaisingSession()) is False
+
+
+class FakeHeadClientSession:
+    response = None
+    error = None
+    captured = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        FakeHeadClientSession.captured.append(kwargs)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def request(self, method, url, headers, ssl, timeout):
+        if FakeHeadClientSession.error is not None:
+            raise FakeHeadClientSession.error
+        assert method == 'HEAD'
+        assert headers == Task.RQ_HEADER
+        assert timeout == 20
+        return FakeAsyncContext(FakeHeadClientSession.response)
+
+
+@pytest.fixture
+def fake_head_client_session():
+    FakeHeadClientSession.response = None
+    FakeHeadClientSession.error = None
+    FakeHeadClientSession.captured = []
+
+    with patch('moodle_dl.downloader.task.aiohttp.ClientSession', FakeHeadClientSession):
+        yield FakeHeadClientSession
+
+
+@pytest.mark.asyncio
+async def test_get_head_infos_extracts_response_metadata(task_factory, fake_head_client_session):
+    task = task_factory(cookies_text='cookie-data')
+    fake_cookie_jar = object()
+    task.get_cookie_jar = MagicMock(return_value=fake_cookie_jar)
+    ssl_context = object()
+    fake_head_client_session.response = SimpleNamespace(
+        url=URL('https://cdn.example.com/download/server-name.pdf'),
+        history=[object()],
+        headers={
+            'Content-Disposition': 'attachment; filename=from-header.pdf',
+            'Content-Type': 'application/pdf; charset=utf-8',
+            'Content-Length': '321',
+            'Last-Modified': 'Wed, 21 Oct 2015 07:28:00 GMT',
+        },
+    )
+
+    with patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value=ssl_context) as get_ssl_context:
+        infos = await task.get_head_infos('https://example.com/file.pdf')
+
+    get_ssl_context.assert_called_once_with(False, False, False)
+    assert fake_head_client_session.captured == [{'cookie_jar': fake_cookie_jar, 'raise_for_status': True}]
+    assert infos.content_type == 'application/pdf'
+    assert infos.content_length == 321
+    assert infos.last_modified == 'Wed, 21 Oct 2015 07:28:00 GMT'
+    assert infos.final_url == 'https://cdn.example.com/download/server-name.pdf'
+    assert infos.guessed_file_name == 'from-header.pdf'
+    assert infos.host == 'cdn.example.com'
+
+
+@pytest.mark.asyncio
+async def test_get_head_infos_returns_none_for_invalid_url_and_non_retryable_http_errors(
+    task_factory,
+    fake_head_client_session,
+):
+    task = task_factory()
+
+    fake_head_client_session.error = aiohttp.InvalidURL('mailto:user@example.com')
+    assert await task.get_head_infos('mailto:user@example.com') is None
+
+    fake_head_client_session.error = aiohttp.ClientResponseError(
+        request_info=None,
+        history=(),
+        status=404,
+        message='not found',
+    )
+    assert await task.get_head_infos('https://example.com/missing') is None
+
+
+@pytest.mark.asyncio
+async def test_get_head_infos_reraises_retryable_and_unexpected_errors(task_factory, fake_head_client_session):
+    task = task_factory()
+
+    fake_head_client_session.error = aiohttp.ClientResponseError(
+        request_info=None,
+        history=(),
+        status=429,
+        message='too many requests',
+    )
+    with pytest.raises(aiohttp.ClientResponseError):
+        await task.get_head_infos('https://example.com/rate-limited')
+
+    fake_head_client_session.error = ValueError('bad content length')
+    with pytest.raises(ValueError, match='bad content length'):
+        await task.get_head_infos('https://example.com/bad')
 
 
 @pytest.mark.asyncio
