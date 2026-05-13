@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from moodle_dl.notifications.console.console_service import ConsoleService
-from moodle_dl.types import File
+from moodle_dl.types import Course, File
 
 
 class TestConsoleServiceNoneHandling(unittest.TestCase):
@@ -77,6 +77,33 @@ class TestConsoleServiceNoneHandling(unittest.TestCase):
             service.notify_about_failed_downloads([])
         except Exception as e:
             self.fail(f"notify_about_failed_downloads with empty list raised exception: {e}")
+
+    def test_notify_about_changes_prints_moved_file_without_replacement(self):
+        service = ConsoleService(self.config)
+        moved_file = File(
+            module_id=1,
+            section_name="Week 1",
+            section_id=1,
+            module_name="Resource",
+            content_filepath="/",
+            content_filename="old.pdf",
+            content_fileurl="https://example.com/old.pdf",
+            content_filesize=1024,
+            content_timemodified=1234567890,
+            module_modname="resource",
+            content_type="application/pdf",
+            content_isexternalfile=False,
+            saved_to="Course/old.pdf",
+            moved=1,
+        )
+
+        with patch('moodle_dl.notifications.console.console_service.print') as print_mock:
+            with patch('moodle_dl.notifications.console.console_service.Log') as log:
+                log.cyan_str.return_value = '<->\tCourse/old.pdf'
+                service.notify_about_changes_in_moodle([Course(1, 'Course', [moved_file])])
+
+        log.cyan_str.assert_called_once_with('<->\tCourse/old.pdf')
+        print_mock.assert_any_call('<->\tCourse/old.pdf')
 
 
 if __name__ == '__main__':

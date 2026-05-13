@@ -39,6 +39,19 @@ class TestConfigHelperInit(unittest.TestCase):
         self.assertIsNotNone(config)
         mock_auth_manager.assert_called_once()
 
+    def test_auth_manager_init_failure_is_reported(self):
+        opts = MoodleDlOpts()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            opts.path = temp_dir
+
+            with patch('moodle_dl.database.StateRecorder', return_value=MagicMock()):
+                with patch('moodle_dl.auth_session_manager.AuthSessionManager', return_value=None):
+                    with self.assertRaises(RuntimeError) as context:
+                        ConfigHelper(opts)
+
+        self.assertIn('认证管理器初始化失败', str(context.exception))
+
 
 if __name__ == '__main__':
     unittest.main()

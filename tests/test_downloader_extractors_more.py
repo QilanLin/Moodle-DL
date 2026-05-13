@@ -98,6 +98,116 @@ def test_google_drive_helpers_and_real_extract_new_video_info():
     assert stream["height"] == 360
 
 
+def test_google_drive_caption_edge_cases():
+    ie = make_ie(GoogleDriveIE)
+    video_id = "b" * 28
+
+    assert ie._get_captions_by_type(video_id, None, "subtitles") is None
+    assert ie._get_captions_by_type(video_id, "subs", None) is None
+    assert ie._get_subtitles(video_id, "subs") is None
+    assert ie._get_automatic_captions(video_id, "subs") is None
+
+    ie._captions_xml = None
+    ie._download_xml = Mock(return_value=None)
+    assert ie._get_subtitles(video_id, "subs", "en") is None
+
+    ie._captions_xml = None
+    ie._download_xml = Mock(return_value=None)
+    assert ie._get_automatic_captions(video_id, "subs", "en") is None
+
+    ie._captions_xml = ElementTree.fromstring("<transcript_list><format fmt_code='vtt' /></transcript_list>")
+    ie._download_xml = Mock()
+    assert ie._get_automatic_captions(video_id, "subs", "en") is None
+    ie._download_xml.assert_not_called()
+
+    ie._captions_xml = ElementTree.fromstring("<transcript_list><track /></transcript_list>")
+    ie._download_xml = Mock()
+    assert ie._get_automatic_captions(video_id, "subs", "en") is None
+    ie._download_xml.assert_not_called()
+
+
+def test_google_drive_real_extract_old_webpage_fallback():
+    ie = make_ie(GoogleDriveIE)
+    video_id = "c" * 28
+    webpage = """
+    <meta property="og:image" content="https://thumb.test/image.jpg">
+    ["title","Fallback.mp4"]
+    ["length_seconds","12"]
+    ["fmt_stream_map","18|https:\\/\\/cdn.test\\/fallback.mp4,broken-entry"]
+    ["fmt_list","18/320x180/9/0/115"]
+    ["hl","en"]
+    ["ttsurl","https://caption.test?vid=subs"]
+    """
+    ie._download_webpage = Mock(side_effect=["reason=Needs+fallback", webpage])
+    ie._request_webpage = Mock(
+        return_value=UrlHandle(
+            "https://download.test/fallback",
+            headers={"Content-Disposition": 'attachment; filename="Fallback.mp4"'},
+        )
+    )
+    ie._sort_formats = Mock()
+    ie.extract_subtitles = Mock(return_value={})
+    ie.extract_automatic_captions = Mock(return_value={})
+
+    result = ie._real_extract(f"https://drive.google.com/file/d/{video_id}/view")
+
+    assert result["title"] == "Fallback.mp4"
+    assert result["duration"] == 12
+    assert result["thumbnail"] == "https://thumb.test/image.jpg"
+    assert {fmt["format_id"] for fmt in result["formats"]} == {"18", "source"}
+    assert ie._download_webpage.call_args_list[1].args == (f"http://docs.google.com/file/d/{video_id}", video_id)
+    ie.extract_subtitles.assert_called_once_with(video_id, "subs", "en")
+
+
+def test_google_drive_real_extract_uses_confirmation_download():
+    ie = make_ie(GoogleDriveIE)
+    video_id = "d" * 28
+    ie._download_webpage = Mock(return_value="title=Video.bin&length_seconds=5&hl=en")
+    ie._request_webpage = Mock(
+        side_effect=[
+            UrlHandle("https://drive.google.com/uc?id=file", headers={}),
+            UrlHandle(
+                "https://download.test/confirmed",
+                headers={"Content-Disposition": 'attachment; filename="Video.bin"'},
+            ),
+        ]
+    )
+    ie._webpage_read_content = Mock(return_value="<a href='download?confirm=abc123&id=file'>download</a>")
+    ie._sort_formats = Mock()
+    ie.extract_subtitles = Mock(return_value={})
+    ie.extract_automatic_captions = Mock(return_value={})
+
+    result = ie._real_extract(f"https://drive.google.com/file/d/{video_id}/view")
+
+    assert [fmt["format_id"] for fmt in result["formats"]] == ["source"]
+    assert result["formats"][0]["url"] == "https://download.test/confirmed"
+    assert "confirm=abc123" in ie._request_webpage.call_args_list[1].args[0]
+
+
+def test_google_drive_real_extract_raises_for_new_and_old_error_responses():
+    video_id = "e" * 28
+    new_error = make_ie(GoogleDriveIE)
+    new_error._download_webpage = Mock(return_value="title=Video.mp4&reason=Denied")
+    new_error._request_webpage = Mock(return_value=None)
+    new_error._sort_formats = Mock()
+
+    with pytest.raises(ExtractorError, match="Denied"):
+        new_error._real_extract(f"https://drive.google.com/file/d/{video_id}/view")
+
+    old_error = make_ie(GoogleDriveIE)
+    old_error._download_webpage = Mock(
+        side_effect=[
+            "reason=Needs+fallback",
+            '["title","Fallback.mp4"] ["reason","Old denied"]',
+        ]
+    )
+    old_error._request_webpage = Mock(return_value=None)
+    old_error._sort_formats = Mock()
+
+    with pytest.raises(ExtractorError, match="Old denied"):
+        old_error._real_extract(f"https://drive.google.com/file/d/{video_id}/view")
+
+
 def test_echo360_query_and_mediapackage_parsing():
     ie = make_ie(Echo360IE)
     assert ie._replace_url_query("https://cdn.test/a.m3u8?old=1", "token=abc") == "https://cdn.test/a.m3u8?token=abc"

@@ -34,7 +34,7 @@ class AsyncResponse:
         self.status = status
         self._text = text
         self.url = url
-        self.request_info = None
+        self.request_info = SimpleNamespace(real_url=url)
         self.history = ()
 
     async def __aenter__(self):
@@ -48,6 +48,11 @@ class AsyncResponse:
 
     async def json(self):
         return json.loads(self._text)
+
+
+class TextErrorAsyncResponse(AsyncResponse):
+    async def text(self):
+        raise RuntimeError("cannot read body")
 
 
 class AsyncSession:
@@ -236,3 +241,87 @@ async def test_async_post_requires_token():
     helper = make_helper(token=None)
     with pytest.raises(ValueError, match="token"):
         await helper.async_post("core_test", {})
+
+
+@pytest.mark.asyncio
+async def test_async_post_uses_ip_diagnostics_when_403_body_cannot_be_read():
+    helper = make_helper()
+
+    with (
+        patch(
+            "moodle_dl.moodle.request_helper.aiohttp.ClientSession",
+            return_value=AsyncSession([TextErrorAsyncResponse(status=403)]),
+        ),
+        patch("moodle_dl.moodle.request_helper.SslHelper.get_ssl_context", return_value=None),
+        patch(
+            "moodle_dl.moodle.request_helper.IPValidator.diagnose_403_error",
+            return_value=(True, "ip whitelist problem"),
+        ) as diagnose,
+    ):
+        with pytest.raises(MoodleAuthError, match="ip whitelist problem"):
+            await helper.async_post("core_test", {})
+
+    diagnose.assert_called_once_with("403", None, "moodle.example.test")
+
+
+@pytest.mark.asyncio
+async def test_async_post_maps_non_retryable_http_statuses_to_api_errors():
+    helper = make_helper()
+
+    for status, text, match in [
+        (404, "missing", "API 不存在"),
+        (500, "server failed", "HTTP 错误"),
+    ]:
+        with (
+            patch(
+                "moodle_dl.moodle.request_helper.aiohttp.ClientSession",
+                return_value=AsyncSession([AsyncResponse(status=status, text=text)]),
+            ),
+            patch("moodle_dl.moodle.request_helper.SslHelper.get_ssl_context", return_value=None),
+        ):
+            with pytest.raises(MoodleAPIError, match=match):
+                await helper.async_post("core_missing", {})
+
+
+@pytest.mark.asyncio
+async def test_async_post_retries_retryable_statuses_until_network_error():
+    helper = make_helper()
+    helper.MAX_RETRIES = 2
+    session = AsyncSession([
+        AsyncResponse(status=408, text="timeout"),
+        AsyncResponse(status=408, text="timeout"),
+    ])
+
+    with (
+        patch("moodle_dl.moodle.request_helper.aiohttp.ClientSession", return_value=session),
+        patch("moodle_dl.moodle.request_helper.SslHelper.get_ssl_context", return_value=None),
+        patch("moodle_dl.moodle.request_helper.asyncio.sleep", new_callable=AsyncMock) as sleep_mock,
+    ):
+        with pytest.raises(MoodleNetworkError, match="已重试 2 次"):
+            await helper.async_post("core_test", {})
+
+    assert len(session.post_calls) == 2
+    sleep_mock.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_async_post_converts_content_type_and_json_errors_to_api_errors():
+    helper = make_helper()
+
+    for error, match in [
+        (aiohttp.client_exceptions.ContentTypeError(request_info=Mock(), history=()), "无效的内容类型"),
+        (ValueError("not json"), "无效 JSON"),
+    ]:
+        with (
+            patch(
+                "moodle_dl.moodle.request_helper.aiohttp.ClientSession",
+                return_value=AsyncSession([error]),
+            ),
+            patch("moodle_dl.moodle.request_helper.SslHelper.get_ssl_context", return_value=None),
+        ):
+            with pytest.raises(MoodleAPIError, match=match):
+                await helper.async_post("core_test", {})
+
+
+def test_recursive_urlencode_ignores_scalar_without_base_key():
+    assert RequestHelper.recursive_urlencode("plain-value") == ""

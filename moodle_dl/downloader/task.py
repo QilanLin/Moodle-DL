@@ -1893,6 +1893,7 @@ class Task:
 
     async def download_url(self, dl_url: str, dest_path: str, timeout: int = None):
         total_bytes_received = 0
+        content_length = 0
         done_tries = 0
         can_continue_on_fail = False
         file_obj = None
@@ -2008,6 +2009,12 @@ class Task:
                             or isinstance(err, ContentRangeError)
                             or (done_tries >= self.MAX_DL_RETRIES)
                         ):
+                            should_save_incomplete = (
+                                can_continue_on_fail
+                                and total_bytes_received > 0
+                                and total_bytes_received < (content_length or 0)
+                                and not isinstance(err, ContentRangeError)
+                            )
                             can_continue_on_fail = False
                             # Clean up failed file because we can not recover
                             if file_obj is not None and not file_obj.closed:
@@ -2018,7 +2025,7 @@ class Task:
                             # If download can be continued and size > 0,
                             # remember that the file started downloading, and continue downloading
                             # on next run instead of deleting it.
-                            if can_continue_on_fail and total_bytes_received > 0 and total_bytes_received < (content_length or 0):
+                            if should_save_incomplete:
                                 # 保存到数据库用于下次续传
                                 try:
                                     self._save_incomplete_download(

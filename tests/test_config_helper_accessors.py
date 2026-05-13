@@ -1,7 +1,8 @@
 import json
 from dataclasses import fields
 from pathlib import Path
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -23,6 +24,15 @@ def make_config(tmp_path, config=None, auth_manager=None):
     helper._auth_manager = auth_manager or MagicMock()
     helper._db_file = str(tmp_path / 'moodle_state.db')
     return helper
+
+
+def validation_result(*, errors=None, warnings=None):
+    result = MagicMock()
+    result.errors = list(errors or [])
+    result.warnings = list(warnings or [])
+    result.has_errors.return_value = bool(result.errors)
+    result.has_warnings.return_value = bool(result.warnings)
+    return result
 
 
 def test_normalize_moodle_url_adds_https_only_when_scheme_is_missing():
@@ -99,6 +109,41 @@ def test_load_reads_json_and_reports_missing_or_invalid_config(tmp_path):
     assert helper._whole_config == {'token': 'abc'}
 
 
+def test_load_validates_warnings_errors_and_auto_fix(tmp_path):
+    helper = make_config(tmp_path)
+    Path(helper.config_path).write_text('{"token": "abc", "bad": true}', encoding='utf-8')
+    warning = SimpleNamespace(field='token', message='looks short', suggestion='use a real token')
+    clean_result = validation_result()
+    warning_result = validation_result(warnings=[warning])
+    validator = MagicMock()
+    validator.validate_config_data.side_effect = [warning_result, clean_result]
+
+    with patch('moodle_dl.config_validator.ConfigValidator', return_value=validator):
+        helper.load(validate=True)
+
+    assert helper._whole_config == {'token': 'abc', 'bad': True}
+
+    fixed_config = {'token': 'fixed'}
+    validator.validate_config_data.side_effect = [warning_result, clean_result]
+    with (
+        patch('moodle_dl.config_validator.ConfigValidator', return_value=validator),
+        patch('moodle_dl.config_validator.auto_fix_config', return_value=(fixed_config, ['fixed token'])),
+    ):
+        helper.load(validate=True, auto_fix=True)
+
+    assert helper._whole_config == fixed_config
+    assert json.loads(Path(helper.config_path).read_text(encoding='utf-8')) == {
+        'token': 'fixed',
+        'download_options': {},
+    }
+
+    error = SimpleNamespace(field='token', message='invalid', suggestion='rerun init')
+    validator.validate_config_data.side_effect = [validation_result(errors=[error])]
+    with patch('moodle_dl.config_validator.ConfigValidator', return_value=validator):
+        with pytest.raises(ValueError, match='配置验证失败'):
+            helper.load(validate=True)
+
+
 def test_validate_uses_validator_result(monkeypatch, tmp_path, capsys):
     helper = make_config(tmp_path, {'token': 'abc'})
     result = MagicMock()
@@ -112,6 +157,27 @@ def test_validate_uses_validator_result(monkeypatch, tmp_path, capsys):
     assert helper.validate() is False
     assert 'broken config' in capsys.readouterr().out
     validator.validate_config_data.assert_called_once_with({'token': 'abc'})
+
+
+def test_save_validation_reports_warnings_and_rejects_errors(tmp_path):
+    helper = make_config(tmp_path, {'token': 'abc'})
+    warning = SimpleNamespace(field='token', message='looks short')
+    validator = MagicMock()
+    validator.validate_config_data.return_value = validation_result(warnings=[warning])
+
+    with patch('moodle_dl.config_validator.ConfigValidator', return_value=validator):
+        helper._save(validate=True)
+
+    assert json.loads(Path(helper.config_path).read_text(encoding='utf-8')) == {
+        'token': 'abc',
+        'download_options': {},
+    }
+
+    error = SimpleNamespace(field='moodle_domain', message='missing')
+    validator.validate_config_data.return_value = validation_result(errors=[error])
+    with patch('moodle_dl.config_validator.ConfigValidator', return_value=validator):
+        with pytest.raises(ValueError, match='无法保存'):
+            helper._save(validate=True)
 
 
 def test_download_option_getters_use_dataclass_config(tmp_path):
@@ -230,6 +296,14 @@ def test_cookie_text_is_rendered_from_cookie_batch_session(tmp_path):
             'name': 'local',
             'value': 'xyz',
         },
+        {
+            'domain': 'future.example.com',
+            'path': '/',
+            'secure': 0,
+            'expires': 1735689600,
+            'name': 'future',
+            'value': 'value',
+        },
         {'domain': 'ignored.example.com', 'name': '', 'value': 'missing-name'},
     ]
     helper = make_config(tmp_path, auth_manager=auth_manager)
@@ -239,6 +313,7 @@ def test_cookie_text_is_rendered_from_cookie_batch_session(tmp_path):
     assert '# Netscape HTTP Cookie File' in cookie_text
     assert '.example.com\tTRUE\t/\tTRUE\t0\tsid\tabc' in cookie_text
     assert 'localhost\tFALSE\t/moodle\tFALSE\t0\tlocal\txyz' in cookie_text
+    assert '.future.example.com\tTRUE\t/\tFALSE\t1735689600\tfuture\tvalue' in cookie_text
     assert 'ignored.example.com' not in cookie_text
 
 
@@ -275,6 +350,12 @@ def test_moodle_url_and_path_getters(tmp_path):
     assert helper.get_misc_files_path() == str(tmp_path / 'misc')
     assert helper.get_auth_manager() is helper._auth_manager
 
+    missing = make_config(tmp_path)
+    with pytest.raises(ValueError, match='Not yet configured'):
+        missing.get_moodle_domain()
+    with pytest.raises(ValueError, match='Not yet configured'):
+        missing.get_moodle_path()
+
 
 def test_misc_getters_return_defaults_and_configured_values(tmp_path, monkeypatch):
     helper = make_config(
@@ -308,6 +389,8 @@ def test_misc_getters_return_defaults_and_configured_values(tmp_path, monkeypatc
     assert helper.get_do_not_ask_to_save_userid_and_version() is True
     assert helper.get_options_of_courses() == {'1': {'overwrite_name_with': 'Course'}}
     assert helper.get_download_option('submissions', default=True) is True
+    helper._whole_config.pop('exclude_file_extensions')
+    assert helper.get_exclude_file_extensions() == []
 
     monkeypatch.setattr('moodle_dl.config.sys.platform', 'darwin')
     assert helper.get_write_links() == {'url': False, 'webloc': True, 'desktop': False}

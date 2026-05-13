@@ -51,6 +51,14 @@ class TestDiscordService(unittest.TestCase):
 
         formatter.assert_not_called()
 
+    def test_send_embeds_skips_when_not_configured(self):
+        service = DiscordService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.discord.discord_service.DiscordShooter') as shooter_cls:
+            service._send_embeds([{'title': 'Change'}])
+
+        shooter_cls.assert_not_called()
+
     def test_send_embeds_uses_configured_webhooks(self):
         config = configured_config('discord', {'webhook_urls': ['https://discord.example/hook']})
         service = DiscordService(config)
@@ -70,8 +78,33 @@ class TestDiscordService(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, 'webhook failed'):
                 service._send_embeds([{'title': 'Change'}])
 
+    def test_notify_changes_formats_and_sends(self):
+        service = DiscordService(configured_config('discord', {'webhook_urls': ['https://discord.example/hook']}))
+        changes = [Course(1, 'Course')]
+
+        with patch(
+            'moodle_dl.notifications.discord.discord_service.DF.create_full_moodle_diff_messages',
+            return_value=[{'title': 'Change'}],
+        ) as formatter:
+            with patch.object(service, '_send_embeds') as send_embeds:
+                service.notify_about_changes_in_moodle(changes)
+
+        formatter.assert_called_once_with(changes, 'https://moodle.example.com/')
+        send_embeds.assert_called_once_with([{'title': 'Change'}])
+
+    def test_error_and_failed_download_notifications_are_noops(self):
+        service = DiscordService(configured_config('discord', {'webhook_urls': ['https://discord.example/hook']}))
+
+        self.assertIsNone(service.notify_about_error('traceback'))
+        self.assertIsNone(service.notify_about_failed_downloads([MagicMock()]))
+
 
 class TestTelegramService(unittest.TestCase):
+    def test_is_configured_returns_false_when_telegram_config_is_missing(self):
+        service = TelegramService(unconfigured_config())
+
+        self.assertFalse(service._is_configured())
+
     def test_send_messages_uses_configured_bot(self):
         config = configured_config('telegram', {'token': 'token', 'chat_id': 'chat'})
         service = TelegramService(config)
@@ -92,6 +125,47 @@ class TestTelegramService(unittest.TestCase):
 
         shooter_cls.assert_not_called()
 
+    def test_send_messages_rethrows_sender_errors(self):
+        config = configured_config('telegram', {'token': 'token', 'chat_id': 'chat'})
+        service = TelegramService(config)
+
+        with patch('moodle_dl.notifications.telegram.telegram_service.TelegramShooter') as shooter_cls:
+            shooter_cls.return_value.send.side_effect = RuntimeError('telegram failed')
+            with self.assertRaisesRegex(RuntimeError, 'telegram failed'):
+                service._send_messages(['message'])
+
+    def test_notify_changes_skips_when_not_configured(self):
+        service = TelegramService(unconfigured_config())
+
+        with patch(
+            'moodle_dl.notifications.telegram.telegram_service.TF.create_full_moodle_diff_messages'
+        ) as formatter:
+            service.notify_about_changes_in_moodle([Course(1, 'Course')])
+
+        formatter.assert_not_called()
+
+    def test_notify_changes_formats_and_sends(self):
+        service = TelegramService(configured_config('telegram', {'token': 'token', 'chat_id': 'chat'}))
+        changes = [Course(1, 'Course')]
+
+        with patch(
+            'moodle_dl.notifications.telegram.telegram_service.TF.create_full_moodle_diff_messages',
+            return_value=['change'],
+        ) as formatter:
+            with patch.object(service, '_send_messages') as send_messages:
+                service.notify_about_changes_in_moodle(changes)
+
+        formatter.assert_called_once_with(changes)
+        send_messages.assert_called_once_with(['change'])
+
+    def test_notify_error_skips_when_not_configured(self):
+        service = TelegramService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.telegram.telegram_service.TF.create_full_error_messages') as formatter:
+            service.notify_about_error('traceback')
+
+        formatter.assert_not_called()
+
     def test_notify_error_respects_send_error_flag(self):
         service = TelegramService(
             configured_config('telegram', {'token': 'token', 'chat_id': 'chat', 'send_error_msg': False})
@@ -101,6 +175,21 @@ class TestTelegramService(unittest.TestCase):
             service.notify_about_error('traceback')
 
         send_messages.assert_not_called()
+
+    def test_notify_error_formats_and_sends_when_enabled(self):
+        service = TelegramService(
+            configured_config('telegram', {'token': 'token', 'chat_id': 'chat', 'send_error_msg': True})
+        )
+
+        with patch(
+            'moodle_dl.notifications.telegram.telegram_service.TF.create_full_error_messages',
+            return_value=['error'],
+        ) as formatter:
+            with patch.object(service, '_send_messages') as send_messages:
+                service.notify_about_error('traceback')
+
+        formatter.assert_called_once_with('traceback')
+        send_messages.assert_called_once_with(['error'])
 
     def test_notify_failed_downloads_formats_and_sends_when_enabled(self):
         service = TelegramService(
@@ -117,6 +206,25 @@ class TestTelegramService(unittest.TestCase):
 
         formatter.assert_called_once_with(failed_downloads)
         send_messages.assert_called_once_with(['failed'])
+
+    def test_notify_failed_downloads_skips_when_not_configured_or_disabled(self):
+        failed_downloads = [MagicMock()]
+
+        with patch(
+            'moodle_dl.notifications.telegram.telegram_service.TF.create_full_failed_downloads_messages'
+        ) as formatter:
+            TelegramService(unconfigured_config()).notify_about_failed_downloads(failed_downloads)
+
+        formatter.assert_not_called()
+
+        service = TelegramService(
+            configured_config('telegram', {'token': 'token', 'chat_id': 'chat', 'send_error_msg': False})
+        )
+
+        with patch.object(service, '_send_messages') as send_messages:
+            service.notify_about_failed_downloads(failed_downloads)
+
+        send_messages.assert_not_called()
 
 
 class TestNtfyService(unittest.TestCase):
@@ -148,6 +256,23 @@ class TestNtfyService(unittest.TestCase):
 
         shooter_cls.assert_not_called()
 
+    def test_send_messages_rethrows_sender_errors(self):
+        config = configured_config('ntfy', {'topic': 'moodle', 'server': 'https://ntfy.example'})
+        service = NtfyService(config)
+
+        with patch('moodle_dl.notifications.ntfy.ntfy_service.NtfyShooter') as shooter_cls:
+            shooter_cls.return_value.send.side_effect = RuntimeError('ntfy failed')
+            with self.assertRaisesRegex(RuntimeError, 'ntfy failed'):
+                service._send_messages([{'title': 'Change', 'message': 'Body'}])
+
+    def test_notify_changes_skips_when_not_configured(self):
+        service = NtfyService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.ntfy.ntfy_service.NF.create_full_moodle_diff_messages') as formatter:
+            service.notify_about_changes_in_moodle([Course(1, 'Course')])
+
+        formatter.assert_not_called()
+
     def test_notify_changes_formats_and_sends(self):
         service = NtfyService(configured_config('ntfy', {'topic': 'moodle'}))
         changes = [Course(1, 'Course')]
@@ -162,6 +287,12 @@ class TestNtfyService(unittest.TestCase):
         formatter.assert_called_once_with(changes)
         send_messages.assert_called_once_with([{'title': 'Change', 'message': 'Body'}])
 
+    def test_error_and_failed_download_notifications_are_noops(self):
+        service = NtfyService(configured_config('ntfy', {'topic': 'moodle'}))
+
+        self.assertIsNone(service.notify_about_error('traceback'))
+        self.assertIsNone(service.notify_about_failed_downloads([MagicMock()]))
+
 
 class TestMailService(unittest.TestCase):
     MAIL_CONFIG = {
@@ -172,6 +303,19 @@ class TestMailService(unittest.TestCase):
         'username': 'user',
         'password': 'password',
     }
+
+    def test_is_configured_returns_false_when_mail_config_is_missing(self):
+        service = MailService(unconfigured_config())
+
+        self.assertFalse(service._is_configured())
+
+    def test_send_mail_skips_when_not_configured(self):
+        service = MailService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.mail.mail_service.MailShooter') as shooter_cls:
+            service._send_mail('Subject', ('<p>HTML</p>', {}))
+
+        shooter_cls.assert_not_called()
 
     def test_send_mail_uses_configured_smtp(self):
         service = MailService(configured_config('mail', self.MAIL_CONFIG))
@@ -186,6 +330,22 @@ class TestMailService(unittest.TestCase):
             '<p>HTML</p>',
             {'plain': 'text'},
         )
+
+    def test_send_mail_rethrows_sender_errors(self):
+        service = MailService(configured_config('mail', self.MAIL_CONFIG))
+
+        with patch('moodle_dl.notifications.mail.mail_service.MailShooter') as shooter_cls:
+            shooter_cls.return_value.send.side_effect = RuntimeError('smtp failed')
+            with self.assertRaisesRegex(RuntimeError, 'smtp failed'):
+                service._send_mail('Subject', ('<p>HTML</p>', {}))
+
+    def test_notify_changes_skips_when_not_configured(self):
+        service = MailService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.mail.mail_service.create_full_moodle_diff_mail') as formatter:
+            service.notify_about_changes_in_moodle([Course(1, 'Course')])
+
+        formatter.assert_not_called()
 
     def test_notify_changes_counts_changed_files_in_subject(self):
         service = MailService(configured_config('mail', self.MAIL_CONFIG))
@@ -205,6 +365,14 @@ class TestMailService(unittest.TestCase):
             service.notify_about_error('traceback')
 
         send_mail.assert_not_called()
+
+    def test_notify_error_skips_when_not_configured(self):
+        service = MailService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.mail.mail_service.create_full_error_mail') as formatter:
+            service.notify_about_error('traceback')
+
+        formatter.assert_not_called()
 
     def test_notify_error_formats_and_sends_when_enabled(self):
         service = MailService(configured_config('mail', dict(self.MAIL_CONFIG, send_error_msg=True)))
@@ -241,9 +409,22 @@ class TestMailService(unittest.TestCase):
 
         send_mail.assert_not_called()
 
+    def test_notify_failed_downloads_skips_when_not_configured(self):
+        service = MailService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.mail.mail_service.create_full_failed_downloads_mail') as formatter:
+            service.notify_about_failed_downloads([MagicMock()])
+
+        formatter.assert_not_called()
+
 
 class TestXmppService(unittest.TestCase):
     XMPP_CONFIG = {'sender': 'bot@example.com/resource', 'password': 'secret', 'target': 'user@example.com'}
+
+    def test_is_configured_returns_false_when_xmpp_config_is_missing(self):
+        service = XmppService(unconfigured_config())
+
+        self.assertFalse(service._is_configured())
 
     def test_send_messages_uses_configured_account(self):
         service = XmppService(configured_config('xmpp', self.XMPP_CONFIG))
@@ -265,6 +446,22 @@ class TestXmppService(unittest.TestCase):
 
         shooter_cls.assert_not_called()
 
+    def test_send_messages_rethrows_sender_errors(self):
+        service = XmppService(configured_config('xmpp', self.XMPP_CONFIG))
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_service.XmppShooter') as shooter_cls:
+            shooter_cls.return_value.send.side_effect = RuntimeError('xmpp failed')
+            with self.assertRaisesRegex(RuntimeError, 'xmpp failed'):
+                service._send_messages(['message'])
+
+    def test_notify_changes_skips_when_not_configured(self):
+        service = XmppService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_service.XF.create_full_moodle_diff_messages') as formatter:
+            service.notify_about_changes_in_moodle([Course(1, 'Course')])
+
+        formatter.assert_not_called()
+
     def test_notify_changes_formats_and_sends(self):
         service = XmppService(configured_config('xmpp', self.XMPP_CONFIG))
         changes = [Course(1, 'Course')]
@@ -279,6 +476,14 @@ class TestXmppService(unittest.TestCase):
         formatter.assert_called_once_with(changes)
         send_messages.assert_called_once_with(['change'])
 
+    def test_notify_error_skips_when_not_configured(self):
+        service = XmppService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_service.XF.create_full_error_messages') as formatter:
+            service.notify_about_error('traceback')
+
+        formatter.assert_not_called()
+
     def test_notify_error_and_failed_downloads_respect_send_error_flag(self):
         service = XmppService(configured_config('xmpp', dict(self.XMPP_CONFIG, send_error_msg=False)))
 
@@ -287,6 +492,27 @@ class TestXmppService(unittest.TestCase):
             service.notify_about_failed_downloads([MagicMock()])
 
         send_messages.assert_not_called()
+
+    def test_notify_error_formats_when_enabled(self):
+        service = XmppService(configured_config('xmpp', dict(self.XMPP_CONFIG, send_error_msg=True)))
+
+        with patch(
+            'moodle_dl.notifications.xmpp.xmpp_service.XF.create_full_error_messages',
+            return_value=['error'],
+        ) as formatter:
+            with patch.object(service, '_send_messages') as send_messages:
+                service.notify_about_error('traceback')
+
+        formatter.assert_called_once_with('traceback')
+        send_messages.assert_called_once_with(['error'])
+
+    def test_notify_failed_downloads_skips_when_not_configured(self):
+        service = XmppService(unconfigured_config())
+
+        with patch('moodle_dl.notifications.xmpp.xmpp_service.XF.create_full_failed_downloads_messages') as formatter:
+            service.notify_about_failed_downloads([MagicMock()])
+
+        formatter.assert_not_called()
 
     def test_notify_failed_downloads_formats_when_enabled(self):
         service = XmppService(configured_config('xmpp', dict(self.XMPP_CONFIG, send_error_msg=True)))
@@ -303,6 +529,28 @@ class TestXmppService(unittest.TestCase):
         send_messages.assert_called_once_with(['failed'])
 
 
+class ConcreteNotificationService(NotificationService):
+    def notify_about_changes_in_moodle(self, changes):
+        return super().notify_about_changes_in_moodle(changes)
+
+    def notify_about_error(self, error_description):
+        return super().notify_about_error(error_description)
+
+    def notify_about_failed_downloads(self, failed_downloads):
+        return super().notify_about_failed_downloads(failed_downloads)
+
+
+class TestNotificationServiceBase(unittest.TestCase):
+    def test_base_methods_are_noops_and_store_config(self):
+        config = MagicMock()
+        service = ConcreteNotificationService(config)
+
+        self.assertIs(service.config, config)
+        self.assertIsNone(service.notify_about_changes_in_moodle([]))
+        self.assertIsNone(service.notify_about_error('traceback'))
+        self.assertIsNone(service.notify_about_failed_downloads([]))
+
+
 class TestShooters(unittest.TestCase):
     def test_discord_response_code_validation(self):
         for status_code in (200, 204, 400):
@@ -312,6 +560,32 @@ class TestShooters(unittest.TestCase):
         response = MagicMock(status_code=500, headers={'x': 'y'}, text='server error')
         with self.assertRaisesRegex(RuntimeError, 'Status code: 500'):
             DiscordShooter._check_response_code(response)
+
+    def test_discord_send_msg_and_embeds_wrap_payloads(self):
+        shooter = DiscordShooter(['https://discord.example/hook'])
+
+        with patch.object(shooter, 'send_data') as send_data:
+            shooter.send_msg('hello')
+            shooter.send([{'title': 'Change'}])
+
+        self.assertEqual(send_data.call_args_list[0].args[0]['content'], 'hello')
+        self.assertEqual(send_data.call_args_list[0].args[0]['username'], 'Moodle Notifications')
+        self.assertEqual(send_data.call_args_list[1].args[0]['embeds'], [{'title': 'Change'}])
+        self.assertEqual(send_data.call_args_list[1].args[0]['username'], 'Moodle Notifications')
+
+    def test_discord_send_data_posts_to_each_webhook(self):
+        session = MagicMock()
+        session.post.return_value = MagicMock(status_code=204)
+
+        with patch(
+            'moodle_dl.notifications.discord.discord_shooter.SslHelper.custom_requests_session',
+            return_value=session,
+        ):
+            DiscordShooter(['https://discord.example/one', 'https://discord.example/two']).send_data({'content': 'hi'})
+
+        self.assertEqual(session.post.call_count, 2)
+        self.assertEqual(session.post.call_args_list[0].args[0], 'https://discord.example/one')
+        self.assertEqual(session.post.call_args_list[1].args[0], 'https://discord.example/two')
 
     def test_discord_send_data_wraps_request_errors(self):
         session = MagicMock()
@@ -338,6 +612,31 @@ class TestShooters(unittest.TestCase):
         invalid_status = MagicMock(status_code=500, headers={}, text='broken')
         with self.assertRaisesRegex(RuntimeError, 'Status-Code: 500'):
             TelegramShooter._check_response_code(invalid_status)
+
+        invalid_json = MagicMock(status_code=200)
+        invalid_json.json.side_effect = ValueError('not json')
+        invalid_json.read.return_value = b'not-json'
+        with self.assertRaisesRegex(RuntimeError, 'parse the json response'):
+            TelegramShooter('token', 'chat')._check_errors(invalid_json)
+
+    def test_telegram_send_posts_encoded_payload_and_checks_response(self):
+        session = MagicMock()
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'ok': True}
+        session.post.return_value = response
+
+        with patch(
+            'moodle_dl.notifications.telegram.telegram_shooter.SslHelper.custom_requests_session',
+            return_value=session,
+        ):
+            TelegramShooter('token', 'chat id').send('hello world')
+
+        session.post.assert_called_once()
+        self.assertEqual(session.post.call_args.args[0], 'https://api.telegram.org/bottoken/sendMessage')
+        data = session.post.call_args.kwargs['data']
+        self.assertIn('chat_id=chat+id', data)
+        self.assertIn('text=hello+world', data)
+        self.assertIn('parse_mode=HTML', data)
 
     def test_telegram_send_wraps_request_errors(self):
         session = MagicMock()

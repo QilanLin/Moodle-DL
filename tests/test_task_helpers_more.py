@@ -9,7 +9,7 @@ import pytest
 import requests
 from yarl import URL
 
-from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task import ContentRangeError, Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, HeadInfo, MoodleDlOpts, TaskState
 
 
@@ -1933,6 +1933,179 @@ async def test_download_url_marks_complete_and_ignores_cleanup_errors(task_facto
         patch('moodle_dl.database.StateRecorder', side_effect=RuntimeError('database locked')),
     ):
         await cleanup_error.download_url('https://example.com/download.bin', str(tmp_path / 'other.bin'))
+
+
+@pytest.mark.asyncio
+async def test_download_url_ignores_resume_errors_and_downloads_from_start(task_factory, tmp_path):
+    class FakeClientSession:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    task = task_factory()
+    task.file.file_id = 123
+    dest_path = tmp_path / 'partial.bin'
+    dest_path.write_bytes(b'partial')
+    fake_file = SimpleNamespace(closed=False, close=AsyncMock())
+    captured_headers = []
+
+    async def perform_download(_session, _url, _dest_path, headers, *_args, **_kwargs):
+        captured_headers.append(dict(headers))
+        return fake_file, 4, 4, None
+
+    task._resume_incomplete_download = AsyncMock(side_effect=RuntimeError('resume failed'))
+    task._perform_download_request = AsyncMock(side_effect=perform_download)
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', FakeClientSession),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value=None),
+    ):
+        await task.download_url('https://example.com/download.bin', str(dest_path))
+
+    task._resume_incomplete_download.assert_awaited_once()
+    task._perform_download_request.assert_awaited_once()
+    assert 'Range' not in captured_headers[0]
+    fake_file.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_download_url_missing_content_range_after_retry_cleans_file_and_fails(task_factory, tmp_path):
+    class FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeFile:
+        def __init__(self):
+            self.closed = False
+            self.close_count = 0
+
+        async def close(self):
+            self.close_count += 1
+            self.closed = True
+
+    task = task_factory()
+    task.MAX_DL_RETRIES = 2
+    dest_path = tmp_path / 'download.bin'
+    fake_file = FakeFile()
+    task.check_range_download_opt = AsyncMock(return_value=True)
+    task._perform_download_request = AsyncMock(
+        side_effect=[
+            aiohttp.ClientConnectionError('connection dropped'),
+            (fake_file, 5, 5, None),
+        ]
+    )
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', return_value=FakeClientSession()),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value=None),
+        patch('moodle_dl.downloader.task.PT.remove_file') as remove_file,
+        patch('moodle_dl.downloader.task.asyncio.sleep', new_callable=AsyncMock) as sleep_mock,
+    ):
+        with pytest.raises(ContentRangeError, match='requested range data'):
+            await task.download_url('https://example.com/download.bin', str(dest_path))
+
+    task.check_range_download_opt.assert_awaited_once()
+    assert task._perform_download_request.await_count == 2
+    assert task._perform_download_request.await_args_list[1].args[3]['Range'] == 'bytes=0-'
+    assert fake_file.close_count == 1
+    remove_file.assert_called_once_with(str(dest_path))
+    assert (DlEvent.RECEIVED, {'bytes_received': -5}) in task.events
+    sleep_mock.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+async def test_download_url_non_retryable_http_status_raises_without_retry(task_factory, tmp_path):
+    class FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    task = task_factory()
+    request_info = SimpleNamespace(real_url='https://example.com/download.bin')
+    error = aiohttp.ClientResponseError(
+        request_info=request_info,
+        history=(),
+        status=500,
+        message='server failed',
+    )
+    task.check_range_download_opt = AsyncMock(return_value=False)
+    task._perform_download_request = AsyncMock(side_effect=error)
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', return_value=FakeClientSession()),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value=None),
+        patch('moodle_dl.downloader.task.asyncio.sleep', new_callable=AsyncMock) as sleep_mock,
+    ):
+        with pytest.raises(aiohttp.ClientResponseError):
+            await task.download_url('https://example.com/download.bin', str(tmp_path / 'download.bin'))
+
+    task.check_range_download_opt.assert_awaited_once()
+    task._perform_download_request.assert_awaited_once()
+    sleep_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_download_url_saves_incomplete_download_when_final_retry_fails_after_partial(
+    task_factory,
+    tmp_path,
+):
+    class FakeClientSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeFile:
+        closed = False
+
+        async def close(self):
+            self.closed = True
+
+    task = task_factory()
+    task.MAX_DL_RETRIES = 2
+    dest_path = tmp_path / 'partial.bin'
+    fake_file = FakeFile()
+    final_error = aiohttp.ClientConnectionError('connection dropped again')
+    task.check_range_download_opt = AsyncMock(return_value=True)
+    task._perform_download_request = AsyncMock(
+        side_effect=[
+            (fake_file, 5, 10, 'bytes 0-4/10'),
+            final_error,
+        ]
+    )
+    task._save_incomplete_download = MagicMock()
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', return_value=FakeClientSession()),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value=None),
+        patch('moodle_dl.downloader.task.PT.remove_file') as remove_file,
+        patch('moodle_dl.downloader.task.asyncio.sleep', new_callable=AsyncMock) as sleep_mock,
+    ):
+        with pytest.raises(aiohttp.ClientConnectionError):
+            await task.download_url('https://example.com/download.bin', str(dest_path))
+
+    task.check_range_download_opt.assert_awaited_once()
+    assert task._perform_download_request.await_count == 2
+    assert task._perform_download_request.await_args_list[1].args[3]['Range'] == 'bytes=5-'
+    task._save_incomplete_download.assert_called_once_with(
+        str(dest_path),
+        'https://example.com/download.bin',
+        5,
+        10,
+    )
+    remove_file.assert_not_called()
+    sleep_mock.assert_awaited_once_with(1)
 
 
 def test_save_incomplete_download_reraises_database_errors(task_factory):

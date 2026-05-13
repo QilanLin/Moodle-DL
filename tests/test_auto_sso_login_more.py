@@ -127,6 +127,37 @@ def test_read_all_cookies_from_custom_browser_returns_empty_without_cookie_path(
         assert auto_sso_login._read_all_cookies_from_browser('zen') == []
 
 
+def test_deprecated_sso_cookie_reader_filters_sso_domains_and_skips_moodle(monkeypatch):
+    cookies = [
+        make_cookie('moodle', domain='.keats.kcl.ac.uk'),
+        make_cookie('ms', domain='.login.microsoftonline.com', expires=None, secure=1),
+        make_cookie('google', domain='accounts.google.com', expires=1760000000000, secure=0),
+        make_cookie('regular', domain='.example.com'),
+    ]
+    fake_browser_cookie3 = make_fake_browser_cookie3(firefox=MagicMock(return_value=cookies))
+    monkeypatch.setitem(sys.modules, 'browser_cookie3', fake_browser_cookie3)
+
+    result = auto_sso_login._read_sso_cookies_from_browser_DEPRECATED('firefox', 'keats.kcl.ac.uk')
+
+    assert [cookie['name'] for cookie in result] == ['ms', 'google']
+    assert result[0]['expires'] == -1
+    assert result[0]['secure'] == 1
+    assert result[0]['httpOnly'] is True
+    assert result[0]['sameSite'] == 'None'
+    assert result[1]['expires'] == 1760000000000
+    assert result[1]['secure'] == 0
+
+
+def test_deprecated_sso_cookie_reader_handles_unsupported_browser_and_read_errors(monkeypatch):
+    failing_browser_cookie3 = make_fake_browser_cookie3(
+        firefox=MagicMock(side_effect=RuntimeError('database locked'))
+    )
+    monkeypatch.setitem(sys.modules, 'browser_cookie3', failing_browser_cookie3)
+
+    assert auto_sso_login._read_sso_cookies_from_browser_DEPRECATED('vivaldi', 'keats.kcl.ac.uk') == []
+    assert auto_sso_login._read_sso_cookies_from_browser_DEPRECATED('firefox', 'keats.kcl.ac.uk') == []
+
+
 @pytest.mark.asyncio
 async def test_launch_chromium_headless_uses_chromium_channel():
     playwright = SimpleNamespace(

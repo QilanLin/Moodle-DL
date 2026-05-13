@@ -13,6 +13,7 @@ from moodle_dl.notifications.mail.mail_formatter import (
 from moodle_dl.notifications.discord.discord_formatter import DiscordFormatter
 from moodle_dl.notifications.ntfy.ntfy_formatter import _get_change_type, create_full_moodle_diff_messages
 from moodle_dl.notifications.telegram.telegram_formatter import TelegramFormatter
+from moodle_dl.notifications.xmpp.xmpp_formatter import XmppFormatter
 from moodle_dl.types import Course, File
 
 
@@ -38,6 +39,9 @@ def make_file(name, content_type='file', saved_to=None, modified=0, moved=0, del
 
 
 class TestDiscordFormatter(unittest.TestCase):
+    def test_make_bold_wraps_discord_markdown(self):
+        self.assertEqual(DiscordFormatter.make_bold('Course'), '**Course**')
+
     def test_create_full_moodle_diff_messages_groups_changes_by_type(self):
         added = make_file('new.pdf')
         modified = make_file('changed.pdf', modified=1)
@@ -54,6 +58,15 @@ class TestDiscordFormatter(unittest.TestCase):
         self.assertEqual(fields['Modified'], '• changed.pdf')
         self.assertEqual(fields['Moved'], '• moved.pdf')
         self.assertEqual(fields['Deleted'], '• deleted.pdf')
+
+    def test_create_full_moodle_diff_messages_appends_to_existing_field(self):
+        first = make_file('one.pdf')
+        second = make_file('two.pdf')
+        course = Course(42, 'Course101', [first, second])
+
+        embeds = DiscordFormatter.create_full_moodle_diff_messages([course], 'https://moodle.example.com/')
+
+        self.assertEqual(embeds[0]['fields'], [{'name': 'Added', 'value': '• one.pdf\n• two.pdf'}])
 
     def test_create_full_moodle_diff_messages_uses_new_file_path_for_replacements(self):
         old_file = make_file('old.pdf', modified=1)
@@ -151,6 +164,30 @@ class TestTelegramFormatter(unittest.TestCase):
         self.assertIn('Deleted:', rendered)
         self.assertIn('Course101/new.pdf', rendered)
 
+    def test_create_full_moodle_diff_messages_skips_empty_html_and_missing_text_files(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            empty_page_path = os.path.join(temp_dir, 'empty.html')
+            with open(empty_page_path, 'w', encoding='utf-8') as page_file:
+                page_file.write('<p></p>')
+
+            empty_page = make_file('empty.html', content_type='html', saved_to=empty_page_path)
+            empty_page.module_modname = 'page'
+            missing_description = make_file(
+                'missing.txt',
+                content_type='description',
+                saved_to=os.path.join(temp_dir, 'missing.txt'),
+            )
+
+            messages = TelegramFormatter.create_full_moodle_diff_messages(
+                [Course(42, 'Course101', [empty_page, missing_description])]
+            )
+
+        rendered = '\n'.join(messages)
+        self.assertIn('2 new Changes', rendered)
+        self.assertIn('empty.html', rendered)
+        self.assertIn('missing.txt', rendered)
+        self.assertNotIn('👇', rendered)
+
     def test_create_full_failed_downloads_messages_handles_url_and_plain_file_cases(self):
         task_with_url = MagicMock()
         task_with_url.file.content_filename = 'lecture.pdf'
@@ -172,6 +209,29 @@ class TestTelegramFormatter(unittest.TestCase):
 
     def test_create_full_failed_downloads_messages_returns_empty_for_empty_list(self):
         self.assertEqual(TelegramFormatter.create_full_failed_downloads_messages([]), [])
+
+
+class TestXmppFormatter(unittest.TestCase):
+    def test_append_with_limit_splits_truncates_and_appends_plain_text(self):
+        messages = []
+
+        content = XmppFormatter.append_with_limit('abcdef', '12345', messages, limit=10)
+
+        self.assertEqual(messages, ['12345'])
+        self.assertEqual(content, 'abcdef')
+
+        messages = []
+        content = XmppFormatter.append_with_limit('abcdefghij', '', messages, limit=6)
+
+        self.assertEqual(messages, [''])
+        self.assertEqual(content, 'abc…')
+
+        messages = []
+        self.assertEqual(XmppFormatter.append_with_limit('<b>raw</b>', 'prefix', messages, limit=100), 'prefix<b>raw</b>')
+        self.assertEqual(messages, [])
+
+    def test_make_bold_uses_plain_asterisks(self):
+        self.assertEqual(XmppFormatter.make_bold('Course'), '*Course*')
 
 
 class TestMailFormatter(unittest.TestCase):
