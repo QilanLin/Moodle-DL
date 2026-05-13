@@ -160,6 +160,104 @@ def test_new_file_is_idempotent_and_cache_is_cleared_after_saving(recorder, tmp_
     assert [file.content_filename for file in refreshed[0].files] == ['one.pdf', 'two.pdf']
 
 
+def test_modified_and_moved_files_preserve_old_references_for_notifications(recorder, tmp_path):
+    old_modified_path = tmp_path / 'old-modified.pdf'
+    old_modified_path.write_text('old data', encoding='utf-8')
+    old_modified = make_file(
+        module_id=1,
+        filename='lecture.pdf',
+        url='https://example.com/lecture-v1.pdf',
+        saved_to=str(old_modified_path),
+        hash_value='old',
+    )
+    old_modified.file_id = recorder.new_file(old_modified, 101, 'Course One')
+
+    new_modified = make_file(
+        module_id=1,
+        filename='lecture.pdf',
+        url='https://example.com/lecture-v2.pdf',
+        saved_to=str(tmp_path / 'lecture-v2.pdf'),
+        filesize=200,
+        hash_value='new',
+    )
+    new_modified.modified = True
+    new_modified.old_file = old_modified
+    recorder.save_file(new_modified, 101, 'Course One')
+
+    old_moved_path = tmp_path / 'old-moved.pdf'
+    old_moved_path.write_text('move data', encoding='utf-8')
+    old_moved = make_file(
+        module_id=2,
+        filename='slides.pdf',
+        url='https://example.com/slides.pdf',
+        filepath='/old/',
+        saved_to=str(old_moved_path),
+        hash_value='same',
+    )
+    old_moved.file_id = recorder.new_file(old_moved, 101, 'Course One')
+
+    new_moved = make_file(
+        module_id=2,
+        filename='slides.pdf',
+        url='https://example.com/slides.pdf',
+        filepath='/new/',
+        saved_to=str(tmp_path / 'slides.pdf'),
+        hash_value='same',
+    )
+    new_moved.moved = True
+    new_moved.old_file = old_moved
+    recorder.save_file(new_moved, 101, 'Course One')
+
+    rows = read_file_rows(recorder)
+    rows_by_id = {row['file_id']: row for row in rows}
+    assert rows_by_id[old_modified.file_id]['modified'] == 1
+    assert rows_by_id[old_modified.file_id]['notified'] == 0
+    assert rows_by_id[old_moved.file_id]['moved'] == 1
+    assert rows_by_id[old_moved.file_id]['notified'] == 0
+
+    replacement_rows = [row for row in rows if row['old_file_id']]
+    assert {row['old_file_id'] for row in replacement_rows} == {old_modified.file_id, old_moved.file_id}
+    assert all(row['notified'] == 1 for row in replacement_rows)
+
+    changes = recorder.changes_to_notify()
+    changed_files = {file.content_filename: file for file in changes[0].files}
+    assert changed_files['lecture.pdf'].new_file.content_fileurl == 'https://example.com/lecture-v2.pdf'
+    assert changed_files['slides.pdf'].new_file.content_filepath == '/new/'
+
+
+def test_get_old_files_and_batch_delete_clear_replacement_references(recorder, tmp_path):
+    old_file = make_file(
+        module_id=7,
+        filename='old.pdf',
+        url='https://example.com/old-v1.pdf',
+        saved_to=str(tmp_path / 'old.pdf'),
+    )
+    old_file.file_id = recorder.new_file(old_file, 101, 'Course One')
+
+    replacement = make_file(
+        module_id=7,
+        filename='old.pdf',
+        url='https://example.com/old-v2.pdf',
+        saved_to=str(tmp_path / 'replacement.pdf'),
+        filesize=120,
+    )
+    replacement.modified = True
+    replacement.old_file = old_file
+    recorder.save_file(replacement, 101, 'Course One')
+
+    old_courses = recorder.get_old_files()
+    assert len(old_courses) == 1
+    assert old_courses[0].id == 101
+    assert [file.file_id for file in old_courses[0].files] == [old_file.file_id]
+
+    recorder.batch_delete_files_from_db(old_courses[0].files)
+
+    rows = read_file_rows(recorder)
+    assert len(rows) == 1
+    assert rows[0]['content_fileurl'] == 'https://example.com/old-v2.pdf'
+    assert rows[0]['old_file_id'] is None
+
+
 def test_get_modified_and_new_files_detect_deleted_modified_moved_and_missing_disk_files(recorder, tmp_path):
     stored_existing_path = tmp_path / 'stored.pdf'
     stored_existing_path.write_text('data', encoding='utf-8')

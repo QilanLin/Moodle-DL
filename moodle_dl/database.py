@@ -203,8 +203,8 @@ class StateRecorder:
             # 增量升级已弃用：统一使用 v9 schema
             # 旧的增量升级代码已移至文件末尾的 _deprecated_incremental_upgrade()
             # ============================================================
-
-                conn.commit()
+            self._ensure_active_file_unique_index(c)
+            conn.commit()
             logging.debug('Database Version: %s', str(current_version))
             conn.close()
 
@@ -284,9 +284,9 @@ class StateRecorder:
             "CREATE INDEX IF NOT EXISTS idx_download_status ON files(download_status);",
             "CREATE INDEX IF NOT EXISTS idx_consecutive_failures ON files(consecutive_failures);",
             "CREATE INDEX IF NOT EXISTS idx_position_in_section ON files(course_id, section_id, position_in_section);",
-            # 幂等性增强：添加唯一索引，防止重复文件
-            # 只对未删除的文件应用约束（deleted = 0），允许已删除文件的 URL 被重用
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0;",
+            # 幂等性增强：添加唯一索引，防止重复的活跃文件
+            # 旧的 deleted/modified/moved 记录不再阻止新版本复用同一 URL
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0 AND modified = 0 AND moved = 0;",
             # 🆕 扩展元数据字段的索引
             "CREATE INDEX IF NOT EXISTS idx_visible ON files(visible);",
             "CREATE INDEX IF NOT EXISTS idx_uservisible ON files(uservisible);",
@@ -455,6 +455,15 @@ class StateRecorder:
         cursor.execute('PRAGMA user_version = 9;')
         
         logging.info('✅ 全新数据库创建完成（v9 schema - 支持断点续传）')
+
+    @staticmethod
+    def _ensure_active_file_unique_index(cursor):
+        cursor.execute("DROP INDEX IF EXISTS idx_unique_file_url;")
+        cursor.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url
+            ON files(course_id, module_id, content_fileurl)
+            WHERE deleted = 0 AND modified = 0 AND moved = 0;"""
+        )
 
     @staticmethod
     def files_have_same_type(file1: File, file2: File) -> bool:
@@ -659,10 +668,9 @@ class StateRecorder:
 
                 old_file = cursor.fetchone()
 
-                notify_file = File.fromRow(old_file)
-                course.files.append(notify_file)
-
-            stored_courses.append(course)
+                if old_file is not None:
+                    notify_file = File.fromRow(old_file)
+                    course.files.append(notify_file)
 
         conn.close()
         return stored_courses
@@ -1130,12 +1138,6 @@ class StateRecorder:
         self._set_insert_defaults(data_new)
 
         if file.old_file is not None:
-            # insert a new file, but it is already notified because the same file already exists as moved
-            data_new.update(
-                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
-            )
-            cursor.execute(File.INSERT, data_new)
-
             data_old = {'course_id': course_id, 'course_fullname': course_fullname}
             data_old.update(file.old_file.getMap())
 
@@ -1146,6 +1148,12 @@ class StateRecorder:
             """,
                 data_old,
             )
+
+            # insert a new file, but it is already notified because the same file already exists as moved
+            data_new.update(
+                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
+            )
+            cursor.execute(File.INSERT, data_new)
         else:
             # this should never happen, but the old file is not saved in the
             # file descriptor, so we need to inform about the new file notified = 0
@@ -1171,14 +1179,6 @@ class StateRecorder:
         self._set_insert_defaults(data_new)
 
         if file.old_file is not None:
-            # insert a new file,
-            # but it is already notified because the same file already exists
-            # as modified
-            data_new.update(
-                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
-            )
-            cursor.execute(File.INSERT, data_new)
-
             data_old = {'course_id': course_id, 'course_fullname': course_fullname}
             data_old.update(file.old_file.getMap())
 
@@ -1190,6 +1190,14 @@ class StateRecorder:
             """,
                 data_old,
             )
+
+            # insert a new file,
+            # but it is already notified because the same file already exists
+            # as modified
+            data_new.update(
+                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
+            )
+            cursor.execute(File.INSERT, data_new)
         else:
             # this should never happen, but the old file is not saved in the
             # file descriptor, so we need to inform about the new file

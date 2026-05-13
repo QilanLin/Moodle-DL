@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
+import requests
 from yarl import URL
 
 from moodle_dl.downloader.task import Task
@@ -1048,6 +1049,113 @@ async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory)
     missing_session.get.return_value = SimpleNamespace(status_code=200, text='<html>No iframe</html>')
     missing_iframe._create_session_with_retry = MagicMock(return_value=missing_session)
     assert await missing_iframe.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('error', 'expected_calls'),
+    [
+        (requests.Timeout('slow'), 1),
+        (requests.ConnectionError('offline'), 1),
+    ],
+)
+async def test_extract_kalvidres_video_url_handles_initial_network_errors(task_factory, error, expected_calls):
+    task = task_factory()
+    session = MagicMock()
+    session.get.side_effect = error
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+    assert session.get.call_count == expected_calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status_code', [404, 500, 503])
+async def test_extract_kalvidres_video_url_handles_initial_http_failures(task_factory, status_code):
+    task = task_factory()
+    session = MagicMock()
+    session.get.return_value = SimpleNamespace(status_code=status_code, text='')
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'lti_response',
+    [
+        requests.Timeout('slow lti'),
+        SimpleNamespace(status_code=403, text=''),
+        SimpleNamespace(status_code=500, text=''),
+        SimpleNamespace(status_code=503, text=''),
+        SimpleNamespace(status_code=200, text='<html>No target link</html>'),
+    ],
+)
+async def test_extract_kalvidres_video_url_handles_lti_stage_failures(task_factory, lti_response):
+    task = task_factory()
+    session = MagicMock()
+    kalvidres_html = (
+        '<iframe src="https://moodle.example.com/filter/kaltura/lti_launch.php?id=1&amp;foo=bar"></iframe>'
+    )
+    first = SimpleNamespace(status_code=200, text=kalvidres_html)
+    if isinstance(lti_response, BaseException):
+        session.get.side_effect = [first, lti_response]
+    else:
+        session.get.side_effect = [first, lti_response]
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'browse_response',
+    [
+        requests.Timeout('slow browse'),
+        SimpleNamespace(status_code=403, text=''),
+        SimpleNamespace(status_code=500, text=''),
+        SimpleNamespace(status_code=503, text=''),
+        SimpleNamespace(status_code=200, text='<html>No partner id</html>'),
+    ],
+)
+async def test_extract_kalvidres_video_url_handles_browse_stage_failures(task_factory, browse_response):
+    task = task_factory()
+    session = MagicMock()
+    kalvidres_html = (
+        '<iframe src="https://moodle.example.com/filter/kaltura/lti_launch.php?id=1&amp;foo=bar"></iframe>'
+    )
+    lti_html = (
+        '<input name="target_link_uri" '
+        'value="https://kaf.example.com/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456">'
+    )
+    first = SimpleNamespace(status_code=200, text=kalvidres_html)
+    second = SimpleNamespace(status_code=200, text=lti_html)
+    session.get.side_effect = [first, second, browse_response]
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_video_url_handles_bad_browse_url_and_unknown_errors(task_factory):
+    bad_browse = task_factory()
+    bad_session = MagicMock()
+    bad_session.get.side_effect = [
+        SimpleNamespace(
+            status_code=200,
+            text='<iframe src="https://moodle.example.com/filter/kaltura/lti_launch.php?id=1"></iframe>',
+        ),
+        SimpleNamespace(
+            status_code=200,
+            text='<input name="target_link_uri" value="https://kaf.example.com/no-entry-or-skin">',
+        ),
+    ]
+    bad_browse._create_session_with_retry = MagicMock(return_value=bad_session)
+    assert await bad_browse.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+    unknown = task_factory()
+    unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('ssl certificate failed'))
+    assert await unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
 
 class FakeYoutubeDL:

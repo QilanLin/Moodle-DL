@@ -1,5 +1,6 @@
 import asyncio
 import http.cookiejar
+import io
 import os
 import sys
 from pathlib import Path
@@ -18,6 +19,7 @@ from moodle_dl.utils import (
     calc_speed,
     check_debug,
     check_verbose,
+    determine_ext,
     float_or_none,
     format_bytes,
     format_decimal_suffix,
@@ -226,6 +228,50 @@ def test_moodle_cookie_jar_rejects_json_cookie_files(tmp_path):
         MoodleDLCookieJar().load(cookie_path)
 
 
+def test_moodle_cookie_jar_file_like_paths_and_missing_filename_errors():
+    jar = MoodleDLCookieJar()
+
+    with pytest.raises(ValueError, match='filename'):
+        jar.save()
+    with pytest.raises(ValueError, match='filename'):
+        jar.load()
+
+    jar.set_cookie(_make_cookie(name='nameless', value=None, expires=None, discard=True))
+    output = io.StringIO('old data')
+    jar.save(output, ignore_discard=True, ignore_expires=True)
+    cookie_text = output.getvalue()
+
+    assert cookie_text.startswith(MoodleDLCookieJar._HEADER)
+    assert '\t0\t\tnameless\n' in cookie_text
+
+    input_file = io.StringIO(
+        MoodleDLCookieJar._HEADER
+        + '#HttpOnly_.example.com\tTRUE\t/\tFALSE\t0\thttp_only\tsecret\n'
+    )
+    loaded = MoodleDLCookieJar(input_file)
+    loaded.load(ignore_discard=True, ignore_expires=True)
+
+    cookie = next(iter(loaded))
+    assert cookie.name == 'http_only'
+    assert cookie.expires is None
+    assert cookie.discard is True
+
+
+def test_moodle_cookie_jar_save_respects_discard_and_expiry_filters():
+    jar = MoodleDLCookieJar()
+    jar.set_cookie(_make_cookie(name='discarded', discard=True, expires=None))
+    jar.set_cookie(_make_cookie(name='expired', discard=False, expires=1))
+    jar.set_cookie(_make_cookie(name='kept', discard=False, expires=4_102_444_800))
+
+    output = io.StringIO()
+    jar.save(output)
+
+    cookie_text = output.getvalue()
+    assert 'kept' in cookie_text
+    assert 'discarded' not in cookie_text
+    assert 'expired' not in cookie_text
+
+
 def test_path_tools_valid_name_and_sanitize_filename():
     PathTools.restricted_filenames = False
 
@@ -245,6 +291,18 @@ def test_path_tools_truncates_names_and_preserves_short_extensions():
 
     PathTools.restricted_filenames = True
     assert PathTools.truncate_name('abcdef', 5) == 'ab...'
+
+
+def test_path_tools_sanitize_filename_edge_cases():
+    PathTools.restricted_filenames = False
+
+    assert PathTools.truncate_filename('abcdef', is_file=False, max_length=4) == 'abc\u2026'
+    assert PathTools.sanitize_filename('line\nbreak', restricted=False) == 'line break'
+    assert PathTools.sanitize_filename('a:b', restricted=True) == 'a_-b'
+    assert PathTools.sanitize_filename('"quoted"', restricted=True) == 'quoted'
+    assert PathTools.sanitize_filename('-leading', restricted=False, is_id=False) == '_leading'
+    assert PathTools.sanitize_filename('___', restricted=False, is_id=False) == '_'
+    assert PathTools.sanitize_filename('-_Title', restricted=True, is_id=False) == 'Title'
 
 
 def test_path_tools_sanitize_and_build_paths(tmp_path):
@@ -342,6 +400,28 @@ def test_path_tools_project_directories_use_xdg_environment(tmp_path, monkeypatc
     assert project_data.is_dir()
 
 
+def test_path_tools_windows_user_directories_and_long_path_workaround(monkeypatch):
+    monkeypatch.setattr(utils_module.os, 'name', 'nt', raising=False)
+    monkeypatch.setattr(utils_module.sys, 'platform', 'win32')
+
+    monkeypatch.setenv('LOCALAPPDATA', r'C:\Users\me\AppData\Local')
+    monkeypatch.setenv('APPDATA', r'C:\Users\me\AppData\Roaming')
+    assert PathTools.get_user_config_directory() == r'C:\Users\me\AppData\Local'
+    assert PathTools.get_user_data_directory() == r'C:\Users\me\AppData\Local'
+
+    monkeypatch.delenv('LOCALAPPDATA')
+    assert PathTools.get_user_config_directory() == r'C:\Users\me\AppData\Roaming'
+    assert PathTools.get_user_data_directory() == r'C:\Users\me\AppData\Roaming'
+
+    monkeypatch.delenv('APPDATA')
+    assert PathTools.get_user_config_directory() is None
+    assert PathTools.get_user_data_directory() is None
+
+    monkeypatch.setattr(PathTools, 'get_abs_path', MagicMock(return_value=r'C:\abs\relative\path.txt'))
+    long_path = PathTools.win_max_path_length_workaround('relative/path.txt')
+    assert long_path.startswith('\\\\?\\')
+
+
 def test_process_lock_creates_rejects_and_removes_lock(tmp_path):
     ProcessLock.lock(str(tmp_path))
     assert (tmp_path / 'running.lock').exists()
@@ -356,7 +436,11 @@ def test_process_lock_creates_rejects_and_removes_lock(tmp_path):
 
 def test_log_color_helpers_wrap_messages():
     assert Log.info_str('hello') == '\033[1;37mhello\033[0m'
+    assert Log.success_str('ok') == '\033[1;32mok\033[0m'
+    assert Log.warning_str('warn') == '\033[1;33mwarn\033[0m'
     assert Log.error_str('bad') == '\033[1;31mbad\033[0m'
+    assert Log.blue_str('link') == '\033[1;34mlink\033[0m'
+    assert Log.magenta_str('mag') == '\033[1;35mmag\033[0m'
     assert Log.cyan_str('debug') == '\033[1;36mdebug\033[0m'
 
 
@@ -381,6 +465,35 @@ def test_terminal_menu_renderer_truncates_by_display_width():
     assert renderer._char_display_width('\u0301') == 0
     assert renderer.truncate_option_text('abcdef', max_width=4) == 'ab..'
     assert renderer.truncate_option_text('abc\ndef', max_width=20) == 'abc def'
+    assert renderer.truncate_option_text('abcdef', max_width=1) == 'a'
+    assert renderer.truncate_option_text('abcdef', max_width=0) == ''
+
+
+def test_terminal_menu_renderer_print_helpers(capsys):
+    renderer = TerminalMenuRenderer(options_count=5)
+    renderer.lines_printed = 3
+    renderer.shift = 2
+
+    renderer.move_cursor_to_start()
+    renderer.print_above_indicator()
+    renderer.print_option_line('[x] ', 'abcdef')
+    renderer.print_bottom_indicator(data_bottom=3, bottom_text=None, error_message='err')
+    renderer.print_bottom_indicator(data_bottom=5, bottom_text='confirm', error_message='ok')
+    renderer.print_bottom_indicator(data_bottom=5, bottom_text=None, error_message='only-error')
+
+    output = capsys.readouterr().out
+    assert '\033[3A' in output
+    assert '2 more lines above' in output
+    assert '[x] abcdef' in output
+    assert '2 more lines below... err' in output
+    assert 'confirm ok' in output
+    assert 'only-error' in output
+
+
+def test_determine_ext_handles_none_query_fallback_and_extension_like_values():
+    assert determine_ext(None, default_ext='bin') == 'bin'
+    assert determine_ext('https://example.com/download?file=archive.tar.gz', default_ext='bin') == 'gz'
+    assert determine_ext('https://example.com/download?filename=bad%2Fname.pdf', default_ext='bin') == 'pdf'
 
 
 def test_ssl_helper_custom_requests_session_mounts_context(monkeypatch):
@@ -403,3 +516,58 @@ def test_ssl_helper_custom_requests_session_mounts_context(monkeypatch):
     mount_args = session.mount.call_args.args
     assert mount_args[0] == 'https://'
     assert mount_args[1].ssl_context is ssl_context
+
+
+def test_ssl_helper_load_default_certs_fallback_and_locations(monkeypatch, tmp_path):
+    utils_module.SslHelper.warned_about_certifi = False
+    missing_context = MagicMock()
+
+    monkeypatch.setattr(utils_module, 'extract_zipped_paths', lambda _path: str(tmp_path / 'missing.pem'))
+    utils_module.SslHelper.load_default_certs(missing_context)
+    utils_module.SslHelper.load_default_certs(missing_context)
+
+    assert missing_context.load_default_certs.call_count == 2
+    assert utils_module.SslHelper.warned_about_certifi is True
+
+    cert_file = tmp_path / 'cacert.pem'
+    cert_file.write_text('cert', encoding='utf-8')
+    file_context = MagicMock()
+    monkeypatch.setattr(utils_module, 'extract_zipped_paths', lambda _path: str(cert_file))
+    utils_module.SslHelper.load_default_certs(file_context)
+    file_context.load_verify_locations.assert_called_once_with(cafile=str(cert_file))
+
+    cert_dir = tmp_path / 'certs'
+    cert_dir.mkdir()
+    dir_context = MagicMock()
+    monkeypatch.setattr(utils_module, 'extract_zipped_paths', lambda _path: str(cert_dir))
+    utils_module.SslHelper.load_default_certs(dir_context)
+    dir_context.load_verify_locations.assert_called_once_with(capath=str(cert_dir))
+
+
+def test_ssl_helper_get_ssl_context_applies_insecure_flags(monkeypatch):
+    class FakeSslContext:
+        def __init__(self):
+            self.options = 0
+            self.ciphers = None
+            self.alpn = None
+
+        def set_ciphers(self, ciphers):
+            self.ciphers = ciphers
+
+        def set_alpn_protocols(self, protocols):
+            self.alpn = protocols
+
+    context = FakeSslContext()
+    utils_module.SslHelper.get_ssl_context.cache_clear()
+    monkeypatch.setattr(utils_module.ssl, '_create_unverified_context', MagicMock(return_value=context))
+
+    result = utils_module.SslHelper.get_ssl_context(
+        skip_cert_verify=True,
+        allow_insecure_ssl=True,
+        use_all_ciphers=True,
+    )
+
+    assert result is context
+    assert context.options & 0x4
+    assert context.ciphers == 'ALL'
+    assert context.alpn == ['http/1.1']
