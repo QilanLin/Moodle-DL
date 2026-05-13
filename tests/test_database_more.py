@@ -3,7 +3,7 @@ import os
 import sqlite3
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
@@ -99,6 +99,26 @@ def test_file_comparison_helpers_cover_type_path_difference_and_movement(tmp_pat
         url='https://example.com/other',
     )
     assert StateRecorder.files_are_diffrent(cookie_one, cookie_two) is True
+
+    cookie_size_changed = make_file(
+        content_type='cookie_mod',
+        module_modname='cookie_mod-kalvidres',
+        filesize=2,
+    )
+    assert StateRecorder.files_are_diffrent(cookie_one, cookie_size_changed) is True
+    assert StateRecorder.files_are_diffrent(cookie_one, make_file(
+        content_type='cookie_mod',
+        module_modname='cookie_mod-kalvidres',
+    )) is False
+
+    legacy_url = make_file(content_type='description-url', module_modname='url')
+    prefixed_modname = make_file(
+        content_type='description-url',
+        module_modname='url-resource',
+        url='https://example.com/changed-url',
+    )
+    assert StateRecorder.files_have_same_type(legacy_url, prefixed_modname) is True
+    assert StateRecorder.files_are_diffrent(legacy_url, prefixed_modname) is True
 
 
 def test_deleted_forum_calendar_files_are_ignored_and_disk_presence_is_checked(tmp_path):
@@ -344,6 +364,63 @@ def test_get_modified_and_new_files_detect_deleted_modified_moved_and_missing_di
     ]
 
 
+def test_get_new_files_handles_new_courses_kalvidres_and_existing_changed_course(recorder, tmp_path):
+    stored_video_path = tmp_path / 'stored-video.mp4'
+    stored_video_path.write_text('video', encoding='utf-8')
+    stored_course = Course(101, 'Course One')
+    stored_video = make_file(
+        module_id=11,
+        filename='Lecture - Video.mp4',
+        url='https://example.com/kalvidres/one',
+        module_modname='cookie_mod-kalvidres',
+        content_type='cookie_mod',
+        filesize=0,
+        timemodified=0,
+        saved_to=str(stored_video_path),
+    )
+    stored_course.files = [stored_video]
+
+    current_course = Course(101, 'Course One')
+    same_video = make_file(
+        module_id=11,
+        filename='Lecture - Video.mp4',
+        url='https://example.com/kalvidres/one',
+        module_modname='cookie_mod-kalvidres',
+        content_type='cookie_mod',
+        filesize=0,
+        timemodified=0,
+    )
+    new_video = make_file(
+        module_id=12,
+        filename='New Video.mp4',
+        url='https://example.com/kalvidres/two',
+        module_modname='cookie_mod-kalvidres',
+        content_type='cookie_mod',
+        filesize=0,
+        timemodified=0,
+    )
+    current_course.files = [same_video, new_video]
+
+    existing_changed = Course(101, 'Course One')
+    existing_changed.files = [make_file(module_id=99, filename='already-changed.pdf')]
+
+    new_course = Course(202, 'Course Two')
+    new_course.files = [make_file(module_id=1, filename='new-course-file.pdf')]
+
+    changed = recorder.get_new_files(
+        [existing_changed],
+        [stored_course],
+        [current_course, new_course],
+    )
+
+    by_course = {course.id: course for course in changed}
+    assert [file.content_filename for file in by_course[101].files] == [
+        'already-changed.pdf',
+        'New Video.mp4',
+    ]
+    assert by_course[202] is new_course
+
+
 def test_failed_file_lifecycle_and_grouped_queries(recorder):
     first = make_file(module_id=1, filename='failed-one.pdf', url='https://example.com/failed-one.pdf')
     second = make_file(module_id=2, filename='failed-two.pdf', url='https://example.com/failed-two.pdf')
@@ -377,6 +454,58 @@ def test_failed_file_lifecycle_and_grouped_queries(recorder):
     assert [file.content_filename for file in recorder.get_failed_files(course_id=101)] == [
         'failed-two.pdf'
     ]
+
+
+def test_delete_file_and_batch_delete_files_mark_rows_deleted_and_clear_cache(recorder):
+    first = make_file(module_id=1, filename='delete-me.pdf', url='https://example.com/delete-me.pdf')
+    first.file_id = recorder.new_file(first, 101, 'Course One')
+    second = make_file(module_id=2, filename='batch-delete.pdf', url='https://example.com/batch-delete.pdf')
+    second.file_id = recorder.new_file(second, 101, 'Course One')
+
+    recorder._query_cache[recorder._get_cache_key('get_stored_files')] = ('stale-stored', 1)
+    recorder._query_cache[recorder._get_cache_key('get_old_files')] = ('stale-old', 1)
+
+    first.deleted = True
+    first.time_stamp = 123
+    recorder.save_file(first, 101, 'Course One')
+
+    second.deleted = True
+    second.time_stamp = 456
+    course = Course(101, 'Course One')
+    course.files = [second]
+    recorder.batch_delete_files([course])
+
+    rows = {row['content_filename']: row for row in read_file_rows(recorder)}
+    assert rows['delete-me.pdf']['deleted'] == 1
+    assert rows['delete-me.pdf']['notified'] == 0
+    assert rows['delete-me.pdf']['time_stamp'] == 123
+    assert rows['batch-delete.pdf']['deleted'] == 1
+    assert rows['batch-delete.pdf']['time_stamp'] == 456
+    assert recorder._query_cache == {}
+
+
+def test_move_and_modify_without_old_file_insert_unnotified_active_rows(recorder):
+    moved = make_file(
+        module_id=10,
+        filename='moved-without-old.pdf',
+        url='https://example.com/moved-without-old.pdf',
+    )
+    moved.moved = True
+    recorder.move_file(moved, 101, 'Course One')
+
+    modified = make_file(
+        module_id=11,
+        filename='modified-without-old.pdf',
+        url='https://example.com/modified-without-old.pdf',
+    )
+    modified.modified = True
+    recorder.modify_file(modified, 101, 'Course One')
+
+    rows = {row['content_filename']: row for row in read_file_rows(recorder)}
+    assert rows['moved-without-old.pdf']['notified'] == 0
+    assert rows['moved-without-old.pdf']['moved'] == 0
+    assert rows['modified-without-old.pdf']['notified'] == 0
+    assert rows['modified-without-old.pdf']['modified'] == 0
 
 
 def test_incomplete_download_lifecycle(recorder):
@@ -485,3 +614,58 @@ def test_query_cache_keys_are_pattern_clearable(recorder):
 
     recorder._clear_cache()
     assert recorder._query_cache == {}
+
+
+def test_query_cache_hit_and_optimized_query_empty_and_course_grouping(recorder):
+    calls = []
+
+    def query_func():
+        calls.append('called')
+        return 'fresh'
+
+    with patch('moodle_dl.database.time.time', return_value=100):
+        assert recorder._get_cached('cache-key', query_func) == 'fresh'
+
+    with patch('moodle_dl.database.time.time', return_value=101):
+        assert recorder._get_cached('cache-key', query_func) == 'fresh'
+
+    assert calls == ['called']
+    assert recorder._query_files_optimized('course_id = ?', (999,)) == []
+
+    recorder.save_file(make_file(module_id=1, filename='one.pdf', url='https://example.com/one.pdf'), 101, 'Course One')
+    recorder.save_file(make_file(module_id=2, filename='two.pdf', url='https://example.com/two.pdf'), 202, 'Course Two')
+
+    grouped = recorder._query_files_optimized('deleted = ?', (0,))
+
+    assert [course.id for course in grouped] == [101, 202]
+    assert [course.files[0].content_filename for course in grouped] == ['one.pdf', 'two.pdf']
+
+
+def test_database_rebuild_skips_unknown_tables_and_invalid_index_names(tmp_path):
+    db_path = tmp_path / 'moodle_state.db'
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute('CREATE TABLE files (file_id INTEGER);')
+        conn.execute('CREATE TABLE unexpected_table (value INTEGER);')
+        conn.execute('CREATE INDEX "bad-index-name" ON unexpected_table(value);')
+        conn.execute('PRAGMA user_version = 1;')
+        conn.commit()
+    finally:
+        conn.close()
+
+    config = MagicMock(spec=ConfigHelper)
+    config.get_misc_files_path.return_value = str(tmp_path)
+
+    StateRecorder(config, MoodleDlOpts())
+
+    conn = sqlite3.connect(db_path)
+    try:
+        assert conn.execute('PRAGMA user_version;').fetchone()[0] == 9
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='unexpected_table';"
+        ).fetchone()[0] == 'unexpected_table'
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incomplete_downloads';"
+        ).fetchone()[0] == 'incomplete_downloads'
+    finally:
+        conn.close()

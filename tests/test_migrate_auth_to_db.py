@@ -17,7 +17,9 @@ import unittest
 from unittest.mock import MagicMock, Mock, patch, mock_open
 from pathlib import Path
 
+from moodle_dl.database import StateRecorder
 from moodle_dl.migrate_auth_to_db import AuthMigrator
+from moodle_dl.types import MoodleDlOpts
 
 
 class TestAuthMigratorInit(unittest.TestCase):
@@ -215,6 +217,18 @@ class TestLoadCookiesFromFile(unittest.TestCase):
         self.assertEqual(len(self.migrator.existing_cookies), 1)
         self.assertIsNone(self.migrator.existing_cookies[0]['expires'])
 
+    def test_load_cookies_with_invalid_expiration(self):
+        """测试无效过期时间会按 session cookie 处理"""
+        cookies_file = os.path.join(self.temp_dir, 'Cookies.txt')
+        with open(cookies_file, 'w', encoding='utf-8') as f:
+            f.write('.example.com\tTRUE\t/\tFALSE\tnot-a-timestamp\ttest\tvalue\n')
+
+        result = self.migrator.load_cookies_from_file()
+
+        self.assertTrue(result)
+        self.assertEqual(len(self.migrator.existing_cookies), 1)
+        self.assertIsNone(self.migrator.existing_cookies[0]['expires'])
+
     def test_load_cookies_with_numeric_flags(self):
         """测试数字格式的布尔标志"""
         cookies_file = os.path.join(self.temp_dir, 'Cookies.txt')
@@ -246,6 +260,14 @@ class TestLoadCookiesFromFile(unittest.TestCase):
 
         self.assertTrue(result)  # Not an error, just skipped
         self.assertEqual(len(self.migrator.existing_cookies), 0)
+
+    @patch('pathlib.Path.exists', return_value=True)
+    @patch('builtins.open', side_effect=OSError('read failed'))
+    def test_load_cookies_file_read_error(self, mock_file, mock_exists):
+        """测试 Cookie 文件读取错误"""
+        result = self.migrator.load_cookies_from_file()
+
+        self.assertFalse(result)
 
 
 class TestVerifyTokenExists(unittest.TestCase):
@@ -525,6 +547,117 @@ class TestSaveMigrationLog(unittest.TestCase):
         """测试文件写入错误"""
         # Should not raise exception
         self.migrator.save_migration_log()
+
+
+class TestRunWorkflow(unittest.TestCase):
+    """run 方法编排流程测试"""
+
+    def make_migrator_with_steps(self):
+        migrator = AuthMigrator('/tmp/test')
+        migrator.validate_paths = Mock(return_value=True)
+        migrator.load_config = Mock(return_value=True)
+        migrator.verify_token_exists = Mock(return_value=True)
+        migrator.load_cookies_from_file = Mock(return_value=True)
+        return migrator
+
+    def test_run_short_circuits_when_pre_database_steps_fail(self):
+        cases = [
+            ('validate_paths',),
+            ('load_config', 'validate_paths'),
+            ('verify_token_exists', 'validate_paths', 'load_config'),
+            ('load_cookies_from_file', 'validate_paths', 'load_config', 'verify_token_exists'),
+        ]
+
+        for failing_step, *previous_steps in cases:
+            migrator = self.make_migrator_with_steps()
+            getattr(migrator, failing_step).return_value = False
+
+            self.assertFalse(migrator.run())
+
+            for previous_step in previous_steps:
+                getattr(migrator, previous_step).assert_called_once()
+
+    @patch('moodle_dl.migrate_auth_to_db.sqlite3.connect')
+    def test_run_success_records_token_cookie_sessions_and_audit_entries(self, mock_connect):
+        migrator = self.make_migrator_with_steps()
+        conn = MagicMock()
+        mock_connect.return_value = conn
+        migrator._verify_database_tables = Mock(return_value=True)
+        migrator.create_token_session = Mock(return_value='token-session')
+        migrator.create_cookie_session = Mock(return_value='cookie-session')
+        migrator.verify_migration = Mock(return_value=True)
+        migrator.log_migration_action = Mock()
+
+        self.assertTrue(migrator.run())
+
+        mock_connect.assert_called_once_with(str(migrator.db_file))
+        self.assertIs(conn.row_factory, sqlite3.Row)
+        migrator.log_migration_action.assert_any_call(conn, 'token-session', 'create', 'success')
+        migrator.log_migration_action.assert_any_call(conn, 'cookie-session', 'create', 'success')
+        conn.close.assert_called_once()
+
+    @patch('moodle_dl.migrate_auth_to_db.sqlite3.connect')
+    def test_run_returns_false_when_tables_are_missing(self, mock_connect):
+        migrator = self.make_migrator_with_steps()
+        conn = MagicMock()
+        mock_connect.return_value = conn
+        migrator._verify_database_tables = Mock(return_value=False)
+
+        self.assertFalse(migrator.run())
+
+        conn.close.assert_called_once()
+
+    @patch('moodle_dl.migrate_auth_to_db.sqlite3.connect')
+    def test_run_returns_false_when_migration_verification_fails(self, mock_connect):
+        migrator = self.make_migrator_with_steps()
+        conn = MagicMock()
+        mock_connect.return_value = conn
+        migrator._verify_database_tables = Mock(return_value=True)
+        migrator.create_token_session = Mock(return_value=None)
+        migrator.create_cookie_session = Mock(return_value=None)
+        migrator.verify_migration = Mock(return_value=False)
+        migrator.log_migration_action = Mock()
+
+        self.assertFalse(migrator.run())
+
+        migrator.log_migration_action.assert_not_called()
+        conn.close.assert_called_once()
+
+    @patch('moodle_dl.migrate_auth_to_db.sqlite3.connect', side_effect=sqlite3.Error('locked'))
+    def test_run_returns_false_on_database_errors(self, mock_connect):
+        migrator = self.make_migrator_with_steps()
+
+        self.assertFalse(migrator.run())
+
+    def test_run_full_integration_with_real_database(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config = MagicMock()
+            config.get_misc_files_path.return_value = temp_dir
+            StateRecorder(config, MoodleDlOpts())
+
+            with open(os.path.join(temp_dir, 'config.json'), 'w', encoding='utf-8') as f:
+                json.dump({'token': 'token-123', 'privatetoken': 'private-123'}, f)
+
+            with open(os.path.join(temp_dir, 'Cookies.txt'), 'w', encoding='utf-8') as f:
+                f.write('.example.com\tTRUE\t/\tFALSE\t1735689600\tcookie1\tvalue1\n')
+
+            migrator = AuthMigrator(temp_dir)
+            self.assertTrue(migrator.run())
+
+            conn = sqlite3.connect(os.path.join(temp_dir, 'moodle_state.db'))
+            try:
+                token_count = conn.execute(
+                    "SELECT COUNT(*) FROM auth_sessions WHERE session_type='token'"
+                ).fetchone()[0]
+                cookie_count = conn.execute(
+                    "SELECT COUNT(*) FROM auth_sessions WHERE session_type='cookie_batch'"
+                ).fetchone()[0]
+                audit_count = conn.execute("SELECT COUNT(*) FROM auth_audit_log").fetchone()[0]
+                self.assertEqual(token_count, 1)
+                self.assertEqual(cookie_count, 1)
+                self.assertEqual(audit_count, 2)
+            finally:
+                conn.close()
 
 
 class TestMain(unittest.TestCase):
