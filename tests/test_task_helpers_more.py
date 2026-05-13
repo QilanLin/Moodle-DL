@@ -1590,3 +1590,378 @@ async def test_resume_incomplete_download_head_checks_and_success(task_factory, 
         ) == (5, file_obj)
 
     open_file.assert_awaited_once_with(str(file_path), 'a+b')
+
+
+@pytest.mark.asyncio
+async def test_run_is_idempotent_and_sets_success_timestamp(task_factory):
+    task = task_factory()
+
+    async def successful_real_run():
+        task.report_success()
+        return True
+
+    task.real_run = AsyncMock(side_effect=successful_real_run)
+    task.set_utime = MagicMock()
+
+    with patch('moodle_dl.downloader.task.time.time', return_value=1234.9):
+        await task.run()
+        await task.run()
+
+    task.real_run.assert_awaited_once()
+    task.set_utime.assert_called_once()
+    assert task.status.state == TaskState.FINISHED
+    assert task.file.time_stamp == 1234
+
+
+def test_is_metadata_file_recognizes_optional_sidecars(task_factory):
+    assert task_factory(content_filename='resource.JSON')._is_metadata_file() is True
+    assert task_factory(content_filename='lecture_info')._is_metadata_file() is True
+    assert task_factory(content_filename='lecture_notes.md')._is_metadata_file() is True
+    assert task_factory(content_filename='lecture.pdf')._is_metadata_file() is False
+
+
+@pytest.mark.asyncio
+async def test_real_run_orchestrates_pluginfile_prepare_failure_and_errors(task_factory):
+    pluginfile = task_factory(content_fileurl='https://moodle.example.com/pluginfile.php/1/file.pdf')
+    pluginfile._handle_metadata_file = AsyncMock(return_value=False)
+    pluginfile._prepare_download = AsyncMock(return_value=True)
+    pluginfile._execute_download = AsyncMock()
+    pluginfile.report_success = MagicMock()
+
+    with patch(
+        'moodle_dl.downloader.task.UrlHelper.fix_pluginfile_url',
+        return_value='https://moodle.example.com/webservice/pluginfile.php/1/file.pdf?token=token-abc',
+    ) as fix_pluginfile_url:
+        assert await pluginfile.real_run() is True
+
+    fix_pluginfile_url.assert_called_once_with(
+        'https://moodle.example.com/pluginfile.php/1/file.pdf',
+        token='token-abc',
+        moodle_base_url='https://moodle.example.com',
+    )
+    assert pluginfile.file.content_fileurl.endswith('token=token-abc')
+    pluginfile._execute_download.assert_awaited_once()
+    pluginfile.report_success.assert_called_once()
+
+    prepare_failed = task_factory()
+    prepare_failed._handle_metadata_file = AsyncMock(return_value=False)
+    prepare_failed._prepare_download = AsyncMock(return_value=False)
+    prepare_failed._execute_download = AsyncMock()
+    assert await prepare_failed.real_run() is False
+    prepare_failed._execute_download.assert_not_awaited()
+
+    broken = task_factory()
+    error = RuntimeError('download failed')
+    broken._handle_metadata_file = AsyncMock(return_value=False)
+    broken._prepare_download = AsyncMock(return_value=True)
+    broken._execute_download = AsyncMock(side_effect=error)
+    broken._handle_error = AsyncMock()
+    assert await broken.real_run() is False
+    broken._handle_error.assert_awaited_once_with(error)
+
+
+@pytest.mark.asyncio
+async def test_execute_download_dispatches_by_content_and_module_type(task_factory):
+    description = task_factory(content_type='description')
+    description.create_description = AsyncMock()
+    await description._execute_download()
+    description.create_description.assert_awaited_once()
+
+    html = task_factory(content_type='html')
+    html.create_html_file = AsyncMock()
+    await html._execute_download()
+    html.create_html_file.assert_awaited_once()
+
+    content = task_factory(content_type='content')
+    content.create_content_file = AsyncMock()
+    await content._execute_download()
+    content.create_content_file.assert_awaited_once()
+
+    index_mod = task_factory(module_modname='index_mod-page')
+    index_mod.external_download_url = AsyncMock()
+    await index_mod._execute_download()
+    index_mod.external_download_url.assert_awaited_once_with(
+        add_token=True,
+        delete_if_successful=True,
+        needs_moodle_cookies=False,
+    )
+
+    cookie_mod = task_factory(module_modname='cookie_mod-helixmedia')
+    cookie_mod._download_cookie_mod_file = AsyncMock()
+    await cookie_mod._execute_download()
+    cookie_mod._download_cookie_mod_file.assert_awaited_once()
+
+    url_mod = task_factory(module_modname='url')
+    url_mod._download_external_url_with_fallback = AsyncMock()
+    await url_mod._execute_download()
+    url_mod._download_external_url_with_fallback.assert_awaited_once()
+
+    data_url = task_factory(content_fileurl='data:text/plain;base64,SGVsbG8=')
+    data_url.create_data_url_file = AsyncMock()
+    await data_url._execute_download()
+    data_url.create_data_url_file.assert_awaited_once()
+
+    normal = task_factory(content_fileurl='https://example.com/file.pdf')
+    normal.file.saved_to = '/tmp/file.pdf'
+    normal.add_token_to_url = MagicMock(return_value='https://example.com/file.pdf?token=token-abc')
+    normal.download_url = AsyncMock()
+    await normal._execute_download()
+    normal.download_url.assert_awaited_once_with(
+        'https://example.com/file.pdf?token=token-abc',
+        '/tmp/file.pdf',
+    )
+
+    no_url = task_factory(content_fileurl=None)
+    no_url.status.set_error = MagicMock()
+    await no_url._execute_download()
+    no_url.status.set_error.assert_called_once_with('No URL available for download')
+
+
+@pytest.mark.asyncio
+async def test_cookie_mod_and_kalvidres_handlers_restore_original_url(task_factory, tmp_path):
+    kalvidres = task_factory(
+        module_modname='cookie_mod-kalvidres',
+        content_fileurl='https://moodle.example.com/mod/kalvidres/view.php?id=1',
+    )
+    kalvidres.file.saved_to = str(tmp_path / 'lecture.mp4')
+    kalvidres.extract_kalvidres_text = AsyncMock()
+    kalvidres.extract_kalvidres_video_url = AsyncMock(return_value='https://kaltura.example.com/embed')
+    kalvidres.external_download_url = AsyncMock()
+
+    await kalvidres._download_cookie_mod_file()
+
+    kalvidres.extract_kalvidres_text.assert_awaited_once_with(
+        'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+        str(tmp_path / 'lecture_notes.md'),
+    )
+    kalvidres.external_download_url.assert_awaited_once_with(
+        add_token=False,
+        delete_if_successful=True,
+        needs_moodle_cookies=True,
+    )
+    assert kalvidres.file.content_fileurl == 'https://moodle.example.com/mod/kalvidres/view.php?id=1'
+
+    fallback = task_factory(
+        module_modname='cookie_mod-kalvidres',
+        content_fileurl='https://moodle.example.com/mod/kalvidres/view.php?id=2',
+    )
+    fallback.file.saved_to = str(tmp_path / 'fallback.mp4')
+    fallback.extract_kalvidres_text = AsyncMock()
+    fallback.extract_kalvidres_video_url = AsyncMock(return_value=None)
+    fallback.external_download_url = AsyncMock()
+
+    await fallback._handle_kalvidres_download()
+
+    fallback.external_download_url.assert_awaited_once_with(
+        add_token=False,
+        delete_if_successful=True,
+        needs_moodle_cookies=True,
+    )
+    assert fallback.file.content_fileurl == 'https://moodle.example.com/mod/kalvidres/view.php?id=2'
+
+    other_cookie_mod = task_factory(module_modname='cookie_mod-other')
+    other_cookie_mod.external_download_url = AsyncMock()
+    await other_cookie_mod._download_cookie_mod_file()
+    other_cookie_mod.external_download_url.assert_awaited_once_with(
+        add_token=False,
+        delete_if_successful=True,
+        needs_moodle_cookies=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_external_url_fallback_creates_shortcut_only_when_download_does_not_succeed(task_factory):
+    disabled = task_factory(module_modname='url', download_linked_files=False)
+    disabled.create_shortcut = AsyncMock()
+    disabled.external_download_url = AsyncMock()
+    await disabled._download_external_url_with_fallback()
+    disabled.external_download_url.assert_not_awaited()
+    disabled.create_shortcut.assert_awaited_once()
+
+    downloaded = task_factory(module_modname='url', download_linked_files=True)
+    downloaded.is_filtered_external_domain = MagicMock(return_value=False)
+    downloaded.external_download_url = AsyncMock()
+    downloaded.create_shortcut = AsyncMock()
+    await downloaded._download_external_url_with_fallback()
+    downloaded.external_download_url.assert_awaited_once_with(
+        add_token=False,
+        delete_if_successful=True,
+        needs_moodle_cookies=False,
+    )
+    downloaded.create_shortcut.assert_not_awaited()
+
+    failed = task_factory(module_modname='url', download_linked_files=True)
+    failed.is_filtered_external_domain = MagicMock(return_value=False)
+    failed.external_download_url = AsyncMock(side_effect=RuntimeError('network failed'))
+    failed.create_shortcut = AsyncMock()
+    await failed._download_external_url_with_fallback()
+    failed.create_shortcut.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_error_tolerates_getsize_failure(task_factory):
+    task = task_factory()
+    task.file.saved_to = '/tmp/failed-download.bin'
+    task.status.bytes_downloaded = 11
+
+    with (
+        patch('moodle_dl.downloader.task.os.path.isfile', return_value=True),
+        patch('moodle_dl.downloader.task.os.path.getsize', side_effect=OSError('stat failed')),
+        patch('moodle_dl.downloader.task.PT.remove_file') as remove_file,
+    ):
+        await task._handle_error(RuntimeError('boom'))
+
+    remove_file.assert_called_once_with('/tmp/failed-download.bin')
+    assert task.status.state == TaskState.FAILED
+    assert (DlEvent.RECEIVED, {'bytes_received': -11}) in task.events
+
+
+@pytest.mark.asyncio
+async def test_perform_download_request_handles_status_headers_and_payload_errors(task_factory):
+    task = task_factory()
+    file_obj = SimpleNamespace(write=AsyncMock(), closed=False)
+
+    class EmptyContent:
+        async def iter_chunked(self, _chunk_size):
+            if False:
+                yield b''
+
+    class BrokenContent:
+        async def iter_chunked(self, _chunk_size):
+            raise aiohttp.ClientPayloadError('broken stream')
+            yield b''
+
+    class FakeResponse:
+        def __init__(self, *, status, headers, content):
+            self.status = status
+            self.headers = headers
+            self.content = content
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeSession:
+        def __init__(self, response):
+            self.response = response
+            self.headers = None
+
+        def request(self, _method, _url, headers, ssl, timeout):
+            self.headers = headers
+            return self.response
+
+    empty_session = FakeSession(FakeResponse(status=500, headers={'Content-Length': '0'}, content=EmptyContent()))
+    returned_file, total, content_length, content_range = await task._perform_download_request(
+        empty_session,
+        'https://example.com/file.bin',
+        '/tmp/file.bin',
+        {},
+        None,
+        10,
+        file_obj,
+        0,
+        disable_compression=True,
+    )
+
+    assert returned_file is file_obj
+    assert total == 0
+    assert content_length == 0
+    assert content_range is None
+    assert empty_session.headers['Accept-Encoding'] == 'identity'
+
+    broken_session = FakeSession(FakeResponse(status=200, headers={'Content-Length': '1'}, content=BrokenContent()))
+    with pytest.raises(aiohttp.ClientPayloadError, match='broken stream'):
+        await task._perform_download_request(
+            broken_session,
+            'https://example.com/file.bin',
+            '/tmp/file.bin',
+            {},
+            None,
+            10,
+            file_obj,
+            0,
+        )
+
+
+@pytest.mark.asyncio
+async def test_download_url_marks_complete_and_ignores_cleanup_errors(task_factory, tmp_path):
+    class FakeClientSession:
+        instances = []
+
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            FakeClientSession.instances.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    task = task_factory()
+    task.file.file_id = 123
+    dest_path = tmp_path / 'download.bin'
+    fake_file = SimpleNamespace(closed=False, close=AsyncMock())
+    task._perform_download_request = AsyncMock(return_value=(fake_file, 5, 5, None))
+    task.get_cookie_jar = MagicMock(return_value='cookie-jar')
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', FakeClientSession),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value='ssl-context'),
+        patch('moodle_dl.config.ConfigHelper') as config_cls,
+        patch('moodle_dl.database.StateRecorder') as recorder_cls,
+    ):
+        await task.download_url('https://example.com/download.bin', str(dest_path))
+
+    assert FakeClientSession.instances[0].kwargs == {'cookie_jar': 'cookie-jar', 'raise_for_status': True}
+    fake_file.close.assert_awaited_once()
+    recorder_cls.assert_called_once_with(config_cls.return_value, task.opts)
+    recorder_cls.return_value.mark_download_complete.assert_called_once_with(123, str(dest_path))
+
+    cleanup_error = task_factory()
+    cleanup_error.file.file_id = 456
+    cleanup_error._perform_download_request = AsyncMock(
+        return_value=(SimpleNamespace(closed=True, close=AsyncMock()), 1, 1, None)
+    )
+
+    with (
+        patch('moodle_dl.downloader.task.aiohttp.ClientSession', FakeClientSession),
+        patch('moodle_dl.downloader.task.SslHelper.get_ssl_context', return_value='ssl-context'),
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', side_effect=RuntimeError('database locked')),
+    ):
+        await cleanup_error.download_url('https://example.com/download.bin', str(tmp_path / 'other.bin'))
+
+
+def test_save_incomplete_download_reraises_database_errors(task_factory):
+    task = task_factory()
+    task.file.file_id = 123
+    database = MagicMock()
+    database.save_incomplete_download.side_effect = RuntimeError('database failed')
+
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', return_value=database),
+    ):
+        with pytest.raises(RuntimeError, match='database failed'):
+            task._save_incomplete_download('/tmp/file.bin', 'https://example.com/file.bin', 1, 10)
+
+
+@pytest.mark.asyncio
+async def test_resume_incomplete_download_returns_empty_on_recorder_errors(task_factory, tmp_path):
+    task = task_factory()
+    task.file.file_id = 123
+
+    with (
+        patch('moodle_dl.config.ConfigHelper'),
+        patch('moodle_dl.database.StateRecorder', side_effect=RuntimeError('database failed')),
+    ):
+        assert await task._resume_incomplete_download(
+            str(tmp_path / 'file.bin'),
+            'https://example.com/file.bin',
+            MagicMock(),
+            {},
+            None,
+        ) == (0, None)
