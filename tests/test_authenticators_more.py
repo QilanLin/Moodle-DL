@@ -13,6 +13,7 @@ from moodle_dl.cli.authenticators import (
     ExportBrowserCookiesHelper,
     NormalAuthenticator,
     SSOAuthenticator,
+    SSOReferenceHelper,
     TokenAcquisitionResult,
     _read_bool_env,
 )
@@ -112,6 +113,20 @@ def test_browser_selector_interactive_choice_and_invalid_choice():
             BrowserSelector.select_or_load(config)
 
 
+def test_sso_reference_helper_prints_manual_token_instructions(capsys):
+    with (
+        patch("moodle_dl.cli.authenticators.Log.warning") as warning,
+        patch("moodle_dl.cli.authenticators.Log.info") as info,
+    ):
+        SSOReferenceHelper.show_manual_token_help(make_url(domain="moodle.example.test", path="/moodle/"))
+
+    output = capsys.readouterr().out
+    assert "admin/tool/mobile/launch.php" in output
+    assert "moodle.example.test/moodle/" in output
+    warning.assert_called_once()
+    info.assert_called_once_with("moodledl://token=$apptoken")
+
+
 def test_export_browser_cookies_helper_missing_file_and_loader_failure():
     with patch("moodle_dl.cli.authenticators.os.path.exists", return_value=False):
         with pytest.raises(FileNotFoundError):
@@ -135,6 +150,14 @@ def test_base_authenticator_requires_acquired_result_before_commit():
 
     with pytest.raises(AuthenticationError, match="Token 获取结果为空"):
         auth._validate_result()
+
+
+def test_base_authenticator_execute_wraps_unexpected_preconfigure_errors():
+    auth = DummyAuthenticator(make_config(), Mock(spec=MoodleDlOpts), make_url())
+    auth.pre_configure = Mock(side_effect=RuntimeError("terminal failed"))
+
+    with pytest.raises(AuthenticationError, match="认证过程出错: terminal failed"):
+        auth.execute()
 
 
 def test_normal_authenticator_validates_interactive_credentials():
@@ -204,6 +227,37 @@ def test_normal_authenticator_exhausts_retryable_login_errors():
     assert service.obtain_login_token.call_count == 3
 
 
+def test_normal_authenticator_handles_connection_and_unexpected_login_errors():
+    retry = NormalAuthenticator(make_config(), make_opts(), make_url())
+    service = Mock()
+    service.obtain_login_token.side_effect = [
+        ConnectionError("offline"),
+        ("token", "private"),
+    ]
+
+    with (
+        patch("moodle_dl.cli.authenticators.input", side_effect=["student", "student"]),
+        patch("moodle_dl.cli.authenticators.getpass", side_effect=["secret", "secret"]),
+        patch("moodle_dl.cli.authenticators.MoodleService", return_value=service),
+        patch.object(retry, "_prompt_cookies_export") as prompt_export,
+    ):
+        assert retry.acquire_token().token == "token"
+
+    prompt_export.assert_called_once()
+
+    cli = NormalAuthenticator(make_config(), make_opts(username="student", password="secret"), make_url())
+    service.obtain_login_token.side_effect = ConnectionError("offline")
+    with patch("moodle_dl.cli.authenticators.MoodleService", return_value=service):
+        with pytest.raises(AuthenticationError, match="网络连接错误: offline"):
+            cli.acquire_token()
+
+    unexpected = NormalAuthenticator(make_config(), make_opts(username="student", password="secret"), make_url())
+    service.obtain_login_token.side_effect = KeyError("bad payload")
+    with patch("moodle_dl.cli.authenticators.MoodleService", return_value=service):
+        with pytest.raises(AuthenticationError, match="登录时出现意外错误"):
+            unexpected.acquire_token()
+
+
 def test_prompt_cookies_export_skips_when_user_declines():
     auth = NormalAuthenticator(make_config(), make_opts(), make_url())
 
@@ -235,6 +289,33 @@ def test_prompt_cookies_export_runs_helper_when_available():
         ask_browser=True,
         auto_get_token=False,
     )
+
+
+def test_prompt_cookies_export_handles_helper_and_export_failures():
+    auth = NormalAuthenticator(make_config(), make_opts(), make_url())
+
+    with (
+        patch("moodle_dl.utils.Cutie.prompt_yes_or_no", return_value=True),
+        patch.object(ExportBrowserCookiesHelper, "load_export_module", side_effect=FileNotFoundError("missing")),
+    ):
+        auth._prompt_cookies_export()
+
+    export_module = Mock()
+    export_module.export_cookies_interactive.return_value = False
+    with (
+        patch("moodle_dl.utils.Cutie.prompt_yes_or_no", return_value=True),
+        patch.object(ExportBrowserCookiesHelper, "load_export_module", return_value=export_module),
+        patch("moodle_dl.utils.PathTools.get_cookies_path", return_value="/tmp/cookies.txt"),
+    ):
+        auth._prompt_cookies_export()
+
+    export_module.export_cookies_interactive.side_effect = RuntimeError("browser locked")
+    with (
+        patch("moodle_dl.utils.Cutie.prompt_yes_or_no", return_value=True),
+        patch.object(ExportBrowserCookiesHelper, "load_export_module", return_value=export_module),
+        patch("moodle_dl.utils.PathTools.get_cookies_path", return_value="/tmp/cookies.txt"),
+    ):
+        auth._prompt_cookies_export()
 
 
 def test_sso_pre_configure_wraps_browser_selection_errors():
@@ -293,11 +374,54 @@ def test_sso_automatic_flow_success_and_fallback_failure():
         assert auth._try_automatic_sso_flow() == (None, None)
 
 
+def test_sso_automatic_flow_handles_token_extraction_failure_and_unexpected_errors():
+    auth = SSOAuthenticator(make_config(), make_opts(), make_url())
+    auth.preferred_browser = "firefox"
+
+    with (
+        patch.object(ExportBrowserCookiesHelper, "load_export_module", return_value=Mock()),
+        patch("moodle_dl.utils.PathTools.get_cookies_path", return_value="/tmp/cookies.txt"),
+    ):
+        auth._perform_sso_auto_login = Mock(return_value=True)
+        auth._extract_api_token = Mock(return_value=(None, None))
+        assert auth._try_automatic_sso_flow() == (None, None)
+
+    with patch.object(ExportBrowserCookiesHelper, "load_export_module", side_effect=RuntimeError("boom")):
+        assert auth._try_automatic_sso_flow() == (None, None)
+
+
 def test_sso_automatic_flow_handles_missing_export_helper():
     auth = SSOAuthenticator(make_config(), make_opts(), make_url())
 
     with patch.object(ExportBrowserCookiesHelper, "load_export_module", side_effect=FileNotFoundError):
         assert auth._try_automatic_sso_flow() == (None, None)
+
+
+def test_sso_perform_auto_login_returns_false_on_login_failure_and_exceptions():
+    auth = SSOAuthenticator(make_config(), make_opts(), make_url())
+    auth.preferred_browser = "firefox"
+    auth._cookies_path = "/tmp/cookies.txt"
+
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=True),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=False) as auto_login,
+    ):
+        assert auth._perform_sso_auto_login() is False
+
+    auto_login.assert_called_once_with(
+        moodle_domain="example.test",
+        cookies_path="/tmp/cookies.txt",
+        preferred_browser="firefox",
+        headless=True,
+        timeout=60000,
+        auth_manager=auth.config.get_auth_manager.return_value,
+    )
+
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=False),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", side_effect=RuntimeError("browser failed")),
+    ):
+        assert auth._perform_sso_auto_login() is False
 
 
 class FakeCookie:
@@ -399,6 +523,22 @@ def test_sso_extract_api_token_returns_empty_on_missing_session_or_token():
     assert auth._extract_api_token() == (None, None)
 
 
+def test_sso_extract_api_token_returns_empty_on_playwright_errors():
+    config = make_config()
+    auth_manager = Mock()
+    auth_manager.get_valid_session.return_value = {"session_id": "sid"}
+    auth_manager.get_session_cookies.return_value = [{"name": "MoodleSession", "value": "abc"}]
+    config.get_auth_manager.return_value = auth_manager
+    auth = SSOAuthenticator(config, make_opts(), make_url())
+    auth._export_module = Mock()
+    auth._export_module.extract_api_token_with_playwright_from_cookies.side_effect = RuntimeError("playwright failed")
+
+    with patch("traceback.print_exc") as print_exc:
+        assert auth._extract_api_token() == (None, None)
+
+    print_exc.assert_called_once()
+
+
 def test_sso_manual_token_parsing_success_and_failure_paths():
     auth = SSOAuthenticator(make_config(), make_opts(), make_url())
 
@@ -413,6 +553,13 @@ def test_sso_manual_token_parsing_success_and_failure_paths():
     with (
         patch("moodle_dl.cli.authenticators.SSOReferenceHelper.show_manual_token_help"),
         patch("moodle_dl.cli.authenticators.input", return_value=""),
+    ):
+        assert auth._get_manual_token() == (None, None)
+
+    with (
+        patch("moodle_dl.cli.authenticators.SSOReferenceHelper.show_manual_token_help"),
+        patch("moodle_dl.cli.authenticators.input", return_value="bad"),
+        patch("moodle_dl.cli.authenticators.MoodleService.extract_token", return_value=None),
     ):
         assert auth._get_manual_token() == (None, None)
 
