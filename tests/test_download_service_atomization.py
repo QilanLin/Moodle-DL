@@ -24,6 +24,7 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         self.config.get_options_of_courses.return_value = {}
         self.config.get_moodle_URL.return_value = MagicMock()
         self.config.get_token.return_value = 'token'
+        self.config.get_restricted_filenames.return_value = False
         self.opts = MagicMock()
         self.opts.download_chunk_size = 8192
         self.opts.max_parallel_yt_dlp = 4
@@ -413,6 +414,7 @@ class TestGenAllTasksFlow(unittest.TestCase):
         config = MagicMock()
         config.get_download_options.return_value = MagicMock()
         config.get_manually_specified_course_ids.return_value = []
+        config.get_restricted_filenames.return_value = False
         opts = MagicMock()
         opts.download_chunk_size = 8192
         opts.max_parallel_yt_dlp = 2
@@ -447,6 +449,7 @@ class TestGenAllTasksFlow(unittest.TestCase):
         config = MagicMock()
         config.get_download_options.return_value = MagicMock()
         config.get_manually_specified_course_ids.return_value = []
+        config.get_restricted_filenames.return_value = False
         opts = MagicMock()
         opts.download_chunk_size = 8192
         opts.max_parallel_yt_dlp = 2

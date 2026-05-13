@@ -101,6 +101,36 @@ def make_cookie_manager(cookies=None, refresh_result=False):
     return cookie_manager
 
 
+class FakeChapterResponse:
+    def __init__(self, status, text=''):
+        self.status = status
+        self.text = AsyncMock(return_value=text)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+
+class FakeChapterClientSession:
+    response = None
+    error = None
+    requested = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, timeout):
+        FakeChapterClientSession.requested.append((url, timeout.total))
+        if FakeChapterClientSession.error is not None:
+            raise FakeChapterClientSession.error
+        return FakeChapterClientSession.response
+
+
 def test_download_condition_keeps_deleted_files_only_when_book_downloads_are_enabled():
     config = MagicMock()
     file = MagicMock(module_modname='mod_book', deleted=True)
@@ -252,6 +282,18 @@ def test_extract_print_book_videos_and_replace_matching_iframes():
     assert 'Book - Video 01' in modified
 
 
+def test_extract_print_book_videos_skips_iframes_without_source_or_entry_id():
+    book = make_book()
+    html = (
+        '<iframe class="kaltura-player-iframe" '
+        'src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?foo=1"></iframe>'
+        '<iframe class="kaltura-player-iframe" '
+        'src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source=no-entry"></iframe>'
+    )
+
+    assert book._extract_kaltura_videos_from_print_book(html, 'Book') == []
+
+
 def test_replace_kaltura_iframes_with_video_tags_handles_self_closing_iframes():
     book = make_book()
     modified = book._replace_kaltura_iframes_with_video_tags(
@@ -262,6 +304,16 @@ def test_replace_kaltura_iframes_with_video_tags_handles_self_closing_iframes():
     assert '<iframe' not in modified
     assert 'source src="local/video-one.mp4"' in modified
     assert 'Video One' in modified
+
+
+def test_replace_kaltura_iframes_with_video_tags_keeps_unmatched_iframe_references():
+    book = make_book()
+    html = '<p>No matching iframe here</p>'
+
+    assert book._replace_kaltura_iframes_with_video_tags(
+        html,
+        [{'iframe_src': 'missing-src', 'relative_path': 'local/missing.mp4', 'video_name': 'Missing'}],
+    ) == html
 
 
 def test_extract_kaltura_videos_from_chapter_uses_simple_local_video_names():
@@ -289,6 +341,18 @@ def test_extract_kaltura_videos_from_chapter_uses_simple_local_video_names():
         'Video 01 (1_a).mp4',
         'Video 02 (1_b).mp4',
     ]
+
+
+def test_extract_kaltura_videos_from_chapter_skips_invalid_iframes():
+    book = make_book()
+    invalid_html = (
+        '<iframe class="kaltura-player-iframe" '
+        'src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?foo=1"></iframe>'
+        '<iframe class="kaltura-player-iframe" '
+        'src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source=no-entry"></iframe>'
+    )
+
+    assert book._extract_kaltura_videos_from_chapter(invalid_html, '01 - Intro', 1) == []
 
 
 def test_replace_print_book_videos_links_to_downloaded_generated_and_fallback_paths():
@@ -320,6 +384,20 @@ def test_replace_print_book_videos_links_to_downloaded_generated_and_fallback_pa
     assert 'source src="Video (fallback).mp4"' in modified
 
 
+def test_replace_print_book_videos_generates_single_video_path_for_known_chapter():
+    book = make_book()
+
+    modified = book._replace_print_book_videos_with_chapter_links(
+        '<iframe src="single-src"></iframe>',
+        [{'entry_id': 'single', 'iframe_src': 'single-src', 'video_name': 'Ignored'}],
+        {},
+        {'single': '01 - Intro'},
+    )
+
+    assert 'source src="01 - Intro/Video (single).mp4"' in modified
+    assert '>Video<' in modified
+
+
 def test_chapter_video_mapping_and_reverse_mapping(tmp_path, monkeypatch):
     book = make_book()
     monkeypatch.setattr(tempfile, 'gettempdir', lambda: str(tmp_path))
@@ -341,9 +419,11 @@ def test_create_linked_print_book_html_rewrites_mapped_kaltura_iframes_only():
     book = make_book()
     mapped_src = make_lti_src('1_a')
     missing_src = make_lti_src('1_missing')
+    no_entry_src = 'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source=no-entry'
     html = (
         f'<iframe class="kaltura-player-iframe" src="{mapped_src}"></iframe>'
         f'<iframe class="kaltura-player-iframe" src="{missing_src}"></iframe>'
+        f'<iframe class="kaltura-player-iframe" src="{no_entry_src}"></iframe>'
     )
 
     modified = book._create_linked_print_book_html(
@@ -362,6 +442,36 @@ def test_create_linked_print_book_html_rewrites_mapped_kaltura_iframes_only():
     assert 'source src="01 - Intro/Intro Video (1_a).mp4"' in modified
     assert mapped_src not in modified
     assert missing_src in modified
+    assert no_entry_src in modified
+
+
+@pytest.mark.asyncio
+async def test_fetch_chapter_html_adds_token_and_handles_statuses_and_errors():
+    book = make_book()
+    FakeChapterClientSession.requested = []
+    FakeChapterClientSession.error = None
+    FakeChapterClientSession.response = FakeChapterResponse(200, '<h1>Chapter</h1>')
+
+    with patch('aiohttp.ClientSession', FakeChapterClientSession):
+        assert await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/index.html') == '<h1>Chapter</h1>'
+
+    assert FakeChapterClientSession.requested == [
+        ('https://keats.kcl.ac.uk/chapter/index.html?token=token-abc', 30)
+    ]
+    FakeChapterClientSession.response.text.assert_awaited_once_with(encoding='utf-8')
+
+    FakeChapterClientSession.requested = []
+    FakeChapterClientSession.response = FakeChapterResponse(404)
+    with patch('aiohttp.ClientSession', FakeChapterClientSession):
+        assert await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/index.html?forcedownload=1') == ''
+
+    assert FakeChapterClientSession.requested == [
+        ('https://keats.kcl.ac.uk/chapter/index.html?forcedownload=1&token=token-abc', 30)
+    ]
+
+    FakeChapterClientSession.error = RuntimeError('network failed')
+    with patch('aiohttp.ClientSession', FakeChapterClientSession):
+        assert await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/index.html') == ''
 
 
 @pytest.mark.asyncio
@@ -572,6 +682,8 @@ async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monke
     book = make_book()
     html = '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
     playwright, browser, context, page = make_fake_print_book_playwright(html=html)
+    request_callbacks = []
+    page.on = MagicMock(side_effect=lambda event, callback: request_callbacks.append((event, callback)))
     install_fake_playwright(monkeypatch, playwright)
     cookie_manager = make_cookie_manager()
 
@@ -591,6 +703,14 @@ async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monke
         'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20'
     )
     browser.close.assert_awaited_once()
+    assert request_callbacks[0][0] == 'request'
+
+    request = SimpleNamespace(
+        url='https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+        all_headers=AsyncMock(return_value={'cookie': ''}),
+    )
+    await request_callbacks[0][1](request)
+    request.all_headers.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -605,6 +725,32 @@ async def test_fetch_print_book_html_returns_empty_for_interactive_auth_redirect
         result = await book._fetch_print_book_html(20, 1)
 
     assert result == ('', '')
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_returns_empty_for_missing_response_and_auth_content(monkeypatch):
+    no_response = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright()
+    page.goto = AsyncMock(side_effect=[MagicMock(), None])
+    install_fake_playwright(monkeypatch, playwright)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        assert await no_response._fetch_print_book_html(20, 1) == ('', '')
+
+    browser.close.assert_awaited_once()
+
+    auth_content = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright(
+        current_url='https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20'
+    )
+    page.goto = AsyncMock(side_effect=[None, MagicMock()])
+    page.content = AsyncMock(return_value='<html><input name="loginfmt" id="i0116"></html>')
+    install_fake_playwright(monkeypatch, playwright)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        assert await auth_content._fetch_print_book_html(20, 1) == ('', '')
+
     browser.close.assert_awaited_once()
 
 
@@ -631,6 +777,46 @@ async def test_fetch_print_book_html_refreshes_expired_cookies_once(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_fetch_print_book_html_handles_cookie_refresh_failures_and_retry_exhaustion(monkeypatch):
+    refresh_failed = make_book()
+    playwright, browser, _, _ = make_fake_print_book_playwright(
+        html='<div class="book_chapter">Guest user</div>',
+        current_url='https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+    )
+    install_fake_playwright(monkeypatch, playwright)
+    cookie_manager = make_cookie_manager(refresh_result=False)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        with patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=True):
+            assert await refresh_failed._fetch_print_book_html(20, 1) == ('', '')
+
+    cookie_manager.refresh_cookies.assert_called_once_with(auto_get_token=False)
+    browser.close.assert_awaited_once()
+
+    retry_enrol = make_book()
+    playwright, browser, _, _ = make_fake_print_book_playwright(
+        html='<div class="book_chapter">Still expired</div>',
+        current_url='https://keats.kcl.ac.uk/enrol/index.php?id=1',
+    )
+    install_fake_playwright(monkeypatch, playwright)
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        with patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=True):
+            assert await retry_enrol._fetch_print_book_html(20, 1, retry_count=1) == ('', '')
+    browser.close.assert_awaited_once()
+
+    retry_login_like = make_book()
+    playwright, browser, _, _ = make_fake_print_book_playwright(
+        html='<div class="book_chapter">Still expired</div>',
+        current_url='https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+    )
+    install_fake_playwright(monkeypatch, playwright)
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        with patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=True):
+            assert await retry_login_like._fetch_print_book_html(20, 1, retry_count=1) == ('', '')
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_fetch_print_book_html_returns_empty_when_timeout_refresh_fails(monkeypatch):
     book = make_book()
     playwright, browser, _, page = make_fake_print_book_playwright()
@@ -643,6 +829,41 @@ async def test_fetch_print_book_html_returns_empty_when_timeout_refresh_fails(mo
 
     assert result == ('', '')
     cookie_manager.refresh_cookies.assert_called_once_with(auto_get_token=False)
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_fetch_print_book_html_handles_non_book_content_and_page_errors(monkeypatch):
+    non_book = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright(
+        current_url='https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20'
+    )
+    page.goto = AsyncMock(side_effect=[None, MagicMock()])
+    page.content = AsyncMock(return_value='<html><p>Not a book</p></html>')
+    install_fake_playwright(monkeypatch, playwright)
+
+    with (
+        patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()),
+        patch('moodle_dl.cookie_manager.CookieManager.is_cookie_expired_response', return_value=False),
+        patch('builtins.open', side_effect=OSError('debug write failed')),
+    ):
+        assert await non_book._fetch_print_book_html(20, 1) == ('', '')
+    browser.close.assert_awaited_once()
+
+    timeout_after_retry = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright()
+    page.goto = AsyncMock(side_effect=[MagicMock(), RuntimeError('Timeout 60000ms exceeded')])
+    install_fake_playwright(monkeypatch, playwright)
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        assert await timeout_after_retry._fetch_print_book_html(20, 1, retry_count=1) == ('', '')
+    browser.close.assert_awaited_once()
+
+    unexpected_error = make_book()
+    playwright, browser, _, page = make_fake_print_book_playwright()
+    page.goto = AsyncMock(side_effect=[MagicMock(), RuntimeError('browser crashed')])
+    install_fake_playwright(monkeypatch, playwright)
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=make_cookie_manager()):
+        assert await unexpected_error._fetch_print_book_html(20, 1) == ('', '')
     browser.close.assert_awaited_once()
 
 
@@ -662,3 +883,14 @@ async def test_fetch_print_book_html_reports_missing_playwright_browser(monkeypa
 
     assert result == ('', '')
     assert any('Playwright 浏览器未安装' in args[0] for args, _kwargs in mock_logging.error.call_args_list)
+
+
+def test_interactive_auth_detection_identifies_account_picker_and_login_form():
+    assert BookMod._detect_interactive_auth_requirement(
+        'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+        '<html>Pick an account <button>Use another account</button></html>',
+    ) == 'microsoft_account_picker'
+    assert BookMod._detect_interactive_auth_requirement(
+        'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
+        '<html><input name="loginfmt"><input id="i0116"></html>',
+    ) == 'microsoft_sign_in_form'
