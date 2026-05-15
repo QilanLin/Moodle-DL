@@ -112,6 +112,29 @@ def test_system_file_detection_and_position_assignment():
     assert ResultBuilder._get_extension_from_mimetype('') == ''
 
 
+def test_handle_files_preserves_leganto_pdf_launch_payload():
+    builder = make_builder()
+    files = builder._handle_files(
+        [
+            {
+                'filename': 'Reading List.pdf',
+                'filepath': '/',
+                'content_fileurl': 'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+                'content': '{"endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1"}',
+                'type': 'leganto_pdf',
+                'timemodified': 123,
+                'isexternalfile': True,
+            }
+        ],
+        **make_location(module_modname='lti', module_name='Reading List'),
+    )
+
+    assert len(files) == 1
+    assert files[0].content_type == 'leganto_pdf'
+    assert files[0].content_filename == 'Reading List.pdf'
+    assert files[0].content == '{"endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1"}'
+
+
 def test_get_files_in_modules_handles_special_and_unhandled_modules():
     legacy_builder = make_builder(version=2016052300)
     modules = [

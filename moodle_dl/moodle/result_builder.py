@@ -707,7 +707,7 @@ class ResultBuilder:
                 content_html = content_description
             if content_type == 'html':
                 new_file.html_content = content_html
-            if content_type == 'content':
+            if content_type in ('content', 'leganto_pdf'):
                 new_file.content = content.get('content', '')
 
             if content_type in ['description', 'html'] and not content.get('no_search_for_urls', False):

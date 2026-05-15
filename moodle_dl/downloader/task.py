@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import functools
+import json
 import logging
 import os
 import posixpath
@@ -28,6 +29,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
+from moodle_dl.downloader.leganto_print import LegantoPdfPrinter, is_leganto_reading_list_url
 from moodle_dl.types import (
     Course,
     DlEvent,
@@ -1647,6 +1649,9 @@ class Task:
         
         elif self.file.content_type == 'content':
             await self.create_content_file()
+
+        elif self.file.content_type == 'leganto_pdf':
+            await self._download_leganto_reading_list_pdf()
         
         elif self.file.module_modname.startswith('index_mod'):
             await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
@@ -1729,6 +1734,20 @@ class Task:
         3. 如果失败或不满足条件，创建快捷方式
         """
         download_success = False
+
+        if is_leganto_reading_list_url(self.file.content_fileurl):
+            original_filename = self.filename
+            original_saved_to = self.file.saved_to
+            try:
+                await self._download_leganto_reading_list_pdf()
+                logging.debug('[%d] Leganto reading list saved as PDF', self.task_id)
+                return
+            except Exception as e:
+                logging.warning('[%d] Leganto PDF export failed: %r; creating shortcut instead', self.task_id, e)
+                if self.file.saved_to and self.file.saved_to != original_saved_to:
+                    PT.remove_file(self.file.saved_to)
+                self.filename = original_filename
+                self.file.saved_to = original_saved_to
         
         if self.opts.download_linked_files and not self.is_filtered_external_domain():
             try:
@@ -1744,6 +1763,41 @@ class Task:
         # 如果下载失败或不满足条件，创建快捷方式
         if not download_success:
             await self.create_shortcut()
+
+    async def _download_leganto_reading_list_pdf(self):
+        """Save a Leganto reading list through the page's Print list action."""
+        launch_parameters = None
+        endpoint = self.file.content_fileurl
+
+        if self.file.content:
+            try:
+                payload = json.loads(self.file.content)
+                endpoint = payload.get('endpoint') or endpoint
+                launch_parameters = payload.get('parameters')
+            except (TypeError, ValueError) as exc:
+                logging.debug('[%d] Could not parse Leganto launch payload: %s', self.task_id, exc)
+
+        self._prepare_leganto_pdf_target()
+        printer = LegantoPdfPrinter(
+            self.opts.cookies_text,
+            skip_cert_verify=self.opts.global_opts.skip_cert_verify,
+            headless=True,
+        )
+        await printer.print_to_pdf(endpoint, self.file.saved_to, launch_parameters=launch_parameters)
+
+    def _prepare_leganto_pdf_target(self):
+        """Ensure the current task writes to a PDF file instead of a shortcut-like filename."""
+        source_name = self.file.module_name or self.file.content_filename or 'Reading List'
+        if self.file.content_filename and not self.file.content_filename.lower().startswith(('http://', 'https://')):
+            source_name = self.file.content_filename
+
+        source_name = PT.to_valid_name(source_name, is_file=True)
+        base, extension = os.path.splitext(source_name)
+        self.filename = source_name if extension.lower() == '.pdf' else f'{base}.pdf'
+
+        if self.file.saved_to:
+            PT.remove_file(self.file.saved_to)
+        self.set_path(True)
     
     async def _handle_error(self, dl_err: Exception):
         """

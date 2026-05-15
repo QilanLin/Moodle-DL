@@ -423,6 +423,11 @@ async def test_execute_download_dispatches_to_type_specific_handlers(task_factor
     await content_task._execute_download()
     content_task.create_content_file.assert_awaited_once()
 
+    leganto_task = task_factory(content_type='leganto_pdf')
+    leganto_task._download_leganto_reading_list_pdf = AsyncMock()
+    await leganto_task._execute_download()
+    leganto_task._download_leganto_reading_list_pdf.assert_awaited_once()
+
     index_task = task_factory(module_modname='index_mod-page')
     index_task.external_download_url = AsyncMock()
     await index_task._execute_download()
@@ -523,6 +528,82 @@ async def test_external_url_fallback_downloads_when_allowed_and_creates_shortcut
     await disabled._download_external_url_with_fallback()
     disabled.external_download_url.assert_not_awaited()
     disabled.create_shortcut.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_factory):
+    leganto_url = 'https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML'
+    task = task_factory(
+        module_modname='url',
+        content_fileurl=leganto_url,
+        content_filename='Reading List',
+        download_linked_files=False,
+    )
+    await task._prepare_download()
+    task.create_shortcut = AsyncMock()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock()
+
+        await task._download_external_url_with_fallback()
+
+    printer_cls.assert_called_once_with(task.opts.cookies_text, skip_cert_verify=False, headless=True)
+    printer.print_to_pdf.assert_awaited_once_with(leganto_url, task.file.saved_to, launch_parameters=None)
+    task.create_shortcut.assert_not_awaited()
+    assert task.file.saved_to.endswith('Reading List.pdf')
+
+
+@pytest.mark.asyncio
+async def test_external_url_fallback_creates_shortcut_when_leganto_pdf_export_fails(task_factory):
+    leganto_url = 'https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML'
+    task = task_factory(
+        module_modname='url',
+        content_fileurl=leganto_url,
+        content_filename='Reading List',
+        download_linked_files=False,
+    )
+    await task._prepare_download()
+    original_saved_to = task.file.saved_to
+    task.create_shortcut = AsyncMock()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock(side_effect=RuntimeError('print failed'))
+
+        await task._download_external_url_with_fallback()
+
+    task.create_shortcut.assert_awaited_once()
+    assert task.filename == 'Reading List'
+    assert task.file.saved_to == original_saved_to
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_download_uses_lti_launch_payload(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = (
+        '{"endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1", '
+        '"parameters": [{"name": "id_token", "value": "signed-token"}]}'
+    )
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock()
+
+        await task._download_leganto_reading_list_pdf()
+
+    printer_cls.assert_called_once_with('cookie-data', skip_cert_verify=False, headless=True)
+    printer.print_to_pdf.assert_awaited_once_with(
+        'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        task.file.saved_to,
+        launch_parameters=[{'name': 'id_token', 'value': 'signed-token'}],
+    )
 
 
 @pytest.mark.asyncio

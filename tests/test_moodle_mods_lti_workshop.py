@@ -185,6 +185,41 @@ async def test_lti_real_fetch_builds_launch_files_metadata_and_shortcut():
 
 
 @pytest.mark.asyncio
+async def test_lti_real_fetch_adds_leganto_pdf_file_for_reading_list_launch():
+    mod = make_mod(LtiMod)
+    mod.client.async_post.side_effect = [
+        {
+            "ltis": [
+                {
+                    "id": 99,
+                    "coursemodule": 44,
+                    "course": 10,
+                    "name": "Reading List",
+                    "timemodified": 123,
+                }
+            ]
+        },
+        {
+            "endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1",
+            "parameters": [{"name": "id_token", "value": "signed-token"}],
+        },
+    ]
+
+    result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    files = result[10][44]["files"]
+    leganto_file = next(file for file in files if file["type"] == "leganto_pdf")
+    payload = json.loads(leganto_file["content"])
+
+    assert leganto_file["filename"] == "Reading List.pdf"
+    assert leganto_file["content_fileurl"] == "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1"
+    assert payload == {
+        "endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1",
+        "parameters": [{"name": "id_token", "value": "signed-token"}],
+    }
+
+
+@pytest.mark.asyncio
 async def test_lti_real_fetch_handles_missing_launch_data():
     mod = make_mod(LtiMod)
     mod.client.async_post.side_effect = [

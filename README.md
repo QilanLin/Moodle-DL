@@ -1,37 +1,38 @@
 <div align="center">
     <br>
     <h2>Moodle-DL</h2>
-    一个用于批量下载 Moodle 课程资料的命令行工具。
+    A command-line tool for batch-downloading Moodle course materials.
     <br>
-    当前仓库为支持中英双语初始化、默认有头 SSO 登录，并包含若干下载逻辑改动的维护分支。
+    This maintenance fork supports Chinese / English initialization, uses headful SSO login by default, and includes several download-behavior adjustments.
 </div>
 
 ---
 
-`moodle-dl` 是一个控制台程序，用来下载 Moodle 课程中日常学习所需的内容。它还支持通知、增量下载、课程筛选，以及对多种 Moodle 模块和外部链接的处理。首次初始化会先让你选择中文或 English，后续初始化提示会使用所选语言显示。
+`moodle-dl` is a console application for downloading the day-to-day course content you need from Moodle. It supports incremental downloads, notifications, course filtering, many Moodle activity modules, and external links or files. During first-time initialization, it asks you to choose Chinese or English and then shows the initialization prompts in that language.
 
-## 功能概览
+## Features
 
-- 下载课程文件、作业、作业提交、Book、日历事件、论坛、Workshop、Lesson、Quiz、描述内容等。
-- 处理外部链接和外部文件，例如 OpenCast、YouTube、Sciebo、OwnCloud、Kaltura、Helixmedia、Google Drive 等。
-- 支持增量下载：再次运行时只下载新增或变更内容。
-- 支持通知：Telegram、Discord、XMPP、邮件等。通知不会在首次初始化中配置，需要时可通过独立命令启用。
-- 支持中文 / English 初始化向导，后续配置也可以通过 CLI 完成。
-- SSO 登录默认使用可见浏览器窗口，便于账号选择、MFA 和浏览器 cookies 复用。
-- 支持下载你已选课的课程，以及你可见的公开课程。
+- Downloads course files, assignments, assignment submissions, Book content, calendar events, forums, Workshop, Lesson, Quiz, descriptions, and more.
+- Handles external links and files such as OpenCast, YouTube, Sciebo, OwnCloud, Kaltura, Helixmedia, and Google Drive.
+- Supports incremental downloads: later runs only download new or changed content.
+- Supports notifications via Telegram, Discord, XMPP, email, and other services. Notification setup is no longer shown during first-time initialization; configure it separately when needed.
+- Provides a Chinese / English initialization wizard and CLI-based configuration tools.
+- Uses a visible browser window for SSO by default, which helps with account selection, MFA, and browser-cookie reuse.
+- Saves KCL Leganto reading lists as PDF by opening the list menu and using the page's `Print list` action.
+- Downloads courses you are enrolled in, plus public courses visible to your account.
 
-本分支源码：<https://github.com/QilanLin/Moodle-DL>。上游项目与历史讨论：<https://github.com/C0D3D3V/Moodle-DL/issues>
+Fork source: <https://github.com/QilanLin/Moodle-DL>. Upstream project and historical discussions: <https://github.com/C0D3D3V/Moodle-DL/issues>
 
-## 安装
+## Installation
 
-> 注意：这是一个带中英双语初始化和行为调整的源码分支，建议直接从源码安装，不要依赖 PyPI。
+> Note: this is a source-maintained fork with bilingual initialization and behavior changes. Install it from source instead of relying on PyPI.
 
-### 环境要求
+### Requirements
 
 - Python `>= 3.7`
-- 建议优先使用你准备运行 `moodle-dl` 的那个 Python 解释器来安装，例如 `python3 -m pip ...`
+- Use the same Python interpreter that you plan to run `moodle-dl` with, for example `python3 -m pip ...`.
 
-### 从源码安装
+### Install From Source
 
 ```bash
 git clone https://github.com/QilanLin/Moodle-DL.git
@@ -39,49 +40,52 @@ cd Moodle-DL
 python3 -m pip install -e .
 ```
 
-这里使用的是 editable install。优点是：
-- 你 `git pull` 后通常不需要重新安装。
-- 本地代码修改会直接生效。
+This uses an editable install:
 
-### SSO 前置条件
+- After `git pull`, you usually do not need to reinstall the package.
+- Local code changes take effect immediately.
 
-如果只使用普通账号密码或手动 token 登录，可以跳过本节。如果你要使用 `--sso`、浏览器 cookies 读取或 API token 自动提取，请先安装浏览器自动化依赖：
+### SSO Prerequisites
+
+You can skip this section if you only use normal username/password login or a manually copied token. If you want to use `--sso`, browser-cookie import, or automatic API-token extraction, install the browser-automation dependencies first:
 
 ```bash
 python3 -m pip install playwright browser-cookie3
 ```
 
-然后安装 Playwright 使用的浏览器运行时。使用 Firefox 时运行：
+Then install the Playwright browser runtime. For Firefox:
 
 ```bash
 python3 -m playwright install firefox
 ```
 
-如果你主要使用 Chrome / Edge，安装 Chromium 运行时：
+If you mainly use Chrome / Edge, install the Chromium runtime:
 
 ```bash
 python3 -m playwright install chromium
 ```
 
-`--init --sso` 默认会打开可见浏览器窗口。只有在服务器或 CI 等没有桌面环境的场景，才建议显式使用 `MOODLE_DL_HEADLESS=1`。
+`--init --sso` opens a visible browser window by default. Only use `MOODLE_DL_HEADLESS=1` explicitly for servers, CI, or other environments without a desktop session.
 
-### 更稳的运行方式
+Leganto reading-list PDF export uses Playwright's Chromium PDF support, so install Chromium even if you normally use Firefox for SSO.
 
-有些机器即使执行了 `pip install -e .`，也可能因为 `PATH`、`conda`、`venv` 或用户脚本目录配置问题，导致找不到 `moodle-dl` 命令。
+### Reliable Ways To Run
 
-这个仓库自带可执行脚本 `moodle-dl`，所以最稳的方式是直接在项目目录里运行：
+Some machines can install the package successfully but still fail to find the `moodle-dl` command because of `PATH`, conda, virtualenv, or user script directory settings.
+
+This repository includes an executable `moodle-dl` script, so the most reliable way to run it from the project directory is:
 
 ```bash
 ./moodle-dl --help
 ```
 
-如果你想完全绕开 PATH，也可以这样运行：
+To bypass `PATH` entirely, run the module directly:
 
 ```bash
 python3 -m moodle_dl.main --help
 ```
 
-如果你确认已经安装成功但命令仍然找不到，请检查：
+If the package is installed but the command is still not found, check:
 
 ```bash
 which python3
@@ -90,77 +94,78 @@ python3 -m pip show moodle-dl
 python3 -c "import shutil; print(shutil.which('moodle-dl'))"
 ```
 
-常见原因通常是：
-- `pip` 安装到了另一个 Python 环境
-- 脚本被安装到了 `~/.local/bin` 或某个虚拟环境的 `bin/`，但不在 `PATH` 里
-- 你在当前目录里直接输入 `moodle-dl`，但 shell 默认不会搜索当前目录，这种情况应该写成 `./moodle-dl`
+Common causes:
 
-### Windows 说明
+- `pip` installed the package into a different Python environment.
+- The script was installed into `~/.local/bin` or a virtualenv `bin/` directory that is not in `PATH`.
+- You typed `moodle-dl` inside the project directory, but your shell does not search the current directory by default. Use `./moodle-dl` instead.
 
-如果你在 Windows 上运行，建议使用 `PowerShell` 或 `CMD`，不要使用 `mintty`、`MINGW` 等终端。
+### Windows Notes
 
-如果依赖编译失败，可能需要安装 Visual C++ Build Tools。
+On Windows, use PowerShell or CMD. Avoid `mintty`, `MINGW`, and similar terminals.
 
-## 快速开始
+If dependency compilation fails, you may need to install Visual C++ Build Tools.
 
-### 初始化配置
+## Quick Start
 
-`--init` 和 `--init --sso` 会先显示语言选择，你可以选择 `中文` 或 `English`。
+### Initialize Configuration
 
-普通登录：
+`--init` and `--init --sso` first show a language picker. Choose Chinese or English.
+
+Normal login:
 
 ```bash
 ./moodle-dl --init
 ```
 
-如果学校使用 SSO，默认会打开可见浏览器窗口，便于完成账号选择、MFA 和浏览器 cookie 恢复：
+If your institution uses SSO, the default flow opens a visible browser window so you can select the right account, complete MFA, and reuse browser cookies:
 
 ```bash
 ./moodle-dl --init --sso
 ```
 
-如果你更喜欢 `python -m` 方式，也可以写成：
+You can also use the `python -m` form:
 
 ```bash
 python3 -m moodle_dl.main --init --sso
 ```
 
-如果确实需要无头模式，例如在没有桌面环境的服务器或 CI 中运行，可以显式设置：
+If you really need headless mode, for example on a server or in CI, set it explicitly:
 
 ```bash
 MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 ```
 
-### 开始下载
+### Start Downloading
 
 ```bash
 ./moodle-dl
 ```
 
-### 查看帮助
+### Show Help
 
 ```bash
 ./moodle-dl --help
 ```
 
-## 常用命令
+## Common Commands
 
-快速开始已经覆盖首次初始化、SSO 初始化、下载和帮助。下面是后续维护时更常用的命令：
+The quick start already covers first-time initialization, SSO initialization, downloading, and help. These commands are useful for later maintenance:
 
-| 场景 | 命令 |
+| Scenario | Command |
 | --- | --- |
-| 打开配置向导 | `./moodle-dl --config` |
-| Token 失效后重新获取 | `./moodle-dl --new-token` |
-| 使用 SSO 重新获取 Token | `./moodle-dl --new-token --sso` |
-| 刷新浏览器 Cookies | `./moodle-dl --refresh-cookies` |
-| 重试失败下载 | `./moodle-dl --retry-failed` |
-| 指定下载目录 | `./moodle-dl --path /your/download/path` |
-| 重置已下载文件状态 | `./moodle-dl --reset-downloaded-files` |
-| 重置已下载文件状态（中文别名） | `./moodle-dl --重置下载文件` |
+| Open the configuration wizard | `./moodle-dl --config` |
+| Get a new token after the saved token expires | `./moodle-dl --new-token` |
+| Get a new token through SSO | `./moodle-dl --new-token --sso` |
+| Refresh browser cookies | `./moodle-dl --refresh-cookies` |
+| Retry failed downloads | `./moodle-dl --retry-failed` |
+| Set the download directory | `./moodle-dl --path /your/download/path` |
+| Reset downloaded-file state | `./moodle-dl --reset-downloaded-files` |
+| Reset downloaded-file state, Chinese alias | `./moodle-dl --重置下载文件` |
 
-### 通知配置
+### Notification Configuration
 
-首次初始化不会再弹出通知服务选择菜单。需要通知功能时，请单独运行对应命令：
+First-time initialization no longer shows the notification-service selection menu. Configure notification services separately when needed:
 
 ```bash
 ./moodle-dl --change-notification-mail
@@ -170,192 +175,193 @@ MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 ./moodle-dl --change-notification-xmpp
 ```
 
-## 使用说明
+## Usage Notes
 
-`moodle-dl` 主要依赖 Moodle Mobile API。如果你的 Moodle 站点禁用了官方 Moodle App 所使用的接口，那么本工具将无法正常连接。
+`moodle-dl` mainly relies on the Moodle Mobile API. If your Moodle site disables the API used by the official Moodle app, this tool cannot connect normally.
 
-如果你不希望把当前工作目录作为下载目录，请在命令里显式传入 `--path`。
+If you do not want to use the current working directory as the download directory, pass `--path` explicitly.
 
 ### `--init`
 
-- 创建初始配置。
-- CLI 配置向导会先让你选择中文或 English，然后引导你完成首次设置。
-- 如果学校使用 SSO，可以额外加上 `--sso`。
-- 首次初始化不会配置通知服务；通知请使用 `--change-notification-*` 命令单独配置。
-- 如果后续保存的 token 被 Moodle 拒绝，可使用 `--new-token` 重新获取。
-- 如需自动化登录，也可以额外提供 `--username`、`--password` 或 `--token`。
+- Creates the initial configuration.
+- The CLI wizard first asks you to choose Chinese or English, then walks you through the setup.
+- Add `--sso` if your institution uses SSO.
+- First-time initialization does not configure notifications. Use the `--change-notification-*` commands for notification setup.
+- If Moodle rejects the saved token later, use `--new-token` to obtain a new one.
+- For automated login, you can also provide `--username`, `--password`, or `--token`.
 
 ### `moodle-dl`
 
-- 完成配置后，通常执行这一条命令就足够下载所有课程内容并输出结果。
+- After configuration is complete, running `moodle-dl` is usually enough to download all course content and print the result.
 
 ### `--config`
 
-- 打开 CLI 配置向导。
-- 可修改几乎所有常用设置，例如：
-  - 选择要下载的课程
-  - 重命名课程目录
-  - 是否为课程创建子目录结构
-  - 是否下载 submissions、descriptions、description 内链接、database、quiz、lesson、workshop、forum 等
-  - 是否下载外部文件
-  - 是否下载依赖 cookies 的内容
+- Opens the CLI configuration wizard.
+- Lets you change most common settings, including:
+  - which courses to download
+  - course directory names
+  - whether to create per-course subdirectory structures
+  - whether to download submissions, descriptions, links inside descriptions, database activities, quizzes, lessons, workshops, forums, and similar content
+  - whether to download external files
+  - whether to download content that depends on browser cookies
 
-并不是所有高级配置都在向导中可见，更多细项可直接查看配置文件。
+Not every advanced setting is exposed in the wizard. For finer control, inspect the configuration file directly.
 
-## 这个分支的主要改动
+## Main Changes In This Fork
 
-相较于上游版本，这个分支包含以下定制：
+Compared with the upstream project, this fork includes:
 
-- 初始化流程支持中文 / English 选择；多数维护提示仍以中文体验优先。
-- 更适合实际使用的交互体验：配置向导支持更顺畅的前进/后退导航。
-- SSO 默认使用有头模式，更适合需要账号选择、MFA 或浏览器 cookies 迁移的学校登录流程。
-- 首次初始化跳过通知服务配置，避免不需要通知的用户被额外问题打断。
-- 下载逻辑调整：
-  - `yt-dlp` 只在确实需要浏览器 cookies 的嵌入式视频场景启用，例如 `kalvidres`、`helixmedia`、部分 `LTI`。
-  - 普通网页链接优先生成快捷方式，而不是盲目保存整页源码。
-  - 对真实外部文件优先尝试下载文件本体。
-- 更强的 SSO / cookies / 数据库状态跟踪支持。
+- Chinese / English selection for initialization. Most maintenance prompts still prioritize the Chinese user experience.
+- A smoother interactive configuration experience, including forward/back navigation in the wizard.
+- Headful SSO login by default, which is better for account selection, MFA, and browser-cookie migration.
+- Notification setup skipped during first-time initialization, so users who do not need notifications are not interrupted by extra questions.
+- Download-behavior changes:
+  - `yt-dlp` is only enabled for embedded-video cases that actually need browser cookies, such as `kalvidres`, `helixmedia`, and some `LTI` content.
+  - Normal web links prefer shortcut generation instead of blindly saving full page source.
+  - Real external files are downloaded as files when possible.
+- Stronger SSO, cookie, and database-state tracking support.
 
-## 常见问题
+## FAQ
 
 ### 1. `moodle-dl: command not found`
 
-优先使用下面任意一种：
+Prefer one of these forms:
 
 ```bash
 ./moodle-dl --help
 ```
 
-或：
+or:
 
 ```bash
 python3 -m moodle_dl.main --help
 ```
 
-如果你坚持使用全局命令，再去排查 `PATH` 和安装环境。
+Only debug your global `PATH` setup if you specifically want to run `moodle-dl` as a global command.
 
-### 2. SSO 登录失败
+### 2. SSO Login Fails
 
-默认已经使用有头模式：
+Headful mode is already the default:
 
 ```bash
 ./moodle-dl --init --sso
 ```
 
-如果你之前设置过 `MOODLE_DL_HEADLESS=1` 或 `MOODLE_DL_HEADFUL=0`，请先移除该环境变量。
+If you previously set `MOODLE_DL_HEADLESS=1` or `MOODLE_DL_HEADFUL=0`, remove that environment variable first.
 
-如果报错中包含 `Executable doesn't exist` 或 `ms-playwright`，通常是 Playwright 浏览器运行时没有安装：
+If the error includes `Executable doesn't exist` or `ms-playwright`, the Playwright browser runtime is usually missing:
 
 ```bash
 python3 -m playwright install firefox
 ```
 
-如果报错提示缺少 `browser-cookie3` 或 `playwright`，请先安装：
+If the error says `browser-cookie3` or `playwright` is missing, install the dependencies:
 
 ```bash
 python3 -m pip install playwright browser-cookie3
 ```
 
-如果浏览器里登录了多个 Microsoft / Google / 学校账号，建议：
-- 手动先在浏览器里选好正确账号
-- 或者使用单独浏览器 profile
+If your browser is logged into multiple Microsoft, Google, or institution accounts:
 
-### 3. Cookies 过期
+- Manually select the correct account in the browser first.
+- Or use a separate browser profile.
 
-重新运行：
+### 3. Cookies Expired
+
+Refresh them:
 
 ```bash
 ./moodle-dl --refresh-cookies
 ```
 
-或者重新初始化：
+Or initialize again:
 
 ```bash
 ./moodle-dl --init --sso
 ```
 
-### 4. Git 更新后要不要重新安装
+### 4. Do I Need To Reinstall After `git pull`?
 
-如果你是通过：
+If you installed with:
 
 ```bash
 python3 -m pip install -e .
 ```
 
-安装的，那么 `git pull` 之后通常不需要重新安装。
+then you usually do not need to reinstall after `git pull`.
 
-## 配置与日志文件
+## Configuration And Log Files
 
-常见文件位置：
+Common file locations:
 
-- 配置：`~/.moodle-dl/config.json`
-- 日志：`~/.moodle-dl/MoodleDL.log`
-- 状态数据库：`~/.moodle-dl/moodle_state.db`
+- Configuration: `~/.moodle-dl/config.json`
+- Log file: `~/.moodle-dl/MoodleDL.log`
+- State database: `~/.moodle-dl/moodle_state.db`
 
-某些自定义运行目录下，也可能在当前目录生成对应的 `config.json`、`MoodleDL.log`、`moodle_state.db`。
+Depending on your custom run directory, corresponding `config.json`, `MoodleDL.log`, and `moodle_state.db` files may also be created in the current directory.
 
-## 开发与测试
+## Development And Tests
 
-运行测试：
+Run tests:
 
 ```bash
 python3 -m pytest
 ```
 
-查看覆盖率时可以运行（需要 `pytest-cov`）：
+Run coverage, if `pytest-cov` is installed:
 
 ```bash
 python3 -m pytest --cov=moodle_dl --cov-report=term-missing
 ```
 
-## 安全说明
+## Security Notes
 
-- Moodle 账号密码本身不会被明文长期保存在标准配置流程里，但 token、cookies、通知账号等数据依然是敏感信息。
-- `config.json` 中保存的 token 属于高敏感凭据，不应泄露。
-- 如果启用了 cookie 相关功能，cookies 文件或数据库中的会话信息同样属于高敏感数据。
-- 邮件 / XMPP 等通知服务的登录信息可能以明文形式保存，建议使用专门的通知账号，而不是主账号。
+- Moodle account passwords are not stored long-term in plaintext during the standard configuration flow, but tokens, cookies, and notification credentials are still sensitive.
+- The token stored in `config.json` is a high-sensitivity credential and must not be shared.
+- If cookie-related features are enabled, cookie files or session data in the database are also high-sensitivity credentials.
+- Email / XMPP and similar notification credentials may be stored in plaintext. Use dedicated notification accounts instead of your primary accounts where possible.
 
-## 替代下载器
+## Alternative Downloaders
 
-以下项目和 `moodle-dl` 目标相近，但各自面向的学校、技术路线和功能重点不同：
+These projects have similar goals to `moodle-dl`, but target different institutions, technologies, or workflows:
 
 - [webeep-sync](https://github.com/toto04/webeep-sync#english-version)
-  - 使用 Node.js 编写
-  - 提供 GUI
-  - 面向米兰理工大学 Moodle
+  - Written in Node.js
+  - Provides a GUI
+  - Targets Politecnico di Milano Moodle
 
 - [syncMyMoodle](https://github.com/Romern/syncMyMoodle)
-  - 与 `moodle-dl` 目标接近
-  - 面向亚琛工业大学 Moodle
+  - Similar goal to `moodle-dl`
+  - Targets RWTH Aachen University Moodle
 
 - [edu-sync](https://github.com/mkroening/edu-sync)
-  - 使用 Rust 编写
-  - 性能较好
+  - Written in Rust
+  - Focuses on performance
 
 - [tum-moodle-downloader](https://github.com/omareldeeb/tum-moodle-downloader)
-  - 偏向网页抓取而不是 Moodle Mobile API
-  - 提供一些更细粒度的下载命令
-  - 面向慕尼黑工业大学 Moodle
+  - Uses web scraping rather than the Moodle Mobile API
+  - Provides more fine-grained download commands
+  - Targets Technical University of Munich Moodle
 
 - [moodle-buddy](https://github.com/marcelreppi/moodle-buddy)
-  - Firefox / Chrome 插件
-  - 支持批量下载和通知
+  - Firefox / Chrome extension
+  - Supports batch downloads and notifications
 
 - [moodle-downloader](https://github.com/harsilspatel/moodle-downloader)
-  - Chrome 扩展
-  - 批量下载 Moodle 资源
+  - Chrome extension
+  - Batch-downloads Moodle resources
 
 - [Orga Bot](https://github.com/YoshiiPlayzz/orga_bot)
-  - 基于 `moodle-dl`
-  - 用 Discord 发送 Moodle 文件
+  - Based on `moodle-dl`
+  - Sends Moodle files through Discord
 
 - [discord-moodle-bot](https://github.com/tjarbo/discord-moodle-bot)
-  - 为 Moodle 课程提供 Discord 通知能力
+  - Provides Discord notification support for Moodle courses
 
-## 贡献
+## Contributing
 
-欢迎通过 GitHub Issues 或 Pull Request 反馈问题和提交改动。当前仓库暂未提供独立的 `CONTRIBUTING.md`，提交前请尽量保持改动聚焦，并运行相关测试。
+Issues and pull requests are welcome. This repository does not currently include a separate `CONTRIBUTING.md`; keep changes focused and run the relevant tests before submitting.
 
-## 许可证
+## License
 
-本项目使用 GPL-3.0 许可证，详见 `LICENSE`。
+This project is licensed under GPL-3.0. See `LICENSE` for details.

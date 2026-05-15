@@ -6,6 +6,7 @@ import time
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.downloader.leganto_print import is_leganto_lti_launch_url
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
@@ -156,6 +157,27 @@ class LtiMod(MoodleMod):
                     }
                 )
 
+                if self._should_create_leganto_pdf_file(endpoint, lti_name):
+                    lti_files.append(
+                        {
+                            'filename': PT.to_valid_name(lti_name or 'Reading List', is_file=True) + '.pdf',
+                            'filepath': '/',
+                            'content_fileurl': endpoint,
+                            'content': json.dumps(
+                                {
+                                    'endpoint': endpoint,
+                                    'parameters': parameters,
+                                },
+                                indent=2,
+                                ensure_ascii=False,
+                            ),
+                            'type': 'leganto_pdf',
+                            'timemodified': lti.get('timemodified', 0),
+                            'filesize': 0,
+                            'isexternalfile': True,
+                        }
+                    )
+
             # Create comprehensive metadata file
             metadata = {
                 'lti_id': lti_id,
@@ -239,6 +261,10 @@ class LtiMod(MoodleMod):
             )
 
         return result
+
+    @staticmethod
+    def _should_create_leganto_pdf_file(endpoint: str, lti_name: str) -> bool:
+        return is_leganto_lti_launch_url(endpoint) and 'reading' in (lti_name or '').lower()
 
     def _generate_launch_form(self, endpoint: str, parameters: List[Dict], tool_name: str) -> str:
         """
