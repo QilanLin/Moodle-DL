@@ -97,7 +97,7 @@ class GoogleDriveIE(InfoExtractor):
             return f"https://drive.google.com/file/d/{mobj.group('id')}"
 
     def _download_subtitles_xml(self, video_id, subtitles_id, hl):
-        if self._captions_xml:
+        if self._captions_xml is not None:
             return
         self._captions_xml = self._download_xml(
             self._BASE_URL_CAPTIONS,
@@ -116,7 +116,7 @@ class GoogleDriveIE(InfoExtractor):
             errnote='Unable to download subtitles XML',
             fatal=False,
         )
-        if self._captions_xml:
+        if self._captions_xml is not None:
             for f in self._captions_xml.findall('format'):
                 if f.attrib.get('fmt_code') and not f.attrib.get('default'):
                     self._caption_formats_ext.append(f.attrib['fmt_code'])
@@ -158,7 +158,7 @@ class GoogleDriveIE(InfoExtractor):
         subtitles_id = args[1]
         hl = args[2]
         self._download_subtitles_xml(video_id, subtitles_id, hl)
-        if not self._captions_xml:
+        if self._captions_xml is None:
             return
         return self._get_captions_by_type(video_id, subtitles_id, 'subtitles')
 
@@ -169,7 +169,7 @@ class GoogleDriveIE(InfoExtractor):
         subtitles_id = args[1]
         hl = args[2]
         self._download_subtitles_xml(video_id, subtitles_id, hl)
-        if not self._captions_xml:
+        if self._captions_xml is None:
             return
         track = self._captions_xml.find('track')
         if track is None:

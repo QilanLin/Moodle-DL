@@ -1,4 +1,5 @@
 import json
+import warnings
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from xml.etree import ElementTree
@@ -62,10 +63,14 @@ def test_google_drive_helpers_and_real_extract_new_video_info():
     ie._caption_formats_ext = []
     ie._download_xml = Mock(return_value=captions_xml)
 
-    subtitles = ie._get_subtitles(video_id, "subs", "en")
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        subtitles = ie._get_subtitles(video_id, "subs", "en")
+        automatic = ie._get_automatic_captions(video_id, "subs", "en")
+
+    assert not [warning for warning in caught if "truth value" in str(warning.message)]
     assert sorted(subtitles) == ["en"]
     assert [fmt["ext"] for fmt in subtitles["en"]] == ["vtt", "srv3"]
-    automatic = ie._get_automatic_captions(video_id, "subs", "en")
     assert sorted(automatic) == ["fr"]
     assert "tlang=fr" in automatic["fr"][0]["url"]
 

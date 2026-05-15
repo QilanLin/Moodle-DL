@@ -1,4 +1,5 @@
 import json
+import warnings
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -316,11 +317,16 @@ async def test_forum_posts_loading_and_inline_deduplication():
         ]
     )
 
-    files = await mod.load_files_of_discussion({"discussion_id": 10, "subject": "Topic", "created": 1700000000})
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        files = await mod.load_files_of_discussion({"discussion_id": 10, "subject": "Topic", "created": 1700000000})
+
+    assert not [warning for warning in caught if "utcfromtimestamp" in str(warning.message)]
     assert "5" in files[0]["filename"]
     assert "Alice" in files[0]["filename"]
     assert "response" in files[0]["filename"]
     assert "2" in files[0]["filename"]
+    assert files[0]["filepath"] == "23-11-14 Topic"
     assert files[0]["type"] == "description"
     assert files[1]["type"] == "forum_file"
     assert "/webservice/pluginfile.php/" in files[1]["fileurl"]

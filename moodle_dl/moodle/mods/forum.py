@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
@@ -319,7 +319,7 @@ class ForumMod(MoodleMod):
                 )
 
             post_path = PT.to_valid_name(
-                datetime.utcfromtimestamp(discussion.get('created', 0)).strftime('%y-%m-%d')
+                datetime.fromtimestamp(discussion.get('created', 0), UTC).strftime('%y-%m-%d')
                 + ' '
                 + discussion.get('subject', ''),
                 is_file=False,
