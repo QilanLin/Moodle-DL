@@ -15,6 +15,7 @@ import http.cookiejar
 import re
 import base64
 from typing import TYPE_CHECKING
+from moodle_dl.cli.localization import tr as _
 
 try:
     import browser_cookie3
@@ -929,10 +930,10 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
     """
     import logging
     
-    logging.info("\n🔍 [Playwright] 开始使用 Playwright 提取 API token...")
-    logging.debug(f'🔍 [Playwright] 输入参数: domain={domain}, cookies数量={len(cookies)}')
-    print("\n🔍 使用 Playwright 自动获取 API token...")
-    print(f"  -> 已加载 {len(cookies)} 个 cookies ...")
+    logging.info(_("\n🔍 [Playwright] 开始使用 Playwright 提取 API token...", "\n🔍 [Playwright] Starting API token extraction with Playwright..."))
+    logging.debug(_('🔍 [Playwright] 输入参数: domain={domain}, cookies数量={count}', '🔍 [Playwright] Input: domain={domain}, cookie count={count}', domain=domain, count=len(cookies)))
+    print(_("\n🔍 使用 Playwright 自动获取 API token...", "\n🔍 Automatically getting API token with Playwright..."))
+    print(_("  -> 已加载 {count} 个 cookies ...", "  -> Loaded {count} cookies ...", count=len(cookies)))
     
     try:
         if async_playwright is None:
@@ -973,7 +974,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             try:
                 import requests
             except Exception as e:
-                logging.warning(f'⚠️  [RequestsFallback] 无法导入 requests: {e}')
+                logging.warning(_('⚠️  [RequestsFallback] 无法导入 requests: {error}', '⚠️  [RequestsFallback] Unable to import requests: {error}', error=e))
                 return None, None
 
             sess = requests.Session()
@@ -994,19 +995,19 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     continue
             sess.cookies = jar
 
-            logging.info('🔍 [RequestsFallback] 尝试用 requests 获取 launch.php 的 Location（allow_redirects=False）...')
+            logging.info(_('🔍 [RequestsFallback] 尝试用 requests 获取 launch.php 的 Location（allow_redirects=False）...', '🔍 [RequestsFallback] Trying to get launch.php Location with requests (allow_redirects=False)...'))
             try:
                 resp = sess.get(token_url, allow_redirects=False, timeout=20)
             except Exception as e:
-                logging.warning(f'⚠️  [RequestsFallback] 请求失败: {e}')
+                logging.warning(_('⚠️  [RequestsFallback] 请求失败: {error}', '⚠️  [RequestsFallback] Request failed: {error}', error=e))
                 return None, None
 
             loc = resp.headers.get('Location') or resp.headers.get('location')
-            logging.info(f'🔍 [RequestsFallback] 状态码: {resp.status_code}')
+            logging.info(_('🔍 [RequestsFallback] 状态码: {status}', '🔍 [RequestsFallback] Status code: {status}', status=resp.status_code))
             if loc:
                 logging.info(f'🔍 [RequestsFallback] Location: {loc[:200]}...')
             else:
-                logging.warning('⚠️  [RequestsFallback] 响应没有 Location header（可能返回 200 HTML 或被重定向链拦截）')
+                logging.warning(_('⚠️  [RequestsFallback] 响应没有 Location header（可能返回 200 HTML 或被重定向链拦截）', '⚠️  [RequestsFallback] Response has no Location header (possibly 200 HTML or intercepted redirect chain)'))
                 try:
                     logging.info(f'🔍 [RequestsFallback] 响应前200字符: {resp.text[:200].replace(chr(10), " ")}')
                 except Exception:
@@ -1017,16 +1018,16 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 try:
                     return _extract_token_from_moodledl_url(loc)
                 except Exception as e:
-                    logging.warning(f'⚠️  [RequestsFallback] 解码 token 失败: {e}')
+                    logging.warning(_('⚠️  [RequestsFallback] 解码 token 失败: {error}', '⚠️  [RequestsFallback] Failed to decode token: {error}', error=e))
                     return None, None
 
             # 若 Location 仍指向 OIDC/登录页，说明会话未登录
             if 'login.microsoftonline.com' in loc or '/auth/oidc' in loc or '/login/' in loc:
-                logging.warning('⚠️  [RequestsFallback] Location 指向登录/SSO，说明当前 cookies 不足以视为已登录')
+                logging.warning(_('⚠️  [RequestsFallback] Location 指向登录/SSO，说明当前 cookies 不足以视为已登录', '⚠️  [RequestsFallback] Location points to login/SSO, so current cookies are not enough to be considered logged in'))
             return None, None
         
         # 防御性编程：标准化所有 cookies 为 Playwright 格式
-        logging.debug('🔍 [Playwright] 标准化 cookies 格式...')
+        logging.debug(_('🔍 [Playwright] 标准化 cookies 格式...', '🔍 [Playwright] Normalizing cookie format...'))
         cleaned_cookies = []
         for i, c in enumerate(cookies):
             try:
@@ -1035,9 +1036,9 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 if i < 3:  # 记录前3个 cookie 的详情
                     logging.debug(f'  Cookie {i+1}: name={cleaned.get("name")}, domain={cleaned.get("domain")}, secure={cleaned.get("secure")}')
             except Exception as e:
-                logging.warning(f'⚠️  [Playwright] Cookie {i+1} 标准化失败: {e}')
+                logging.warning(_('⚠️  [Playwright] Cookie {index} 标准化失败: {error}', '⚠️  [Playwright] Cookie {index} failed to normalize: {error}', index=i + 1, error=e))
         
-        logging.debug(f'🔍 [Playwright] 成功标准化 {len(cleaned_cookies)}/{len(cookies)} 个 cookies')
+        logging.debug(_('🔍 [Playwright] 成功标准化 {cleaned}/{total} 个 cookies', '🔍 [Playwright] Normalized {cleaned}/{total} cookies successfully', cleaned=len(cleaned_cookies), total=len(cookies)))
         
         # 使用 Playwright 提取 token
         async def get_token():
@@ -1047,7 +1048,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
             last_location_headers = []
             
             async with async_playwright() as p:
-                logging.debug('🔍 [Playwright] 启动 Chromium 浏览器...')
+                logging.debug(_('🔍 [Playwright] 启动 Chromium 浏览器...', '🔍 [Playwright] Launching Chromium browser...'))
                 # 使用新的 headless 模式（真正的 Chrome），不需要 chromium_headless_shell
                 browser = await p.chromium.launch(
                     headless=True,
@@ -1055,13 +1056,13 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 )
                 context = await browser.new_context()
                 
-                logging.debug(f'🔍 [Playwright] 添加 {len(cleaned_cookies)} 个 cookies 到浏览器上下文...')
+                logging.debug(_('🔍 [Playwright] 添加 {count} 个 cookies 到浏览器上下文...', '🔍 [Playwright] Adding {count} cookies to browser context...', count=len(cleaned_cookies)))
                 try:
                     await context.add_cookies(cleaned_cookies)
-                    logging.debug('✅ [Playwright] Cookies 添加成功')
+                    logging.debug(_('✅ [Playwright] Cookies 添加成功', '✅ [Playwright] Cookies added successfully'))
                 except Exception as e:
-                    logging.error(f'❌ [Playwright] 添加 cookies 失败: {e}')
-                    logging.debug(f'🔍 [Playwright] 失败的 cookies 详情: {cleaned_cookies[:2]}')
+                    logging.error(_('❌ [Playwright] 添加 cookies 失败: {error}', '❌ [Playwright] Failed to add cookies: {error}', error=e))
+                    logging.debug(_('🔍 [Playwright] 失败的 cookies 详情: {cookies}', '🔍 [Playwright] Failed cookie details: {cookies}', cookies=cleaned_cookies[:2]))
                     raise
 
                 # 立即验证 cookies 是否真的进入了上下文（这是判断重定向原因的关键）
@@ -1070,12 +1071,12 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     moodle_session_in_ctx = any(c.get('name') == 'MoodleSession' for c in ctx_cookies)
                     # 这些信息对定位问题非常关键，提升到 INFO/WARNING 级别（无需 --verbose 也能看到）
                     logging.info(f'🔍 [Playwright] context.cookies({moodle_url}) = {len(ctx_cookies)}')
-                    logging.info(f'🔍 [Playwright] context 内是否存在 MoodleSession: {moodle_session_in_ctx}')
+                    logging.info(_('🔍 [Playwright] context 内是否存在 MoodleSession: {exists}', '🔍 [Playwright] MoodleSession exists in context: {exists}', exists=moodle_session_in_ctx))
                     # 进一步输出关键 cookie（能直接判断是否是“游客 MoodleSession”）
                     key_names = {'MoodleSession', 'MOODLEID', 'MOODLEID1_', 'MoodleSessionTest'}
                     key_cookies = [c for c in ctx_cookies if c.get('name') in key_names]
                     if key_cookies:
-                        logging.info('🔍 [Playwright] context 内关键 cookie（最多10条）:')
+                        logging.info(_('🔍 [Playwright] context 内关键 cookie（最多10条）:', '🔍 [Playwright] Key cookies in context (up to 10):'))
                         for c in key_cookies[:10]:
                             logging.info(
                                 f"  - name={c.get('name')} domain={c.get('domain')} path={c.get('path')} "
@@ -1084,16 +1085,16 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                             )
                     if not moodle_session_in_ctx:
                         names = [c.get('name') for c in ctx_cookies if c.get('name')]
-                        logging.warning('⚠️  [Playwright] context 内缺少 MoodleSession（很可能导致 /my/ 重定向到登录页）')
-                        logging.warning(f'⚠️  [Playwright] context cookie 名称(前40个): {names[:40]}')
+                        logging.warning(_('⚠️  [Playwright] context 内缺少 MoodleSession（很可能导致 /my/ 重定向到登录页）', '⚠️  [Playwright] MoodleSession is missing in context (likely causing /my/ to redirect to login)'))
+                        logging.warning(_('⚠️  [Playwright] context cookie 名称(前40个): {names}', '⚠️  [Playwright] Context cookie names (first 40): {names}', names=names[:40]))
                 except Exception as e:
-                    logging.warning(f'⚠️  [Playwright] 读取 context.cookies() 失败: {e}')
+                    logging.warning(_('⚠️  [Playwright] 读取 context.cookies() 失败: {error}', '⚠️  [Playwright] Failed to read context.cookies(): {error}', error=e))
                 
                 page = await context.new_page()
                 
                 # 步骤 1: 验证 Moodle 会话
-                print(f"  -> 验证 Moodle 会话...")
-                logging.debug(f'🔍 [Playwright] 步骤1: 访问 {moodle_url}/my/ 验证会话...')
+                print(_("  -> 验证 Moodle 会话...", "  -> Verifying Moodle session..."))
+                logging.debug(_('🔍 [Playwright] 步骤1: 访问 {url}/my/ 验证会话...', '🔍 [Playwright] Step 1: visiting {url}/my/ to verify session...', url=moodle_url))
                 try:
                     response = await page.goto(f"{moodle_url}/my/", wait_until='domcontentloaded', timeout=15000)
                     page_status = response.status if response else None
@@ -1117,28 +1118,28 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                         logging.debug(f'🔍 [Playwright] 页面标题: {page_title[:50]}...')
                     except Exception as e:
                         # 常见：页面发生重定向导致 execution context 被销毁
-                        logging.warning(f'⚠️  [Playwright] 读取页面标题失败（可能正在重定向）: {e}')
-                        logging.info(f'🔍 [Playwright] /my/ 当前 URL: {page.url}')
+                        logging.warning(_('⚠️  [Playwright] 读取页面标题失败（可能正在重定向）: {error}', '⚠️  [Playwright] Failed to read page title (possibly redirecting): {error}', error=e))
+                        logging.info(_('🔍 [Playwright] /my/ 当前 URL: {url}', '🔍 [Playwright] Current /my/ URL: {url}', url=page.url))
                     
                     # 检查是否有重定向到登录页面
                     if 'login' in page_final_url.lower() or 'enrol' in page_final_url.lower() or 'microsoftonline.com' in page_final_url.lower():
-                        logging.warning(f'⚠️  [Playwright] 检测到重定向到登录/注册页面: {page_final_url}')
+                        logging.warning(_('⚠️  [Playwright] 检测到重定向到登录/注册页面: {url}', '⚠️  [Playwright] Detected redirect to login/enrolment page: {url}', url=page_final_url))
                         # 额外打印一些页面线索（title + 少量内容），帮助判断是 OIDC 还是 Moodle 登录
                         try:
                             snippet = (await page.content())[:600].replace('\n', ' ')
                             logging.info(f'🔍 [Playwright] 登录页 HTML 片段(前600字符): {snippet}')
                         except Exception:
                             pass
-                        print(f"  -> ⚠️  会话验证失败: 重定向到登录页面")
+                        print(_("  -> ⚠️  会话验证失败: 重定向到登录页面", "  -> ⚠️  Session verification failed: redirected to login page"))
                     else:
-                        logging.debug('✅ [Playwright] 会话验证成功')
-                        print(f"  -> ✅ 会话验证成功")
+                        logging.debug(_('✅ [Playwright] 会话验证成功', '✅ [Playwright] Session verification succeeded'))
+                        print(_("  -> ✅ 会话验证成功", "  -> ✅ Session verification succeeded"))
                         
                 except Exception as e:
                     error_msg = str(e)
-                    logging.error(f'❌ [Playwright] 会话验证失败: {error_msg}')
-                    logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
-                    print(f"  -> ❌ 会话验证失败: {error_msg[:50]}...")
+                    logging.error(_('❌ [Playwright] 会话验证失败: {error}', '❌ [Playwright] Session verification failed: {error}', error=error_msg))
+                    logging.debug(_('🔍 [Playwright] 错误类型: {error_type}', '🔍 [Playwright] Error type: {error_type}', error_type=type(e).__name__))
+                    print(_("  -> ❌ 会话验证失败: {error}...", "  -> ❌ Session verification failed: {error}...", error=error_msg[:50]))
                 
                 # 步骤 2: 监听控制台消息
                 def handle_console(msg):
@@ -1146,8 +1147,8 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     logging.debug(f'🔍 [Playwright] 控制台消息: {text[:100]}...')
                     if 'moodledl://' in text or 'moodlemobile://' in text:
                         captured_urls.append(text)
-                        logging.info(f'✅ [Playwright] 从控制台捕获到 URL: {text[:80]}...')
-                        print(f"  -> ✅ 从控制台捕获: {text[:80]}...")
+                        logging.info(_('✅ [Playwright] 从控制台捕获到 URL: {url}...', '✅ [Playwright] Captured URL from console: {url}...', url=text[:80]))
+                        print(_("  -> ✅ 从控制台捕获: {url}...", "  -> ✅ Captured from console: {url}...", url=text[:80]))
                 
                 page.on('console', handle_console)
                 
@@ -1157,8 +1158,8 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     logging.debug(f'🔍 [Playwright] 网络请求: {url[:100]}...')
                     if 'moodledl://' in url or 'moodlemobile://' in url:
                         captured_urls.append(url)
-                        logging.info(f'✅ [Playwright] 从网络请求捕获到 URL: {url[:80]}...')
-                        print(f"  -> ✅ 从网络请求捕获: {url[:80]}...")
+                        logging.info(_('✅ [Playwright] 从网络请求捕获到 URL: {url}...', '✅ [Playwright] Captured URL from network request: {url}...', url=url[:80]))
+                        print(_("  -> ✅ 从网络请求捕获: {url}...", "  -> ✅ Captured from network request: {url}...", url=url[:80]))
                 
                 page.on('request', handle_request)
                 
@@ -1184,19 +1185,19 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                                 logging.info(f'🔍 [Playwright] 关键重定向: status={status} url={url[:90]}... -> {location[:120]}...')
                             if 'moodledl://' in location or 'moodlemobile://' in location:
                                 captured_urls.append(location)
-                                logging.info(f'✅ [Playwright] 从响应 Location 捕获到 URL: {location[:80]}...')
+                                logging.info(_('✅ [Playwright] 从响应 Location 捕获到 URL: {url}...', '✅ [Playwright] Captured URL from response Location: {url}...', url=location[:80]))
                     except Exception:
                         pass
                     # 少见情况：URL 本身就是自定义 scheme（通常不会发生）
                     if 'moodledl://' in url or 'moodlemobile://' in url:
                         captured_urls.append(url)
-                        logging.info(f'✅ [Playwright] 从响应 URL 捕获到 URL: {url[:80]}...')
+                        logging.info(_('✅ [Playwright] 从响应 URL 捕获到 URL: {url}...', '✅ [Playwright] Captured URL from response URL: {url}...', url=url[:80]))
                 
                 page.on('response', handle_response)
                 
                 # 步骤 5: 访问 token URL
-                print(f"  -> 访问 token URL...")
-                logging.debug(f'🔍 [Playwright] 步骤2: 访问 token URL: {token_url}')
+                print(_("  -> 访问 token URL...", "  -> Visiting token URL..."))
+                logging.debug(_('🔍 [Playwright] 步骤2: 访问 token URL: {url}', '🔍 [Playwright] Step 2: visiting token URL: {url}', url=token_url))
                 try:
                     response = await page.goto(token_url, wait_until='domcontentloaded', timeout=30000)
                     response_status = response.status if response else None
@@ -1212,7 +1213,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                                 logging.info(f'🔍 [Playwright] Token goto() 返回的 Location: {location[:120]}...')
                                 if 'moodledl://' in location or 'moodlemobile://' in location:
                                     captured_urls.append(location)
-                                    logging.info(f'✅ [Playwright] 从 goto() Location 捕获到 URL: {location[:80]}...')
+                                    logging.info(_('✅ [Playwright] 从 goto() Location 捕获到 URL: {url}...', '✅ [Playwright] Captured URL from goto() Location: {url}...', url=location[:80]))
                     except Exception:
                         pass
                     
@@ -1222,21 +1223,21 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                     # 检查页面内容
                     try:
                         page_content = await page.content()
-                        logging.debug(f'🔍 [Playwright] 页面内容长度: {len(page_content)} 字符')
+                        logging.debug(_('🔍 [Playwright] 页面内容长度: {count} 字符', '🔍 [Playwright] Page content length: {count} characters', count=len(page_content)))
                         if 'moodledl://' in page_content or 'moodlemobile://' in page_content:
-                            logging.info('✅ [Playwright] 在页面内容中发现 token URL')
+                            logging.info(_('✅ [Playwright] 在页面内容中发现 token URL', '✅ [Playwright] Found token URL in page content'))
                     except Exception as e:
-                        logging.debug(f'🔍 [Playwright] 读取页面内容失败: {e}')
+                        logging.debug(_('🔍 [Playwright] 读取页面内容失败: {error}', '🔍 [Playwright] Failed to read page content: {error}', error=e))
                     
                 except Exception as e:
                     error_msg = str(e)
                     if 'net::ERR_ABORTED' in error_msg or 'ERR_INVALID_URL' in error_msg:
-                        logging.info('ℹ️  [Playwright] 预期的错误（URL scheme 不被浏览器支持）: ERR_ABORTED')
-                        print(f"  -> ℹ️  预期的错误（URL scheme 不被浏览器支持）")
+                        logging.info(_('ℹ️  [Playwright] 预期的错误（URL scheme 不被浏览器支持）: ERR_ABORTED', 'ℹ️  [Playwright] Expected error (URL scheme unsupported by browser): ERR_ABORTED'))
+                        print(_("  -> ℹ️  预期的错误（URL scheme 不被浏览器支持）", "  -> ℹ️  Expected error (URL scheme unsupported by browser)"))
                     else:
-                        logging.error(f'❌ [Playwright] 访问 token URL 失败: {error_msg}')
-                        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
-                        print(f"  -> ❌ 访问失败: {error_msg[:50]}...")
+                        logging.error(_('❌ [Playwright] 访问 token URL 失败: {error}', '❌ [Playwright] Failed to visit token URL: {error}', error=error_msg))
+                        logging.debug(_('🔍 [Playwright] 错误类型: {error_type}', '🔍 [Playwright] Error type: {error_type}', error_type=type(e).__name__))
+                        print(_("  -> ❌ 访问失败: {error}...", "  -> ❌ Visit failed: {error}...", error=error_msg[:50]))
                 finally:
                     # 无论成功与否，都打印最近看到的 Location 头（高价值调试信息）
                     if last_location_headers:
@@ -1253,7 +1254,7 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 logging.debug(f'🔍 [Playwright] 总共捕获到 {len(captured_urls)} 个 URL')
                 return captured_urls
         
-        logging.debug('🔍 [Playwright] 运行异步函数...')
+        logging.debug(_('🔍 [Playwright] 运行异步函数...', '🔍 [Playwright] Running async function...'))
         try:
             captured = asyncio.run(get_token())
         except Exception as e:
@@ -1276,39 +1277,39 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                 logging.error('║  <3 Playwright Team                                         ║')
                 logging.error('╚════════════════════════════════════════════════════════════╝')
                 logging.error('')
-                print(f"  -> ❌ API token 提取失败: {e}")
+                print(_("  -> ❌ API token 提取失败: {error}", "  -> ❌ API token extraction failed: {error}", error=e))
                 print('')
-                print("💡 提示：运行以下命令安装 Playwright 浏览器")
+                print(_("💡 提示：运行以下命令安装 Playwright 浏览器", "💡 Tip: run the following command to install Playwright browsers"))
                 print("       playwright install chromium")
                 print('')
             else:
                 logging.error('❌ [Playwright] API token 提取过程出错: %s', e)
-                print(f"  -> ❌ API token 提取失败: {e}")
+                print(_("  -> ❌ API token 提取失败: {error}", "  -> ❌ API token extraction failed: {error}", error=e))
             captured = None
         
         if not captured:
-            logging.warning('⚠️  [Playwright] 未捕获到任何 token URL')
-            print(f"  -> ⚠️  未捕获到 token URL")
-            logging.debug('🔍 [Playwright] 可能的原因:')
-            logging.debug('  1. Cookies 已过期或无效')
-            logging.debug('  2. 页面未正确加载')
-            logging.debug('  3. URL scheme 处理异常')
-            logging.debug('  4. 网络请求被拦截')
+            logging.warning(_('⚠️  [Playwright] 未捕获到任何 token URL', '⚠️  [Playwright] Did not capture any token URL'))
+            print(_("  -> ⚠️  未捕获到 token URL", "  -> ⚠️  No token URL captured"))
+            logging.debug(_('🔍 [Playwright] 可能的原因:', '🔍 [Playwright] Possible reasons:'))
+            logging.debug(_('  1. Cookies 已过期或无效', '  1. Cookies are expired or invalid'))
+            logging.debug(_('  2. 页面未正确加载', '  2. Page did not load correctly'))
+            logging.debug(_('  3. URL scheme 处理异常', '  3. URL scheme handling failed'))
+            logging.debug(_('  4. 网络请求被拦截', '  4. Network request was intercepted'))
             # 关键：Playwright 事件可能抓不到自定义 scheme 请求，使用 requests 直接读 302 Location 更可靠
             token2, private2 = _try_requests_location_fallback()
             if token2 and private2:
-                logging.info('✅ [RequestsFallback] 成功通过 Location header 获取 token（无需 Playwright 捕获事件）')
-                print("  -> ✅ 通过 HTTP Location 成功获取 token")
+                logging.info(_('✅ [RequestsFallback] 成功通过 Location header 获取 token（无需 Playwright 捕获事件）', '✅ [RequestsFallback] Got token through Location header (without Playwright event capture)'))
+                print(_("  -> ✅ 通过 HTTP Location 成功获取 token", "  -> ✅ Token obtained successfully via HTTP Location"))
                 print(f"   Web Service Token: {token2[:20]}...")
                 print(f"   Mobile App Token: {private2[:20]}...")
                 return token2, private2
             return None, None
         
-        logging.info(f'✅ [Playwright] 捕获到 {len(captured)} 个 URL')
-        print(f"  -> ✅ 捕获到 {len(captured)} 个 URL")
+        logging.info(_('✅ [Playwright] 捕获到 {count} 个 URL', '✅ [Playwright] Captured {count} URL(s)', count=len(captured)))
+        print(_("  -> ✅ 捕获到 {count} 个 URL", "  -> ✅ Captured {count} URL(s)", count=len(captured)))
         
         # 解析 token
-        logging.debug('🔍 [Playwright] 开始解析 token...')
+        logging.debug(_('🔍 [Playwright] 开始解析 token...', '🔍 [Playwright] Starting token parsing...'))
         for i, url in enumerate(captured, 1):
             logging.debug(f'🔍 [Playwright] 解析 URL {i}/{len(captured)}: {url[:100]}...')
             if 'token=' in url:
@@ -1328,35 +1329,35 @@ def extract_api_token_with_playwright_from_cookies(domain: str, cookies: list):
                             mobile_app_token = parts[0]  # Mobile app token (private token)
                             web_service_token = parts[1]  # Web Service API token (API token)
                             
-                            logging.info('✅ [Playwright] 成功解析 API token')
+                            logging.info(_('✅ [Playwright] 成功解析 API token', '✅ [Playwright] Parsed API token successfully'))
                             logging.debug(f'🔍 [Playwright] Web Service Token 长度: {len(web_service_token)}')
                             logging.debug(f'🔍 [Playwright] Mobile App Token 长度: {len(mobile_app_token)}')
-                            print(f"  -> ✅ 成功解析 API token")
+                            print(_("  -> ✅ 成功解析 API token", "  -> ✅ API token parsed successfully"))
                             print(f"   Web Service Token: {web_service_token[:20]}...")
                             print(f"   Mobile App Token: {mobile_app_token[:20]}...")
                             
                             return web_service_token, mobile_app_token
                         else:
-                            logging.warning(f'⚠️  [Playwright] Token 格式不正确，部分数不足: {len(parts)}')
+                            logging.warning(_('⚠️  [Playwright] Token 格式不正确，部分数不足: {count}', '⚠️  [Playwright] Token format is invalid; not enough parts: {count}', count=len(parts)))
                     except Exception as e:
-                        logging.error(f'❌ [Playwright] Token 解析失败: {e}')
-                        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
+                        logging.error(_('❌ [Playwright] Token 解析失败: {error}', '❌ [Playwright] Token parsing failed: {error}', error=e))
+                        logging.debug(_('🔍 [Playwright] 错误类型: {error_type}', '🔍 [Playwright] Error type: {error_type}', error_type=type(e).__name__))
                         logging.debug(f'🔍 [Playwright] 编码的 token: {token_encoded[:100]}...')
-                        print(f"  -> ❌ Token 解析失败: {e}")
+                        print(_("  -> ❌ Token 解析失败: {error}", "  -> ❌ Token parsing failed: {error}", error=e))
                         continue
         
-        logging.warning('⚠️  [Playwright] 所有 URL 都无法解析出有效的 token')
-        print(f"  -> ⚠️  无法解析 token")
+        logging.warning(_('⚠️  [Playwright] 所有 URL 都无法解析出有效的 token', '⚠️  [Playwright] No captured URL could be parsed into a valid token'))
+        print(_("  -> ⚠️  无法解析 token", "  -> ⚠️  Unable to parse token"))
         return None, None
         
     except Exception as e:
         error_msg = str(e)
-        logging.error(f'❌ [Playwright] API token 提取过程出错: {error_msg}')
-        logging.debug(f'🔍 [Playwright] 错误类型: {type(e).__name__}')
-        print(f"  -> ❌ API token 提取失败: {error_msg}")
+        logging.error(_('❌ [Playwright] API token 提取过程出错: {error}', '❌ [Playwright] API token extraction process failed: {error}', error=error_msg))
+        logging.debug(_('🔍 [Playwright] 错误类型: {error_type}', '🔍 [Playwright] Error type: {error_type}', error_type=type(e).__name__))
+        print(_("  -> ❌ API token 提取失败: {error}", "  -> ❌ API token extraction failed: {error}", error=error_msg))
         import traceback
         full_traceback = traceback.format_exc()
-        logging.debug(f'🔍 [Playwright] 完整错误堆栈:\n{full_traceback}')
+        logging.debug(_('🔍 [Playwright] 完整错误堆栈:\n{traceback}', '🔍 [Playwright] Full traceback:\n{traceback}', traceback=full_traceback))
         traceback.print_exc()
         return None, None
 

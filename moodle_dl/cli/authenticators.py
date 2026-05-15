@@ -22,6 +22,7 @@ from moodle_dl.types import MoodleDlOpts, MoodleURL
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.utils import Log
+from moodle_dl.cli.localization import tr as _
 
 
 TRUE_ENV_VALUES = {'1', 'true', 'yes', 'y', 'on'}
@@ -39,7 +40,7 @@ def _read_bool_env(name: str) -> Optional[bool]:
     if normalized in FALSE_ENV_VALUES:
         return False
 
-    logging.warning('⚠️  环境变量 %s=%r 无法识别，将忽略', name, value)
+    logging.warning(_('⚠️  环境变量 %s=%r 无法识别，将忽略', '⚠️  Environment variable %s=%r is not recognized and will be ignored'), name, value)
     return None
 
 
@@ -84,9 +85,11 @@ class TokenAcquisitionResult:
     def validate(self) -> None:
         """验证获取的 token 有效性"""
         if not self.token:
-            raise AuthenticationError('Token 不能为空')
+            raise AuthenticationError(_('Token 不能为空', 'Token cannot be empty'))
         if not isinstance(self.token, str):
-            raise AuthenticationError(f'Token 必须是字符串，当前类型: {type(self.token)}')
+            raise AuthenticationError(
+                _('Token 必须是字符串，当前类型: {token_type}', 'Token must be a string, current type: {token_type}', token_type=type(self.token))
+            )
 
 
 # ==================== 配置事务系统 ====================
@@ -135,10 +138,10 @@ class ConfigurationTransaction:
         任何失败都会抛出异常，配置保持一致
         """
         if self._committed:
-            raise ConfigurationTransactionError('事务已提交，不能重复提交')
+            raise ConfigurationTransactionError(_('事务已提交，不能重复提交', 'Transaction has already been committed and cannot be committed again'))
 
         if not self._operations:
-            logging.debug('📋 事务为空，无需提交')
+            logging.debug(_('📋 事务为空，无需提交', '📋 Transaction is empty; nothing to commit'))
             return
 
         try:
@@ -146,26 +149,26 @@ class ConfigurationTransaction:
             token_ops = [op for op in self._operations if op['type'] == 'tokens']
             if token_ops:
                 for op in token_ops:
-                    logging.debug(f"💾 提交 token 到数据库...")
+                    logging.debug(_('💾 提交 token 到数据库...', '💾 Committing token to database...'))
                     self.config.set_tokens(op['token'], op['private_token'])
 
             # 阶段 2: 提交 URL
-            logging.debug(f"💾 提交 Moodle URL: {self.moodle_url.domain}")
+            logging.debug(_('💾 提交 Moodle URL: {domain}', '💾 Committing Moodle URL: {domain}', domain=self.moodle_url.domain))
             self.config.set_moodle_URL(self.moodle_url)
 
             # 阶段 3: 提交其他属性
             property_ops = [op for op in self._operations if op['type'] == 'property']
             for op in property_ops:
-                logging.debug(f"💾 提交属性: {op['key']} = {op['value']}")
+                logging.debug(_('💾 提交属性: {key} = {value}', '💾 Committing property: {key} = {value}', key=op['key'], value=op['value']))
                 self.config.set_property(op['key'], op['value'])
 
             self._committed = True
-            logging.info('✅ 配置事务提交成功（原子性保证）')
+            logging.info(_('✅ 配置事务提交成功（原子性保证）', '✅ Configuration transaction committed successfully (atomic guarantee)'))
 
         except Exception as e:
-            logging.error(f'❌ 配置事务提交失败: {e}')
-            logging.error('⚠️  由于失败，所有配置更改都未被保存（保持一致性）')
-            raise ConfigurationTransactionError(f'提交失败: {e}') from e
+            logging.error(_('❌ 配置事务提交失败: {error}', '❌ Failed to commit configuration transaction: {error}', error=e))
+            logging.error(_('⚠️  由于失败，所有配置更改都未被保存（保持一致性）', '⚠️  Because of the failure, no configuration changes were saved (consistency preserved)'))
+            raise ConfigurationTransactionError(_('提交失败: {error}', 'Commit failed: {error}', error=e)) from e
 
     def is_committed(self) -> bool:
         """检查事务是否已提交"""
@@ -209,27 +212,27 @@ class BrowserSelector:
         preferred_browser = config.get_property_or('preferred_browser', None)
 
         if preferred_browser:
-            logging.debug(f"已加载首选浏览器: {preferred_browser}")
+            logging.debug(_('已加载首选浏览器: {browser}', 'Loaded preferred browser: {browser}', browser=preferred_browser))
             return preferred_browser
 
         # 首次配置，需要询问用户
         print('')
-        Log.blue('请选择你使用的浏览器：')
+        Log.blue(_('请选择你使用的浏览器：', 'Select the browser you use:'))
 
         try:
             from moodle_dl.utils import Cutie
             browser_choice = Cutie.select(BrowserSelector.BROWSER_CHOICES)
         except ImportError:
-            Log.error('缺少依赖库 Cutie，无法进行浏览器选择')
-            raise AuthenticationError('缺少必要的依赖库')
+            Log.error(_('缺少依赖库 Cutie，无法进行浏览器选择', 'Missing dependency Cutie; cannot select a browser'))
+            raise AuthenticationError(_('缺少必要的依赖库', 'Missing required dependency'))
 
         if browser_choice not in BrowserSelector.BROWSER_MAP:
-            raise AuthenticationError(f'无效的浏览器选择: {browser_choice}')
+            raise AuthenticationError(_('无效的浏览器选择: {choice}', 'Invalid browser selection: {choice}', choice=browser_choice))
 
         browser_name = BrowserSelector.BROWSER_MAP[browser_choice]
         display_name = BrowserSelector.BROWSER_CHOICES[browser_choice]
 
-        Log.info(f'✓ 已选择：{display_name}')
+        Log.info(_('✓ 已选择：{display_name}', '✓ Selected: {display_name}', display_name=display_name))
         print('')
 
         return browser_name
@@ -256,8 +259,8 @@ class ExportBrowserCookiesHelper:
         )
 
         if not os.path.exists(script_path):
-            logging.error(f'未找到 export_browser_cookies.py: {script_path}')
-            raise FileNotFoundError(f'export_browser_cookies.py 不存在')
+            logging.error(_('未找到 export_browser_cookies.py: {path}', 'export_browser_cookies.py not found: {path}', path=script_path))
+            raise FileNotFoundError(_('export_browser_cookies.py 不存在', 'export_browser_cookies.py does not exist'))
 
         try:
             spec = importlib.util.spec_from_file_location("export_browser_cookies", script_path)
@@ -265,7 +268,7 @@ class ExportBrowserCookiesHelper:
             spec.loader.exec_module(export_module)
             return export_module
         except Exception as e:
-            raise ImportError(f'无法加载 export_browser_cookies.py: {e}') from e
+            raise ImportError(_('无法加载 export_browser_cookies.py: {error}', 'Unable to load export_browser_cookies.py: {error}', error=e)) from e
 
 
 class SSOReferenceHelper:
@@ -275,10 +278,10 @@ class SSOReferenceHelper:
     def show_manual_token_help(moodle_url: MoodleURL) -> None:
         """显示手动获取 token 的帮助信息"""
         print('')
-        Log.warning('请使您选择的浏览器进行以下操作')
-        print('1. 登录你的 Moodle 账户')
-        print('2. 打开开发者控制台（按 F12）并转到 Network（网络）标签')
-        print('3. 然后在你已登录的同一浏览器标签页中访问以下 URL：')
+        Log.warning(_('请使您选择的浏览器进行以下操作', 'In your selected browser, do the following:'))
+        print(_('1. 登录你的 Moodle 账户', '1. Log in to your Moodle account'))
+        print(_('2. 打开开发者控制台（按 F12）并转到 Network（网络）标签', '2. Open Developer Tools (F12) and go to the Network tab'))
+        print(_('3. 然后在你已登录的同一浏览器标签页中访问以下 URL：', '3. Then open the following URL in the same logged-in browser tab:'))
         print('')
         print(
             moodle_url.url_base
@@ -286,19 +289,30 @@ class SSOReferenceHelper:
         )
         print()
         print(
-            '如果你打开链接，不应该加载网页，而是会出现错误。'
-            + '在你之前打开的开发者控制台的 Network 标签中应该有一个错误条目。'
+            _(
+                '如果你打开链接，不应该加载网页，而是会出现错误。'
+                + '在你之前打开的开发者控制台的 Network 标签中应该有一个错误条目。',
+                'When you open the link, no web page should load; an error should appear instead. '
+                + 'There should be a failed entry in the Network tab you opened earlier.'
+            )
         )
 
-        print('脚本期望一个类似这样的 URL：')
+        print(_('脚本期望一个类似这样的 URL：', 'The script expects a URL like this:'))
         Log.info('moodledl://token=$apptoken')
         print(
-            ' 其中 $apptoken 看起来是随机的，"moodledl" 也可以是不同的 URL scheme，'
-            + '比如 "moodlemobile"。实际上 $apptoken 是一个包含访问 Moodle 令牌的 Base64 字符串。'
+            _(
+                ' 其中 $apptoken 看起来是随机的，"moodledl" 也可以是不同的 URL scheme，'
+                + '比如 "moodlemobile"。实际上 $apptoken 是一个包含访问 Moodle 令牌的 Base64 字符串。',
+                ' Here $apptoken looks random. The URL scheme may be different from "moodledl", '
+                + 'for example "moodlemobile". The $apptoken value is a Base64 string containing the Moodle access token.'
+            )
         )
 
         print(
-            '4. 复制无法加载的网站的链接地址' + '（右键单击列表条目，然后单击"复制"，然后单击"复制链接地址"）'
+            _(
+                '4. 复制无法加载的网站的链接地址' + '（右键单击列表条目，然后单击"复制"，然后单击"复制链接地址"）',
+                '4. Copy the failed request URL (right-click the list entry, then choose Copy, then Copy link address)'
+            )
         )
 
 
@@ -351,7 +365,7 @@ class BaseAuthenticator(ABC):
     def _validate_result(self) -> None:
         """验证 token 获取结果"""
         if not self._result:
-            raise AuthenticationError('Token 获取结果为空')
+            raise AuthenticationError(_('Token 获取结果为空', 'Token acquisition result is empty'))
 
         self._result.validate()
 
@@ -366,7 +380,7 @@ class BaseAuthenticator(ABC):
         4. 失败则一个都不保存
         """
         if not self._result:
-            raise ConfigurationTransactionError('没有 token 结果可提交')
+            raise ConfigurationTransactionError(_('没有 token 结果可提交', 'No token result to commit'))
 
         # 验证结果
         self._validate_result()
@@ -384,7 +398,7 @@ class BaseAuthenticator(ABC):
         # 原子性提交
         self._transaction.commit()
 
-        Log.success('✅ 令牌已成功保存！')
+        Log.success(_('✅ 令牌已成功保存！', '✅ Token saved successfully!'))
 
     def execute(self) -> str:
         """
@@ -395,28 +409,28 @@ class BaseAuthenticator(ABC):
         """
         try:
             # 1. 前置配置
-            logging.info('📋 进行前置配置...')
+            logging.info(_('📋 进行前置配置...', '📋 Running pre-configuration...'))
             self.pre_configure()
 
             # 2. 获取 token
-            logging.info('🔑 开始获取 token...')
+            logging.info(_('🔑 开始获取 token...', '🔑 Starting token acquisition...'))
             self._result = self.acquire_token()
 
             # 3. 原子性提交配置
-            logging.info('💾 提交配置...')
+            logging.info(_('💾 提交配置...', '💾 Saving configuration...'))
             self.commit_configuration()
 
             return self._result.token
 
         except AuthenticationError as e:
-            logging.error(f'❌ 认证失败: {e}')
+            logging.error(_('❌ 认证失败: {error}', '❌ Authentication failed: {error}', error=e))
             raise
         except ConfigurationTransactionError as e:
-            logging.error(f'❌ 配置提交失败: {e}')
+            logging.error(_('❌ 配置提交失败: {error}', '❌ Failed to save configuration: {error}', error=e))
             raise
         except Exception as e:
-            logging.error(f'❌ 认证过程出错: {e}')
-            raise AuthenticationError(f'认证过程出错: {e}') from e
+            logging.error(_('❌ 认证过程出错: {error}', '❌ Authentication process failed: {error}', error=e))
+            raise AuthenticationError(_('认证过程出错: {error}', 'Authentication process failed: {error}', error=e)) from e
 
 
 # ==================== 普通登录认证器 ====================
@@ -449,17 +463,17 @@ class NormalAuthenticator(BaseAuthenticator):
         返回: (username, password)
         """
         if self.opts.username is not None and self.opts.password is not None:
-            logging.info('🔐 使用命令行提供的凭据')
+            logging.info(_('🔐 使用命令行提供的凭据', '🔐 Using credentials provided on the command line'))
             return self.opts.username, self.opts.password
 
         # 交互式输入
-        username = input('Moodle 用户名:   ').strip()
+        username = input(_('Moodle 用户名:   ', 'Moodle username:   ')).strip()
         if not username:
-            raise AuthenticationError('用户名不能为空')
+            raise AuthenticationError(_('用户名不能为空', 'Username cannot be empty'))
 
-        password = getpass('Moodle 密码 [无输出显示]:   ')
+        password = getpass(_('Moodle 密码 [无输出显示]:   ', 'Moodle password [no output shown]:   '))
         if not password:
-            raise AuthenticationError('密码不能为空')
+            raise AuthenticationError(_('密码不能为空', 'Password cannot be empty'))
 
         return username, password
 
@@ -478,17 +492,17 @@ class NormalAuthenticator(BaseAuthenticator):
         if self.opts.username is not None or self.opts.password is not None:
             # 命令行自动化模式 - 只尝试一次
             max_attempts = 1
-            print('[使用命令行参数自动化登录，仅尝试一次]')
+            print(_('[使用命令行参数自动化登录，仅尝试一次]', '[Using command-line credentials; trying once]'))
         else:
             # 交互式模式 - 允许多次重试
             max_attempts = self.MAX_LOGIN_ATTEMPTS
-            print('[以下凭据不会被保存，仅临时用于生成登录令牌。]')
+            print(_('[以下凭据不会被保存，仅临时用于生成登录令牌。]', '[The following credentials will not be saved; they are only used temporarily to generate a login token.]'))
 
         print('')
 
         for attempt in range(1, max_attempts + 1):
             try:
-                logging.info(f'🔐 登录尝试 {attempt}/{max_attempts}...')
+                logging.info(_('🔐 登录尝试 {attempt}/{max_attempts}...', '🔐 Login attempt {attempt}/{max_attempts}...', attempt=attempt, max_attempts=max_attempts))
 
                 # 获取凭据
                 username, password = self._get_credentials()
@@ -500,9 +514,9 @@ class NormalAuthenticator(BaseAuthenticator):
                 )
 
                 if not token:
-                    raise AuthenticationError('未收到有效的 token')
+                    raise AuthenticationError(_('未收到有效的 token', 'Did not receive a valid token'))
 
-                logging.info('✅ 登录成功！')
+                logging.info(_('✅ 登录成功！', '✅ Login successful!'))
                 print('')
 
                 # 提示可选的 cookies 导出
@@ -516,41 +530,41 @@ class NormalAuthenticator(BaseAuthenticator):
                 )
 
             except RequestRejectedError as e:
-                logging.error(f'❌ 登录失败（请求被拒绝）: {e}')
+                logging.error(_('❌ 登录失败（请求被拒绝）: {error}', '❌ Login failed (request rejected): {error}', error=e))
                 if attempt < max_attempts:
-                    print('请重试。')
+                    print(_('请重试。', 'Please try again.'))
                     print('')
                 else:
-                    raise AuthenticationError(f'登录失败: {e}') from e
+                    raise AuthenticationError(_('登录失败: {error}', 'Login failed: {error}', error=e)) from e
 
             except (ValueError, RuntimeError) as e:
-                logging.error(f'❌ 与 Moodle 系统通信时出错: {e}')
+                logging.error(_('❌ 与 Moodle 系统通信时出错: {error}', '❌ Error while communicating with the Moodle system: {error}', error=e))
                 if attempt < max_attempts:
-                    print('请重试。')
+                    print(_('请重试。', 'Please try again.'))
                     print('')
                 else:
-                    raise AuthenticationError(f'与 Moodle 系统通信时出错: {e}') from e
+                    raise AuthenticationError(_('与 Moodle 系统通信时出错: {error}', 'Error while communicating with the Moodle system: {error}', error=e)) from e
 
             except ConnectionError as e:
-                logging.error(f'❌ 网络连接错误: {e}')
+                logging.error(_('❌ 网络连接错误: {error}', '❌ Network connection error: {error}', error=e))
                 if attempt < max_attempts:
-                    print('请检查网络连接后重试。')
+                    print(_('请检查网络连接后重试。', 'Please check your network connection and try again.'))
                     print('')
                 else:
-                    raise AuthenticationError(f'网络连接错误: {e}') from e
+                    raise AuthenticationError(_('网络连接错误: {error}', 'Network connection error: {error}', error=e)) from e
 
             except AuthenticationError:
                 # 直接抛出
                 raise
             except Exception as e:
-                logging.error(f'❌ 登录时出现意外错误: {e}')
-                raise AuthenticationError(f'登录时出现意外错误: {e}') from e
+                logging.error(_('❌ 登录时出现意外错误: {error}', '❌ Unexpected error during login: {error}', error=e))
+                raise AuthenticationError(_('登录时出现意外错误: {error}', 'Unexpected error during login: {error}', error=e)) from e
 
         # 如果在自动化模式下全部失败
         if self.opts.username is not None or self.opts.password is not None:
-            raise AuthenticationError('自动化登录失败（命令行参数可能有误）')
+            raise AuthenticationError(_('自动化登录失败（命令行参数可能有误）', 'Automated login failed (command-line arguments may be incorrect)'))
 
-        raise AuthenticationError(f'达到最大尝试次数 ({max_attempts})，登录失败')
+        raise AuthenticationError(_('达到最大尝试次数 ({max_attempts})，登录失败', 'Reached maximum attempts ({max_attempts}); login failed', max_attempts=max_attempts))
 
     def _prompt_cookies_export(self) -> None:
         """
@@ -561,31 +575,31 @@ class NormalAuthenticator(BaseAuthenticator):
         """
         try:
             print('')
-            Log.info('💡 提示：某些内容需要浏览器cookies才能下载')
-            Log.info('   例如：Kaltura视频、描述中的受保护链接等')
+            Log.info(_('💡 提示：某些内容需要浏览器cookies才能下载', '💡 Tip: some content requires browser cookies to download'))
+            Log.info(_('   例如：Kaltura视频、描述中的受保护链接等', '   Examples: Kaltura videos, protected links in descriptions, and similar content'))
             print('')
 
             from moodle_dl.utils import Cutie, PathTools as PT
 
             should_export = Cutie.prompt_yes_or_no(
-                Log.blue_str('是否现在从浏览器导出cookies（推荐）？'), default_is_yes=True
+                Log.blue_str(_('是否现在从浏览器导出cookies（推荐）？', 'Export cookies from your browser now (recommended)?')), default_is_yes=True
             )
 
             if not should_export:
-                Log.info('⏭️  跳过cookies导出，你可以稍后在配置步骤7导出')
+                Log.info(_('⏭️  跳过cookies导出，你可以稍后在配置步骤7导出', '⏭️  Skipping cookie export. You can export them later in configuration step 7.'))
                 return
 
             # 加载 export_browser_cookies 模块
             try:
                 export_module = ExportBrowserCookiesHelper.load_export_module()
             except (FileNotFoundError, ImportError) as e:
-                Log.warning(f'⚠️  无法加载 export_browser_cookies: {e}')
-                Log.info('   你可以稍后在配置步骤7导出cookies')
+                Log.warning(_('⚠️  无法加载 export_browser_cookies: {error}', '⚠️  Unable to load export_browser_cookies: {error}', error=e))
+                Log.info(_('   你可以稍后在配置步骤7导出cookies', '   You can export cookies later in configuration step 7'))
                 return
 
             # 导出 cookies
             cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
-            Log.info('正在从浏览器导出cookies...')
+            Log.info(_('正在从浏览器导出cookies...', 'Exporting cookies from the browser...'))
 
             try:
                 success = export_module.export_cookies_interactive(
@@ -596,20 +610,20 @@ class NormalAuthenticator(BaseAuthenticator):
                 )
 
                 if success:
-                    Log.success('✅ Cookies导出成功！')
+                    Log.success(_('✅ Cookies导出成功！', '✅ Cookies exported successfully!'))
                 else:
-                    Log.warning('⚠️  Cookies导出失败，你可以稍后在配置步骤7重新导出')
+                    Log.warning(_('⚠️  Cookies导出失败，你可以稍后在配置步骤7重新导出', '⚠️  Cookie export failed. You can retry later in configuration step 7.'))
             except Exception as e:
-                logging.error(f'导出 cookies 时出错: {e}')
-                Log.warning(f'⚠️  Cookies导出出错: {e}')
-                Log.info('   你可以稍后在配置步骤7导出cookies')
+                logging.error(_('导出 cookies 时出错: {error}', 'Error while exporting cookies: {error}', error=e))
+                Log.warning(_('⚠️  Cookies导出出错: {error}', '⚠️  Cookie export error: {error}', error=e))
+                Log.info(_('   你可以稍后在配置步骤7导出cookies', '   You can export cookies later in configuration step 7'))
 
         except ImportError as e:
-            Log.warning(f'⚠️  缺少依赖库: {e}')
-            Log.info('   提示：运行 `pip install browser-cookie3`')
-            Log.info('   你可以稍后在配置步骤7导出cookies')
+            Log.warning(_('⚠️  缺少依赖库: {error}', '⚠️  Missing dependency: {error}', error=e))
+            Log.info(_('   提示：运行 `pip install browser-cookie3`', '   Tip: run `pip install browser-cookie3`'))
+            Log.info(_('   你可以稍后在配置步骤7导出cookies', '   You can export cookies later in configuration step 7'))
         except Exception as e:
-            logging.error(f'导出 cookies 提示时出错: {e}')
+            logging.error(_('导出 cookies 提示时出错: {error}', 'Error while showing cookie export prompt: {error}', error=e))
             # 不影响主流程
 
 
@@ -646,15 +660,15 @@ class SSOAuthenticator(BaseAuthenticator):
         否则让用户选择并记录选择
         """
         try:
-            logging.info('📋 选择浏览器...')
+            logging.info(_('📋 选择浏览器...', '📋 Selecting browser...'))
             self.preferred_browser = BrowserSelector.select_or_load(self.config)
-            logging.info(f'✓ 浏览器选择: {self.preferred_browser}')
+            logging.info(_('✓ 浏览器选择: {browser}', '✓ Browser selected: {browser}', browser=self.preferred_browser))
         except AuthenticationError as e:
-            logging.error(f'❌ 浏览器选择失败: {e}')
+            logging.error(_('❌ 浏览器选择失败: {error}', '❌ Browser selection failed: {error}', error=e))
             raise
         except Exception as e:
-            logging.error(f'❌ 前置配置出错: {e}')
-            raise AuthenticationError(f'前置配置出错: {e}') from e
+            logging.error(_('❌ 前置配置出错: {error}', '❌ Pre-configuration failed: {error}', error=e))
+            raise AuthenticationError(_('前置配置出错: {error}', 'Pre-configuration failed: {error}', error=e)) from e
 
     def acquire_token(self) -> TokenAcquisitionResult:
         """
@@ -676,7 +690,7 @@ class SSOAuthenticator(BaseAuthenticator):
         """
         # 优先级 1：直接提供的 token（如通过 --token 参数）
         if self.opts.token is not None:
-            logging.info('🔑 使用命令行提供的 token')
+            logging.info(_('🔑 使用命令行提供的 token', '🔑 Using token provided on the command line'))
             return TokenAcquisitionResult(
                 token=self.opts.token,
                 private_token=None,
@@ -684,9 +698,9 @@ class SSOAuthenticator(BaseAuthenticator):
             )
 
         # 优先级 2：自动化流程
-        logging.info('🚀 尝试完全自动获取 API token...')
-        logging.info('   策略：SSO 自动登录 + Playwright 自动获取 token')
-        logging.info('   优势：只要 SSO cookies 有效，完全无需手动操作！')
+        logging.info(_('🚀 尝试完全自动获取 API token...', '🚀 Trying to get the API token fully automatically...'))
+        logging.info(_('   策略：SSO 自动登录 + Playwright 自动获取 token', '   Strategy: SSO auto-login + Playwright token extraction'))
+        logging.info(_('   优势：只要 SSO cookies 有效，完全无需手动操作！', '   Benefit: if SSO cookies are valid, no manual action is needed.'))
         print('')
 
         # 尝试自动化流程
@@ -697,14 +711,14 @@ class SSOAuthenticator(BaseAuthenticator):
                 token=token,
                 private_token=private_token,
                 extra_properties={'preferred_browser': self.preferred_browser}
-            )
+        )
 
         # 优先级 3：回退到手动 token 输入
-        logging.info('⚙️  自动获取 token 失败，回退到手动输入')
+        logging.info(_('⚙️  自动获取 token 失败，回退到手动输入', '⚙️  Automatic token acquisition failed; falling back to manual input'))
         token, private_token = self._get_manual_token()
 
         if not token:
-            raise AuthenticationError('无法获取有效的 token（所有方法都失败）')
+            raise AuthenticationError(_('无法获取有效的 token（所有方法都失败）', 'Unable to get a valid token (all methods failed)'))
 
         return TokenAcquisitionResult(
             token=token,
@@ -720,11 +734,11 @@ class SSOAuthenticator(BaseAuthenticator):
         """
         try:
             # 加载 export_browser_cookies 模块
-            logging.info('📦 加载浏览器 cookie 导出模块...')
+            logging.info(_('📦 加载浏览器 cookie 导出模块...', '📦 Loading browser cookie export module...'))
             try:
                 self._export_module = ExportBrowserCookiesHelper.load_export_module()
             except (FileNotFoundError, ImportError) as e:
-                Log.warning(f'⚠️  无法加载导出模块: {e}')
+                Log.warning(_('⚠️  无法加载导出模块: {error}', '⚠️  Unable to load export module: {error}', error=e))
                 return None, None
 
             # 获取 cookies 保存路径
@@ -738,19 +752,19 @@ class SSOAuthenticator(BaseAuthenticator):
                     return None, None
 
             # 步骤 2：自动提取 API token
-            logging.info('步骤 2：使用 Playwright 自动获取 API token...')
+            logging.info(_('步骤 2：使用 Playwright 自动获取 API token...', 'Step 2: Using Playwright to get the API token automatically...'))
             token, private_token = self._extract_api_token()
 
             if token and private_token:
-                Log.success('✅ 成功自动获取 API token！')
-                Log.success('🎉 完全自动化完成，无需任何手动操作！')
+                Log.success(_('✅ 成功自动获取 API token！', '✅ Successfully obtained the API token automatically!'))
+                Log.success(_('🎉 完全自动化完成，无需任何手动操作！', '🎉 Fully automated flow completed; no manual action needed!'))
                 return token, private_token
             else:
-                logging.warning('⚠️  自动提取 token 失败')
+                logging.warning(_('⚠️  自动提取 token 失败', '⚠️  Automatic token extraction failed'))
                 return None, None
 
         except Exception as e:
-            logging.error(f'❌ 自动化 SSO 流程出错: {e}')
+            logging.error(_('❌ 自动化 SSO 流程出错: {error}', '❌ Automated SSO flow failed: {error}', error=e))
             return None, None
 
     def _perform_sso_auto_login(self) -> bool:
@@ -760,22 +774,28 @@ class SSOAuthenticator(BaseAuthenticator):
         返回: True 成功，False 失败
         """
         try:
-            logging.info('步骤 1：使用 SSO 自动登录获取 cookies...')
-            logging.info(f'   （从 {self.preferred_browser} 浏览器读取 SSO cookies，并在 Playwright 中恢复 Moodle 登录状态）')
+            logging.info(_('步骤 1：使用 SSO 自动登录获取 cookies...', 'Step 1: Using SSO auto-login to get cookies...'))
+            logging.info(
+                _(
+                    '   （从 {browser} 浏览器读取 SSO cookies，并在 Playwright 中恢复 Moodle 登录状态）',
+                    '   (Reading SSO cookies from {browser} and restoring Moodle login state in Playwright)',
+                    browser=self.preferred_browser,
+                )
+            )
 
             use_headless = _should_use_headless_sso()
 
             if not use_headless:
                 logging.info('')
-                logging.info('🌐 已启用有头模式（Headful Mode）')
-                logging.info('   - 浏览器窗口将可见，你可以手动操作')
-                logging.info('   - 适用于多账号选择、验证码输入等场景')
-                logging.info('   - 如需无头模式，可设置 MOODLE_DL_HEADLESS=1（或兼容写法 MOODLE_DL_HEADFUL=0）')
+                logging.info(_('🌐 已启用有头模式（Headful Mode）', '🌐 Headful Mode is enabled'))
+                logging.info(_('   - 浏览器窗口将可见，你可以手动操作', '   - The browser window will be visible, and you can interact with it manually'))
+                logging.info(_('   - 适用于多账号选择、验证码输入等场景', '   - Useful for account selection, CAPTCHA, MFA, and similar steps'))
+                logging.info(_('   - 如需无头模式，可设置 MOODLE_DL_HEADLESS=1（或兼容写法 MOODLE_DL_HEADFUL=0）', '   - To use headless mode, set MOODLE_DL_HEADLESS=1 (or MOODLE_DL_HEADFUL=0)'))
                 logging.info('')
             else:
-                logging.info('🌐 已启用无头模式（Headless Mode）')
-                logging.info('   - 不会显示浏览器窗口')
-                logging.info('   - 如遇账号选择、MFA 或重新授权，请改用默认有头模式')
+                logging.info(_('🌐 已启用无头模式（Headless Mode）', '🌐 Headless Mode is enabled'))
+                logging.info(_('   - 不会显示浏览器窗口', '   - No browser window will be shown'))
+                logging.info(_('   - 如遇账号选择、MFA 或重新授权，请改用默认有头模式', '   - If account selection, MFA, or reauthorization is needed, use the default headful mode'))
 
             from moodle_dl.auto_sso_login import auto_login_with_sso_sync
 
@@ -789,14 +809,14 @@ class SSOAuthenticator(BaseAuthenticator):
             )
 
             if sso_login_success:
-                Log.success('✅ SSO 自动登录成功！已获取新的 cookies')
+                Log.success(_('✅ SSO 自动登录成功！已获取新的 cookies', '✅ SSO auto-login succeeded. New cookies were obtained.'))
                 return True
             else:
-                Log.warning('⚠️  SSO 自动登录失败')
+                Log.warning(_('⚠️  SSO 自动登录失败', '⚠️  SSO auto-login failed'))
                 return False
 
         except Exception as e:
-            logging.error(f'❌ SSO 自动登录出错: {e}')
+            logging.error(_('❌ SSO 自动登录出错: {error}', '❌ SSO auto-login error: {error}', error=e))
             return False
 
     def _fallback_read_browser_cookies(self) -> bool:
@@ -810,12 +830,12 @@ class SSOAuthenticator(BaseAuthenticator):
         返回: True 成功，False 失败
         """
         if not self._export_module:
-            logging.warning('⚠️  export_module 未加载，无法读取浏览器 cookies')
+            logging.warning(_('⚠️  export_module 未加载，无法读取浏览器 cookies', '⚠️  export_module is not loaded; cannot read browser cookies'))
             return False
 
         try:
-            logging.info('尝试从浏览器读取现有 cookies（回退方案）...')
-            logging.info('  💡 v2: 直接存入数据库（无需临时文件）')
+            logging.info(_('尝试从浏览器读取现有 cookies（回退方案）...', 'Trying to read existing cookies from the browser (fallback)...'))
+            logging.info(_('  💡 v2: 直接存入数据库（无需临时文件）', '  💡 v2: saving directly to the database (no temporary file)'))
 
             # v2: 直接从浏览器获取 cookies 列表
             cookies_list = self._export_module.get_cookies_from_browser(
@@ -843,19 +863,19 @@ class SSOAuthenticator(BaseAuthenticator):
                 session_id = auth_manager.save_sso_cookies(cookies)
 
                 if session_id:
-                    Log.success('✅ 从浏览器成功读取 cookies')
-                    Log.success(f'✅ Cookies 已直接保存到数据库: {session_id}')
-                    logging.info(f'   共 {len(cookies)} 个 cookies')
+                    Log.success(_('✅ 从浏览器成功读取 cookies', '✅ Successfully read cookies from the browser'))
+                    Log.success(_('✅ Cookies 已直接保存到数据库: {session_id}', '✅ Cookies were saved directly to the database: {session_id}', session_id=session_id))
+                    logging.info(_('   共 {count} 个 cookies', '   {count} cookies in total', count=len(cookies)))
                     return True
                 else:
-                    logging.error('❌ Cookies 保存到数据库失败')
+                    logging.error(_('❌ Cookies 保存到数据库失败', '❌ Failed to save cookies to the database'))
                     return False
             else:
-                Log.warning('⚠️  从浏览器读取 cookies 失败')
+                Log.warning(_('⚠️  从浏览器读取 cookies 失败', '⚠️  Failed to read cookies from the browser'))
                 return False
 
         except Exception as e:
-            logging.error(f'❌ 从浏览器读取 cookies 时出错: {e}')
+            logging.error(_('❌ 从浏览器读取 cookies 时出错: {error}', '❌ Error while reading cookies from the browser: {error}', error=e))
             import traceback
             traceback.print_exc()
             return False
@@ -871,67 +891,71 @@ class SSOAuthenticator(BaseAuthenticator):
         返回: (token, private_token) 或 (None, None) 表示失败
         """
         if not self._export_module:
-            logging.error('❌ 缺少必要的模块')
+            logging.error(_('❌ 缺少必要的模块', '❌ Required module is missing'))
             return None, None
 
         try:
             # v2: 从数据库获取最新的 cookie_batch 会话
-            logging.debug('🔍 [Token提取] 开始从数据库获取 cookie_batch 会话...')
+            logging.debug(_('🔍 [Token提取] 开始从数据库获取 cookie_batch 会话...', '🔍 [Token extraction] Looking up cookie_batch session in the database...'))
             auth_manager = self.config.get_auth_manager()
             session = auth_manager.get_valid_session(session_type='cookie_batch')
 
             if not session:
-                logging.error('❌ [Token提取] 数据库中没有有效的 cookies 会话')
-                logging.debug('🔍 [Token提取] 尝试查询所有 cookie_batch 会话...')
+                logging.error(_('❌ [Token提取] 数据库中没有有效的 cookies 会话', '❌ [Token extraction] No valid cookies session found in the database'))
+                logging.debug(_('🔍 [Token提取] 尝试查询所有 cookie_batch 会话...', '🔍 [Token extraction] Querying all cookie_batch sessions...'))
                 all_sessions = auth_manager.get_all_sessions(session_type='cookie_batch')
-                logging.debug(f'🔍 [Token提取] 找到 {len(all_sessions)} 个 cookie_batch 会话')
+                logging.debug(_('🔍 [Token提取] 找到 {count} 个 cookie_batch 会话', '🔍 [Token extraction] Found {count} cookie_batch session(s)', count=len(all_sessions)))
                 return None, None
 
-            logging.debug(f'🔍 [Token提取] 找到有效会话: session_id={session.get("session_id")}, created_at={session.get("created_at")}')
+            logging.debug(_('🔍 [Token提取] 找到有效会话: session_id={session_id}, created_at={created_at}', '🔍 [Token extraction] Found valid session: session_id={session_id}, created_at={created_at}', session_id=session.get("session_id"), created_at=session.get("created_at")))
 
             # 从数据库获取 cookies
-            logging.debug(f'🔍 [Token提取] 从数据库加载 cookies (session_id={session["session_id"]})...')
+            logging.debug(_('🔍 [Token提取] 从数据库加载 cookies (session_id={session_id})...', '🔍 [Token extraction] Loading cookies from database (session_id={session_id})...', session_id=session["session_id"]))
             cookies = auth_manager.get_session_cookies(session['session_id'])
 
             if not cookies:
-                logging.error('❌ [Token提取] 数据库中没有 cookies')
-                logging.debug(f'🔍 [Token提取] session_id={session["session_id"]} 没有关联的 cookies')
+                logging.error(_('❌ [Token提取] 数据库中没有 cookies', '❌ [Token extraction] No cookies found in the database'))
+                logging.debug(_('🔍 [Token提取] session_id={session_id} 没有关联的 cookies', '🔍 [Token extraction] session_id={session_id} has no associated cookies', session_id=session["session_id"]))
                 return None, None
 
-            logging.info(f'📦 [Token提取] 从数据库加载 {len(cookies)} 个 cookies')
+            logging.info(_('📦 [Token提取] 从数据库加载 {count} 个 cookies', '📦 [Token extraction] Loaded {count} cookies from the database', count=len(cookies)))
             
             # 详细记录 Cookie 信息
-            logging.debug(f'🔍 [Token提取] Cookie 详情:')
+            logging.debug(_('🔍 [Token提取] Cookie 详情:', '🔍 [Token extraction] Cookie details:'))
             moodle_session_count = sum(1 for c in cookies if c.get('name') == 'MoodleSession')
             logging.debug(f'  - MoodleSession cookies: {moodle_session_count}')
-            logging.debug(f'  - 总 cookies 数: {len(cookies)}')
+            logging.debug(_('  - 总 cookies 数: {count}', '  - Total cookies: {count}', count=len(cookies)))
             if cookies:
                 sample_cookie = cookies[0]
-                logging.debug(f'  - Cookie 示例: name={sample_cookie.get("name")}, domain={sample_cookie.get("domain")}, secure={sample_cookie.get("secure")}')
+                logging.debug(_('  - Cookie 示例: name={name}, domain={domain}, secure={secure}', '  - Cookie example: name={name}, domain={domain}, secure={secure}', name=sample_cookie.get("name"), domain=sample_cookie.get("domain"), secure=sample_cookie.get("secure")))
 
             # 使用新的 API：直接传入 cookies 列表
-            logging.debug(f'🔍 [Token提取] 调用 Playwright 提取 token (domain={self.moodle_url.domain})...')
+            logging.debug(_('🔍 [Token提取] 调用 Playwright 提取 token (domain={domain})...', '🔍 [Token extraction] Calling Playwright to extract token (domain={domain})...', domain=self.moodle_url.domain))
             token, private_token = self._export_module.extract_api_token_with_playwright_from_cookies(
                 self.moodle_url.domain, cookies
             )
 
             if token and private_token:
-                logging.info(f'✅ [Token提取] 成功提取 API token（从数据库 cookies）')
-                logging.debug(f'🔍 [Token提取] Token 长度: {len(token)}, Private token 长度: {len(private_token)}')
+                logging.info(_('✅ [Token提取] 成功提取 API token（从数据库 cookies）', '✅ [Token extraction] Successfully extracted API token (from database cookies)'))
+                logging.debug(_('🔍 [Token提取] Token 长度: {token_len}, Private token 长度: {private_len}', '🔍 [Token extraction] Token length: {token_len}, private token length: {private_len}', token_len=len(token), private_len=len(private_token)))
                 return token, private_token
             else:
-                logging.warning('⚠️  [Token提取] 未能成功提取 API token')
-                logging.debug('🔍 [Token提取] Playwright 返回: token={}, private_token={}'.format(
-                    '有值' if token else 'None',
-                    '有值' if private_token else 'None'
-                ))
+                logging.warning(_('⚠️  [Token提取] 未能成功提取 API token', '⚠️  [Token extraction] Failed to extract API token'))
+                logging.debug(
+                    _(
+                        '🔍 [Token提取] Playwright 返回: token={token_status}, private_token={private_status}',
+                        '🔍 [Token extraction] Playwright returned: token={token_status}, private_token={private_status}',
+                        token_status=_('有值', 'present') if token else 'None',
+                        private_status=_('有值', 'present') if private_token else 'None',
+                    )
+                )
                 return None, None
 
         except Exception as e:
-            logging.error(f'❌ [Token提取] 提取 API token 时出错: {e}')
-            logging.debug(f'🔍 [Token提取] 错误类型: {type(e).__name__}')
+            logging.error(_('❌ [Token提取] 提取 API token 时出错: {error}', '❌ [Token extraction] Error while extracting API token: {error}', error=e))
+            logging.debug(_('🔍 [Token提取] 错误类型: {error_type}', '🔍 [Token extraction] Error type: {error_type}', error_type=type(e).__name__))
             import traceback
-            logging.debug(f'🔍 [Token提取] 完整错误堆栈:\n{traceback.format_exc()}')
+            logging.debug(_('🔍 [Token提取] 完整错误堆栈:\n{traceback}', '🔍 [Token extraction] Full traceback:\n{traceback}', traceback=traceback.format_exc()))
             traceback.print_exc()
             return None, None
 
@@ -946,30 +970,30 @@ class SSOAuthenticator(BaseAuthenticator):
         try:
             SSOReferenceHelper.show_manual_token_help(self.moodle_url)
 
-            token_address = input('然后在此处插入链接地址:   ')
+            token_address = input(_('然后在此处插入链接地址:   ', 'Paste the copied link address here:   '))
 
             if not token_address:
-                logging.error('❌ token 地址为空')
+                logging.error(_('❌ token 地址为空', '❌ Token address is empty'))
                 return None, None
 
             # 解析 token
             token_result = MoodleService.extract_token(token_address)
             
             if token_result is None:
-                Log.error('❌ 无效的 token URL')
-                logging.error(f'无法从 URL 提取 token: {token_address}')
+                Log.error(_('❌ 无效的 token URL', '❌ Invalid token URL'))
+                logging.error(_('无法从 URL 提取 token: {url}', 'Unable to extract token from URL: {url}', url=token_address))
                 return None, None
             
             token, private_token = token_result
 
             if not token:
-                Log.error('❌ 无效的 token URL')
-                logging.error(f'无法从 URL 提取 token: {token_address}')
+                Log.error(_('❌ 无效的 token URL', '❌ Invalid token URL'))
+                logging.error(_('无法从 URL 提取 token: {url}', 'Unable to extract token from URL: {url}', url=token_address))
                 return None, None
 
-            logging.info('✅ 成功获取手动 token')
+            logging.info(_('✅ 成功获取手动 token', '✅ Manual token acquired successfully'))
             return token, private_token
 
         except Exception as e:
-            logging.error(f'❌ 手动获取 token 时出错: {e}')
+            logging.error(_('❌ 手动获取 token 时出错: {error}', '❌ Error while getting manual token: {error}', error=e))
             return None, None

@@ -12,6 +12,7 @@ from moodle_dl.moodle.request_helper import RequestHelper, RequestRejectedError
 from moodle_dl.types import Course, MoodleDlOpts
 from moodle_dl.utils import Cutie, Log
 from moodle_dl.utils import PathTools as PT
+from moodle_dl.cli.localization import tr as _
 
 
 class ConfigWizard:
@@ -32,7 +33,7 @@ class ConfigWizard:
             try:
                 user_id = int(user_id_raw) if isinstance(user_id_raw, str) else user_id_raw
             except (ValueError, TypeError):
-                logging.warning(f'无法将 user_id "{user_id_raw}" 转换为 int，尝试从服务器获取')
+                logging.warning(_('无法将 user_id "{user_id}" 转换为 int，尝试从服务器获取', 'Unable to convert user_id "{user_id}" to int; fetching it from the server', user_id=user_id_raw))
                 user_id, version = self.core_handler.fetch_userid_and_version()
             self.core_handler.version = version
         return user_id, version
@@ -44,10 +45,10 @@ class ConfigWizard:
         """
         # 配置步骤菜单 - 与 interactively_acquire_config 中的步骤定义保持一致
         steps = [
-            ('选择要下载的课程', None),
-            ('指定额外课程（教师/TA）', None),
-            ('设置课程选项', None),
-            ('配置要下载的模块类型', None),
+            (_('选择要下载的课程', 'Select courses to download'), None),
+            (_('指定额外课程（教师/TA）', 'Specify additional courses (teacher/TA)'), None),
+            (_('设置课程选项', 'Set course options'), None),
+            (_('配置要下载的模块类型', 'Configure module types to download'), None),
         ]
         return len(steps)
 
@@ -58,24 +59,24 @@ class ConfigWizard:
         """
         courses = []
         try:
-            Log.info('正在获取用户信息...')
-            user_id, _ = self.get_user_id_and_version()
+            Log.info(_('正在获取用户信息...', 'Fetching user information...'))
+            user_id, _version = self.get_user_id_and_version()
             
-            Log.info('正在从 Moodle 服务器获取课程列表...')
-            Log.cyan('(如果您有很多课程或网络较慢，这可能需要几秒到几十秒)')
+            Log.info(_('正在从 Moodle 服务器获取课程列表...', 'Fetching the course list from the Moodle server...'))
+            Log.cyan(_('(如果您有很多课程或网络较慢，这可能需要几秒到几十秒)', '(If you have many courses or a slow network, this may take a few to several dozen seconds.)'))
             courses = self.core_handler.fetch_courses(user_id)
-            Log.success(f'已获取 {len(courses)} 个课程')
+            Log.success(_('已获取 {count} 个课程', 'Fetched {count} course(s)', count=len(courses)))
 
         except (RequestRejectedError, ValueError, RuntimeError, ConnectionError) as error:
-            Log.error(f'与 Moodle 系统通信时出错！({error})')
+            Log.error(_('与 Moodle 系统通信时出错！({error})', 'Error while communicating with the Moodle system! ({error})', error=error))
             sys.exit(1)
 
         # 配置步骤菜单
         steps = [
-            ('选择要下载的课程', lambda: self._select_courses_to_download(courses)),
-            ('指定额外课程（教师/TA）', self._interactively_add_manually_specified_courses),
-            ('设置课程选项', lambda: self._set_options_of_courses(courses)),
-            ('配置要下载的模块类型', self._select_modules_to_download),
+            (_('选择要下载的课程', 'Select courses to download'), lambda: self._select_courses_to_download(courses)),
+            (_('指定额外课程（教师/TA）', 'Specify additional courses (teacher/TA)'), self._interactively_add_manually_specified_courses),
+            (_('设置课程选项', 'Set course options'), lambda: self._set_options_of_courses(courses)),
+            (_('配置要下载的模块类型', 'Configure module types to download'), self._select_modules_to_download),
         ]
 
         # 自动启用以下功能（不再需要用户单独配置）
@@ -87,7 +88,15 @@ class ConfigWizard:
 
         while current_step < len(steps):
             print('\n' + '=' * 80)
-            Log.info(f'额外配置步骤 {current_step + 1}/{len(steps)}: {steps[current_step][0]}')
+            Log.info(
+                _(
+                    '额外配置步骤 {current}/{total}: {step}',
+                    'Additional configuration step {current}/{total}: {step}',
+                    current=current_step + 1,
+                    total=len(steps),
+                    step=steps[current_step][0],
+                )
+            )
             print('=' * 80 + '\n')
 
             # 执行当前步骤
@@ -97,22 +106,22 @@ class ConfigWizard:
             print('\n')
             choices = []
             if current_step < len(steps) - 1:
-                choices.append('继续下一步')
+                choices.append(_('继续下一步', 'Continue to next step'))
             if current_step > 0:
-                choices.append('返回上一步')
-            choices.append('完成配置并退出')
+                choices.append(_('返回上一步', 'Go back to previous step'))
+            choices.append(_('完成配置并退出', 'Finish configuration and exit'))
 
-            Log.blue('请选择：')
+            Log.blue(_('请选择：', 'Please choose:'))
             choice = Cutie.select(choices)
 
-            if choices[choice] == '继续下一步':
+            if choices[choice] == _('继续下一步', 'Continue to next step'):
                 current_step += 1
-            elif choices[choice] == '返回上一步':
+            elif choices[choice] == _('返回上一步', 'Go back to previous step'):
                 current_step -= 1
-            elif choices[choice] == '完成配置并退出':
+            elif choices[choice] == _('完成配置并退出', 'Finish configuration and exit'):
                 break
 
-        Log.success('配置已成功更新！')
+        Log.success(_('配置已成功更新！', 'Configuration updated successfully!'))
 
     def interactively_add_all_visible_courses(self):
         """
@@ -121,50 +130,70 @@ class ConfigWizard:
         """
         print('')
         Log.info(
-            'It is possible to automatically complete the moodle-dl configuration'
-            + ' with all the courses you can see on your moodle. These are either'
-            + ' courses to which you have the appropriate rights to see the'
-            + ' course or the course is visible without enrollment.'
+            _(
+                'It is possible to automatically complete the moodle-dl configuration'
+                + ' with all the courses you can see on your moodle. These are either'
+                + ' courses to which you have the appropriate rights to see the'
+                + ' course or the course is visible without enrollment.',
+                'It is possible to automatically complete the moodle-dl configuration'
+                + ' with all the courses you can see on your Moodle. These are either'
+                + ' courses you have permission to see, or courses visible without enrollment.'
+            )
         )
 
         Log.magenta(
-            'This process can take several minutes for large Moodles, as is common at'
-            + ' large universities. Timeout is set to 20 minutes.'
+            _(
+                'This process can take several minutes for large Moodles, as is common at'
+                + ' large universities. Timeout is set to 20 minutes.',
+                'This process can take several minutes for large Moodle instances, as is common at'
+                + ' large universities. Timeout is set to 20 minutes.'
+            )
         )
 
         print('')
 
         add_all_visible_courses = Cutie.prompt_yes_or_no(
-            Log.blue_str('Do you want to add all visible courses of your Moodle to the configuration?'),
+            Log.blue_str(
+                _(
+                    'Do you want to add all visible courses of your Moodle to the configuration?',
+                    'Do you want to add all visible courses from your Moodle to the configuration?'
+                )
+            ),
             default_is_yes=False,
         )
 
         if not add_all_visible_courses:
             return
         Log.warning(
-            'Please wait for the result, this may take several minutes.'
-            + ' In addition to adding the courses to the configuration,'
-            + ' it will also create an `all_courses.json` file with all'
-            + ' the courses available on your Moodle.'
+            _(
+                'Please wait for the result, this may take several minutes.'
+                + ' In addition to adding the courses to the configuration,'
+                + ' it will also create an `all_courses.json` file with all'
+                + ' the courses available on your Moodle.',
+                'Please wait for the result; this may take several minutes.'
+                + ' In addition to adding the courses to the configuration,'
+                + ' it will create an `all_courses.json` file with all courses'
+                + ' available on your Moodle.'
+            )
         )
 
         courses = []
         all_visible_courses = []
         try:
-            Log.info('正在获取用户信息...')
-            user_id, _ = self.get_user_id_and_version()
+            Log.info(_('正在获取用户信息...', 'Fetching user information...'))
+            user_id, _version = self.get_user_id_and_version()
             
-            Log.info('正在获取已注册的课程列表...')
+            Log.info(_('正在获取已注册的课程列表...', 'Fetching enrolled courses...'))
             courses = self.core_handler.fetch_courses(user_id)
-            Log.success(f'已获取 {len(courses)} 个已注册课程')
+            Log.success(_('已获取 {count} 个已注册课程', 'Fetched {count} enrolled course(s)', count=len(courses)))
             
-            Log.info('正在获取所有可见课程列表（这可能需要几分钟）...')
+            Log.info(_('正在获取所有可见课程列表（这可能需要几分钟）...', 'Fetching all visible courses (this may take several minutes)...'))
             log_all_courses_to = PT.make_path(self.config.get_misc_files_path(), 'all_courses.json')
             all_visible_courses = self.core_handler.fetch_all_visible_courses(log_all_courses_to)
-            Log.success(f'已获取 {len(all_visible_courses)} 个可见课程')
+            Log.success(_('已获取 {count} 个可见课程', 'Fetched {count} visible course(s)', count=len(all_visible_courses)))
 
         except (RequestRejectedError, ValueError, RuntimeError, ConnectionError) as error:
-            Log.error(f'Error while communicating with the Moodle System! ({error})')
+            Log.error(_('与 Moodle 系统通信时出错！({error})', 'Error while communicating with the Moodle system! ({error})', error=error))
             sys.exit(1)
 
         # Filter out courses the user is enrolled in
@@ -201,7 +230,7 @@ class ConfigWizard:
         self.config.set_property('options_of_courses', options_of_courses)
         self.config.set_property('download_public_course_ids', download_public_course_ids)
 
-        Log.success('配置已成功更新！')
+        Log.success(_('配置已成功更新！', 'Configuration updated successfully!'))
 
     def _select_courses_to_download(self, courses: List[Course]):
         """
@@ -213,22 +242,30 @@ class ConfigWizard:
 
         print('')
         Log.info(
-            '为了避免下载你注册的所有 Moodle 课程，你可以在这里选择要下载的课程。'
-            + '你可以创建白名单或黑名单。'
-            + '\n\n- 使用白名单时，勾选✅的课程会被下载，未勾选的不下载。'
-            + '未来注册的新课程默认不下载（需要手动添加到白名单）。'
-            + '\n- 使用黑名单时，勾选❌的课程会被排除（不下载），未勾选的会下载。'
-            + '未来注册的新课程会自动下载（除非手动添加到黑名单）。'
+            _(
+                '为了避免下载你注册的所有 Moodle 课程，你可以在这里选择要下载的课程。'
+                + '你可以创建白名单或黑名单。'
+                + '\n\n- 使用白名单时，勾选✅的课程会被下载，未勾选的不下载。'
+                + '未来注册的新课程默认不下载（需要手动添加到白名单）。'
+                + '\n- 使用黑名单时，勾选❌的课程会被排除（不下载），未勾选的会下载。'
+                + '未来注册的新课程会自动下载（除非手动添加到黑名单）。',
+                'To avoid downloading every Moodle course you are enrolled in, choose the courses to download here. '
+                + 'You can create either an allowlist or a blocklist.'
+                + '\n\n- In allowlist mode, courses marked ✅ will be downloaded; unmarked courses will not. '
+                + 'Newly enrolled courses will not be downloaded by default until you add them.'
+                + '\n- In blocklist mode, courses marked ❌ will be excluded; unmarked courses will be downloaded. '
+                + 'Newly enrolled courses will be downloaded automatically unless you blocklist them.'
+            )
         )
         print('')
         use_whitelist = len(dont_download_course_ids) == 0
 
         while True:
             use_whitelist = Cutie.prompt_yes_or_no(
-                Log.blue_str('你想为课程创建白名单还是黑名单？'),
+                Log.blue_str(_('你想为课程创建白名单还是黑名单？', 'Do you want to create an allowlist or a blocklist for courses?')),
                 default_is_yes=use_whitelist,
-                yes_text='白名单',
-                no_text='黑名单',
+                yes_text=_('白名单', 'Allowlist'),
+                no_text=_('黑名单', 'Blocklist'),
             )
 
             choices = []
@@ -249,8 +286,8 @@ class ConfigWizard:
                         defaults.append(i)
 
             if use_whitelist:
-                Log.blue('哪些课程应该被下载？')
-                Log.info('[勾选✅的课程会被下载，新课程默认不下载]')
+                Log.blue(_('哪些课程应该被下载？', 'Which courses should be downloaded?'))
+                Log.info(_('[勾选✅的课程会被下载，新课程默认不下载]', '[Courses marked ✅ will be downloaded; new courses are not downloaded by default]'))
                 selected_courses = Cutie.select_multiple(
                     options=choices,
                     ticked_indices=defaults,
@@ -260,8 +297,8 @@ class ConfigWizard:
                     selected_ticked_prefix='\033[32;1m{✅}\033[0m ',
                 )
             else:
-                Log.blue('哪些课程应该被排除（不下载）？')
-                Log.info('[勾选❌的课程会被排除，新课程默认自动下载]')
+                Log.blue(_('哪些课程应该被排除（不下载）？', 'Which courses should be excluded (not downloaded)?'))
+                Log.info(_('[勾选❌的课程会被排除，新课程默认自动下载]', '[Courses marked ❌ will be excluded; new courses are downloaded by default]'))
                 # 黑名单模式：使用 ❌ 表示"排除/不下载"
                 selected_courses = Cutie.select_multiple(
                     options=choices,
@@ -275,9 +312,9 @@ class ConfigWizard:
 
             # 只询问是否确认选择，不添加完整的导航菜单（导航由外层统一处理）
             confirm = Cutie.prompt_yes_or_no(
-                Log.blue_str('确认选择？'),
-                yes_text='确认',
-                no_text='重新选择白名单/黑名单',
+                Log.blue_str(_('确认选择？', 'Confirm selection?')),
+                yes_text=_('确认', 'Confirm'),
+                no_text=_('重新选择白名单/黑名单', 'Choose allowlist/blocklist again'),
             )
 
             if not confirm:
@@ -327,14 +364,14 @@ class ConfigWizard:
                 section_id_int = int(section_id) if section_id is not None else 0
             except (ValueError, TypeError):
                 section_id_int = 0
-                logging.warning(f'无法将 section_id "{section_id}" 转换为 int，使用默认值 0')
+                logging.warning(_('无法将 section_id "{section_id}" 转换为 int，使用默认值 0', 'Unable to convert section_id "{section_id}" to int; using default value 0', section_id=section_id))
             choices.append(f"{section_id_int:5}\t{section.get('name', 'Unnamed Section')}")
 
             if MoodleService.should_download_section(section_id, excluded):
                 defaults.append(i)
 
-        Log.blue('应该下载哪些章节？')
-        Log.info('[你可以用空格键选择，用回车键确认选择]')
+        Log.blue(_('应该下载哪些章节？', 'Which sections should be downloaded?'))
+        Log.info(_('[你可以用空格键选择，用回车键确认选择]', '[Use Space to select and Enter to confirm]'))
         print('')
         selected_sections = Cutie.select_multiple(options=choices, ticked_indices=defaults)
 
@@ -378,7 +415,7 @@ class ConfigWizard:
                         )
                         courses.append(course)
                 except Exception as e:
-                    Log.warning(f'无法获取手动课程 {course_id} 的信息: {e}')
+                    Log.warning(_('无法获取手动课程 {course_id} 的信息: {error}', 'Unable to fetch information for manual course {course_id}: {error}', course_id=course_id, error=e))
                     # 即使无法获取信息，也创建一个基本的 Course 对象
                     course = Course(course_id, f'Course {course_id}')
                     courses.append(course)
@@ -396,11 +433,18 @@ class ConfigWizard:
 
         self.section_separator()
         Log.info(
-            '你可以为每个课程设置特殊选项。\n'
-            + '可以设置这些选项：\n'
-            + ' - 课程的自定义名称\n'
-            + ' - 是否为课程创建目录结构 [create_directory_structure (cfs)]\n'
-            + ' - 应该下载哪些章节（默认全部）。'
+            _(
+                '你可以为每个课程设置特殊选项。\n'
+                + '可以设置这些选项：\n'
+                + ' - 课程的自定义名称\n'
+                + ' - 是否为课程创建目录结构 [create_directory_structure (cfs)]\n'
+                + ' - 应该下载哪些章节（默认全部）。',
+                'You can set special options for each course.\n'
+                + 'Available options:\n'
+                + ' - Custom course name\n'
+                + ' - Whether to create a directory structure [create_directory_structure (cfs)]\n'
+                + ' - Which sections to download (all by default).'
+            )
         )
         print('')
 
@@ -450,9 +494,9 @@ class ConfigWizard:
                     choices_courses.append(course)
 
             print('')
-            Log.blue('你想更改以下哪个课程的设置？')
-            print('[用方向键选择，用回车键确认]')
-            print('[选择 "None" 完成此步骤]')
+            Log.blue(_('你想更改以下哪个课程的设置？', 'Which course settings do you want to change?'))
+            print(_('[用方向键选择，用回车键确认]', '[Use arrow keys to select, Enter to confirm]'))
+            print(_('[选择 "None" 完成此步骤]', '[Select "None" to finish this step]'))
             print('')
 
             selected_course = Cutie.select(options=choices)
@@ -482,7 +526,13 @@ class ConfigWizard:
         changed = False
 
         # Ask for new name
-        overwrite_name_with = input(f'为此课程输入新名称 [留空则使用 "{course.fullname}"]:   ')
+        overwrite_name_with = input(
+            _(
+                '为此课程输入新名称 [留空则使用 "{course_name}"]:   ',
+                'Enter a new name for this course [leave empty to use "{course_name}"]:   ',
+                course_name=course.fullname,
+            )
+        )
 
         if overwrite_name_with == '':
             overwrite_name_with = None
@@ -498,7 +548,7 @@ class ConfigWizard:
         create_directory_structure = current_course_settings.get('create_directory_structure', True)
 
         create_directory_structure = Cutie.prompt_yes_or_no(
-            Log.blue_str('是否为此课程创建目录结构？'),
+            Log.blue_str(_('是否为此课程创建目录结构？', 'Create a directory structure for this course?')),
             default_is_yes=create_directory_structure,
         )
 
@@ -508,11 +558,14 @@ class ConfigWizard:
 
         excluded_sections = current_course_settings.get('excluded_sections', [])
 
-        change_excluded_sections_prompt = '你想要从下载中排除此课程的某些章节吗？'
+        change_excluded_sections_prompt = _('你想要从下载中排除此课程的某些章节吗？', 'Do you want to exclude some sections of this course from downloading?')
         if len(excluded_sections) > 0:
             change_excluded_sections_prompt = (
-                '你想要更改不下载的章节选择吗？'
-                + f'当前此课程有 {len(excluded_sections)} 个章节被排除下载。'
+                _(
+                    '你想要更改不下载的章节选择吗？当前此课程有 {count} 个章节被排除下载。',
+                    'Do you want to change the section exclusion selection? This course currently has {count} excluded section(s).',
+                    count=len(excluded_sections),
+                )
             )
 
         change_excluded_sections = Cutie.prompt_yes_or_no(
@@ -521,7 +574,7 @@ class ConfigWizard:
         )
 
         if change_excluded_sections:
-            Log.info('请稍等，正在下载课程章节信息。')
+            Log.info(_('请稍等，正在下载课程章节信息。', 'Please wait while course section information is downloaded.'))
             sections = self.core_handler.fetch_sections(course.id)
 
             dont_download_section_ids = self._select_sections_to_download(sections, excluded_sections)
@@ -552,21 +605,27 @@ class ConfigWizard:
         
         self.section_separator()
         Log.info(
-            '如果你是某些课程的教师或助教，你可能没有以学生身份注册这些课程。\n'
-            '但你仍然可以通过提供课程 ID 来下载这些课程的内容。\n'
-            '\n单个 ID 如 137304，多个 ID（空格）如 137304 137305，多个 ID（逗号）如 137304,137305，'
-            '完整 URL 如 https://keats.kcl.ac.uk/course/view.php?id=137304'
+            _(
+                '如果你是某些课程的教师或助教，你可能没有以学生身份注册这些课程。\n'
+                '但你仍然可以通过提供课程 ID 来下载这些课程的内容。\n'
+                '\n单个 ID 如 137304，多个 ID（空格）如 137304 137305，多个 ID（逗号）如 137304,137305，'
+                '完整 URL 如 https://keats.kcl.ac.uk/course/view.php?id=137304',
+                'If you are a teacher or TA for some courses, you may not be enrolled in them as a student.\n'
+                'You can still download their content by providing course IDs.\n'
+                '\nSingle ID: 137304; multiple IDs separated by spaces: 137304 137305; multiple IDs separated by commas: 137304,137305; '
+                'full URL: https://keats.kcl.ac.uk/course/view.php?id=137304'
+            )
         )
         
         manually_specified_ids = self.config.get_manually_specified_course_ids()
         print('')
-        Log.info(f'当前已指定 {len(manually_specified_ids)} 个手动课程')
+        Log.info(_('当前已指定 {count} 个手动课程', 'Currently specified manual courses: {count}', count=len(manually_specified_ids)))
         
         if len(manually_specified_ids) > 0:
-            Log.info(f'课程 IDs: {manually_specified_ids}')
+            Log.info(_('课程 IDs: {ids}', 'Course IDs: {ids}', ids=manually_specified_ids))
         
         add_more = Cutie.prompt_yes_or_no(
-            Log.blue_str('是否添加更多手动指定的课程？'),
+            Log.blue_str(_('是否添加更多手动指定的课程？', 'Add more manually specified courses?')),
             default_is_yes=False,
         )
         
@@ -577,7 +636,7 @@ class ConfigWizard:
         new_ids = []
         
         while True:
-            Log.blue('输入课程 ID（可以输入一个或多个，用空格/逗号分隔，或留空完成）:')
+            Log.blue(_('输入课程 ID（可以输入一个或多个，用空格/逗号分隔，或留空完成）:', 'Enter course IDs (one or more, separated by spaces/commas, or leave empty to finish):'))
             course_input = input('  > ').strip()
             
             if not course_input:
@@ -587,7 +646,7 @@ class ConfigWizard:
             course_ids_to_add = self._parse_course_ids(course_input)
             
             if not course_ids_to_add:
-                Log.error('无法解析输入。请输入有效的课程 ID 或 URL')
+                Log.error(_('无法解析输入。请输入有效的课程 ID 或 URL', 'Could not parse input. Please enter a valid course ID or URL'))
                 print('')
                 continue
             
@@ -597,11 +656,11 @@ class ConfigWizard:
                 try:
                     # 检查是否已存在
                     if course_id in manually_specified_ids or course_id in new_ids:
-                        Log.warning(f'课程 {course_id} 已添加，跳过')
+                        Log.warning(_('课程 {course_id} 已添加，跳过', 'Course {course_id} has already been added; skipping', course_id=course_id))
                         continue
                     
                     # 使用网页版 API 验证课程
-                    Log.info(f'正在验证课程 {course_id}...')
+                    Log.info(_('正在验证课程 {course_id}...', 'Validating course {course_id}...', course_id=course_id))
                     course_info = validate_course_with_web_api(
                         self.config,
                         self.opts,
@@ -612,27 +671,35 @@ class ConfigWizard:
                     
                     if course_info:
                         course_name = course_info.get('fullname', 'N/A')
-                        Log.success(f'✅ 课程 {course_id} ({course_name}) 验证成功')
+                        Log.success(_('✅ 课程 {course_id} ({course_name}) 验证成功', '✅ Course {course_id} ({course_name}) validated successfully', course_id=course_id, course_name=course_name))
                         new_ids.append(course_id)
                         success_count += 1
                     else:
                         Log.error(
-                            f'❌ 无法访问课程 {course_id}\n'
-                            f'   可能原因：\n'
-                            f'   • 课程 ID 不存在\n'
-                            f'   • 你没有访问权限\n'
-                            f'   • 课程已被删除或存档'
+                            _(
+                                '❌ 无法访问课程 {course_id}\n'
+                                '   可能原因：\n'
+                                '   • 课程 ID 不存在\n'
+                                '   • 你没有访问权限\n'
+                                '   • 课程已被删除或存档',
+                                '❌ Unable to access course {course_id}\n'
+                                '   Possible reasons:\n'
+                                '   • The course ID does not exist\n'
+                                '   • You do not have access\n'
+                                '   • The course was deleted or archived',
+                                course_id=course_id,
+                            )
                         )
                 
                 except Exception as e:
-                    Log.error(f'验证课程 {course_id} 时出错: {str(e)}')
+                    Log.error(_('验证课程 {course_id} 时出错: {error}', 'Error while validating course {course_id}: {error}', course_id=course_id, error=str(e)))
             
             print('')
             
             # 如果成功添加了至少一个课程，询问是否继续添加更多
             if success_count > 0:
                 continue_adding = Cutie.prompt_yes_or_no(
-                    Log.blue_str('是否继续添加更多课程？'),
+                    Log.blue_str(_('是否继续添加更多课程？', 'Continue adding more courses?')),
                     default_is_yes=False,
                 )
                 if not continue_adding:
@@ -652,7 +719,7 @@ class ConfigWizard:
                     download_public_course_ids.append(course_id)
             self.config.set_property('download_public_course_ids', download_public_course_ids)
             
-            Log.success(f'已添加 {len(new_ids)} 个手动课程，总计 {len(all_ids)} 个')
+            Log.success(_('已添加 {new_count} 个手动课程，总计 {total_count} 个', 'Added {new_count} manual course(s), {total_count} total', new_count=len(new_ids), total_count=len(all_ids)))
         
         print('')
     
@@ -710,85 +777,90 @@ class ConfigWizard:
         """
         self.section_separator()
         Log.info(
-            'Moodle-DL 支持下载 30 种不同类型的模块。你可以选择要下载哪些类型。\n'
-            + '使用空格键勾选/取消，回车键确认选择。\n'
-            + '✅ = 将会下载   [ ] = 不下载'
+            _(
+                'Moodle-DL 支持下载 30 种不同类型的模块。你可以选择要下载哪些类型。\n'
+                + '使用空格键勾选/取消，回车键确认选择。\n'
+                + '✅ = 将会下载   [ ] = 不下载',
+                'Moodle-DL supports downloading 30 different module types. Choose which types to download.\n'
+                + 'Use Space to select/deselect and Enter to confirm.\n'
+                + '✅ = will be downloaded   [ ] = will not be downloaded'
+            )
         )
         print('')
 
         # 定义所有模块及其描述
         modules = [
             # 评估与作业模块
-            ('download_submissions', '作业提交 (Submissions)',
-             '你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。'),
-            ('download_quizzes', '测验 (Quizzes)',
-             '测验是学生必须完成的在线考试，会被评分。包含题目、答案和成绩。只有正在进行或已完成的测验会被下载。'),
-            ('download_lessons', '课程 (Lessons)',
-             '自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。'),
-            ('download_workshops', '研讨会 (Workshops)',
-             '按同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。'),
+            ('download_submissions', _('作业提交 (Submissions)', 'Submissions'),
+             _('你或老师上传到作业的文件。Moodle 没有提供一次性下载课程所有提交信息的接口，因此监控提交的变化可能会比较慢。', 'Files uploaded by you or teachers to assignments. Moodle does not provide a bulk endpoint for all submission data, so monitoring changes may be slow.')),
+            ('download_quizzes', _('测验 (Quizzes)', 'Quizzes'),
+             _('测验是学生必须完成的在线考试，会被评分。包含题目、答案和成绩。只有正在进行或已完成的测验会被下载。', 'Online graded exams students must complete. Includes questions, answers, and grades. Only active or completed quizzes are downloaded.')),
+            ('download_lessons', _('课程 (Lessons)', 'Lessons'),
+             _('自适应学习方式，包含信息页面和需要回答的问题页面。学生完成课程后会根据答案被评分。', 'Adaptive learning activities with information pages and question pages. Students are graded based on their answers.')),
+            ('download_workshops', _('研讨会 (Workshops)', 'Workshops'),
+             _('按同行评审流程运作。学生可以提交作业并需要评估其他学生的提交。包含提交内容和评审信息。', 'Peer-review activities where students submit work and assess submissions from others. Includes submissions and assessment information.')),
 
             # 内容与资源模块
-            ('download_resources', '资源文件 (Resources)',
-             'Moodle 最常用的模块，用于上传和分享文件（PDF、PPT、Word、视频等）。这是课程材料的主要来源。'),
-            ('download_books', '书籍 (Books)',
-             '页面集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。'),
-            ('download_subsections', '子章节 (Subsections)',
-             '课程中的子章节内容。子章节可以嵌套在主章节下，形成多层次的课程结构。'),
-            ('download_scorms', 'SCORM包 (SCORM)',
-             '电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。'),
-            ('download_scorm_scos', 'SCORM学习对象 (SCORM SCOs)',
-             'SCORM包中的单个学习对象（Shareable Content Objects）。每个SCO是一个独立的学习单元。'),
-            ('download_scorm_attempts', 'SCORM尝试记录 (SCORM Attempts)',
-             '学生在SCORM课程中的学习记录和成绩。包含完成状态、得分、时间等跟踪数据。'),
-            ('download_h5pactivities', 'H5P活动 (H5P Activities)',
-             '现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。'),
-            ('download_h5p_attempts', 'H5P尝试记录 (H5P Attempts)',
-             '学生在H5P活动中的答题记录和成绩。包含每次尝试的答案、得分和时间信息。'),
-            ('download_imscps', 'IMS内容包 (IMS Content Package)',
-             'IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。'),
-            ('download_urls', 'URL链接 (URLs)',
-             '模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。'),
-            ('download_labels', '标签 (Labels)',
-             '课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。'),
-            ('download_ltis', 'LTI外部工具 (LTI External Tools)',
-             'Learning Tools Interoperability - 集成第三方学习工具（如Zoom、YouTube、Turnitin等）的标准接口。'),
+            ('download_resources', _('资源文件 (Resources)', 'Resources'),
+             _('Moodle 最常用的模块，用于上传和分享文件（PDF、PPT、Word、视频等）。这是课程材料的主要来源。', 'The most common Moodle module, used to upload and share files such as PDFs, slides, documents, and videos. This is the main source of course material.')),
+            ('download_books', _('书籍 (Books)', 'Books'),
+             _('页面集合。每本书都会创建一个包含章节的目录结构，适合长篇内容阅读。', 'Collections of pages. Each book creates a directory structure with chapters, suitable for long-form reading.')),
+            ('download_subsections', _('子章节 (Subsections)', 'Subsections'),
+             _('课程中的子章节内容。子章节可以嵌套在主章节下，形成多层次的课程结构。', 'Subsection content within courses. Subsections can be nested under main sections to form multi-level course structures.')),
+            ('download_scorms', _('SCORM包 (SCORM)', 'SCORM packages'),
+             _('电子学习的国际标准格式。包含交互式课程内容包、学习对象(SCO)信息和用户跟踪数据。', 'International e-learning package format. Includes interactive content packages, SCO information, and user tracking data.')),
+            ('download_scorm_scos', _('SCORM学习对象 (SCORM SCOs)', 'SCORM SCOs'),
+             _('SCORM包中的单个学习对象（Shareable Content Objects）。每个SCO是一个独立的学习单元。', 'Individual Shareable Content Objects inside SCORM packages. Each SCO is an independent learning unit.')),
+            ('download_scorm_attempts', _('SCORM尝试记录 (SCORM Attempts)', 'SCORM attempts'),
+             _('学生在SCORM课程中的学习记录和成绩。包含完成状态、得分、时间等跟踪数据。', 'Student learning records and grades in SCORM activities, including completion status, scores, time, and tracking data.')),
+            ('download_h5pactivities', _('H5P活动 (H5P Activities)', 'H5P activities'),
+             _('现代的交互式HTML5内容创作工具。支持测验、视频、演示文稿等多种交互形式，可下载内容包和用户答题记录。', 'Modern interactive HTML5 content activities, including quizzes, videos, presentations, content packages, and user attempts.')),
+            ('download_h5p_attempts', _('H5P尝试记录 (H5P Attempts)', 'H5P attempts'),
+             _('学生在H5P活动中的答题记录和成绩。包含每次尝试的答案、得分和时间信息。', 'Student answers and grades in H5P activities, including answers, scores, and timing for each attempt.')),
+            ('download_imscps', _('IMS内容包 (IMS Content Package)', 'IMS content packages'),
+             _('IMS Global标准的学习内容包格式，包含结构化的学习材料和资源。', 'IMS Global learning content package format with structured learning materials and resources.')),
+            ('download_urls', _('URL链接 (URLs)', 'URLs'),
+             _('模块提供指向外部资源的链接。会为每个链接创建快捷方式文件(.url/.webloc/.desktop)和元数据。', 'Links to external resources. Shortcut files (.url/.webloc/.desktop) and metadata are created for each link.')),
+            ('download_labels', _('标签 (Labels)', 'Labels'),
+             _('课程页面中嵌入的文本、图片或媒体内容，通常用于说明和装饰课程页面。', 'Text, images, or media embedded in course pages, usually used for explanations or page decoration.')),
+            ('download_ltis', _('LTI外部工具 (LTI External Tools)', 'LTI external tools'),
+             _('Learning Tools Interoperability - 集成第三方学习工具（如Zoom、YouTube、Turnitin等）的标准接口。', 'Learning Tools Interoperability integrations for third-party tools such as Zoom, YouTube, Turnitin, and others.')),
 
             # 协作与交流模块
-            ('download_forums', '论坛 (Forums)',
-             '论坛是学生和老师讨论交流的地方。包含讨论帖、回复、附件和评分信息。'),
-            ('download_wikis', '维基 (Wikis)',
-             '协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。'),
-            ('download_glossaries', '词汇表 (Glossaries)',
-             '用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。'),
-            ('download_databases', '数据库 (Databases)',
-             '数据库模块允许结构化数据收集和展示。包含数据库结构定义(schema)、所有条目数据、附件和元数据。学生通常可以添加和编辑条目。'),
-            ('download_chats', '聊天 (Chats)',
-             '模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。'),
+            ('download_forums', _('论坛 (Forums)', 'Forums'),
+             _('论坛是学生和老师讨论交流的地方。包含讨论帖、回复、附件和评分信息。', 'Discussion areas for students and teachers. Includes discussions, replies, attachments, and ratings.')),
+            ('download_wikis', _('维基 (Wikis)', 'Wikis'),
+             _('协作文档编辑工具，支持多人共同创建和编辑内容。支持小组维基和个人维基，包含所有页面、附件和标签。', 'Collaborative document editing tools for creating and editing content. Includes group/personal wikis, pages, attachments, and tags.')),
+            ('download_glossaries', _('词汇表 (Glossaries)', 'Glossaries'),
+             _('用于创建和维护术语定义列表。支持分类、评论、评分和附件，可导出完整的术语数据库。', 'Term definition lists with categories, comments, ratings, and attachments; exports the full glossary database.')),
+            ('download_databases', _('数据库 (Databases)', 'Databases'),
+             _('数据库模块允许结构化数据收集和展示。包含数据库结构定义(schema)、所有条目数据、附件和元数据。学生通常可以添加和编辑条目。', 'Structured data collection and display modules. Includes schema, entries, attachments, and metadata. Students can often add or edit entries.')),
+            ('download_chats', _('聊天 (Chats)', 'Chats'),
+             _('模块提供实时文字聊天功能。可以导出聊天记录，包含消息历史和参与者信息。', 'Real-time text chat modules. Chat logs can be exported with message history and participant information.')),
 
             # 调查与反馈模块
-            ('download_feedbacks', '反馈 (Feedbacks)',
-             '自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。'),
-            ('download_surveys', '调查 (Surveys)',
-             '预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。'),
-            ('download_choices', '投票/选择 (Choices)',
-             '简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。'),
+            ('download_feedbacks', _('反馈 (Feedbacks)', 'Feedback'),
+             _('自定义问卷调查工具。包含问题设计、学生回答、统计分析和附件。支持匿名反馈和多次提交。', 'Custom questionnaire tools with question design, student responses, statistics, and attachments. Supports anonymous feedback and multiple submissions.')),
+            ('download_surveys', _('调查 (Surveys)', 'Surveys'),
+             _('预定义的标准化调查问卷，如COLLES、ATTLS等教育学调查。包含问题和回答数据。', 'Predefined standardized questionnaires such as COLLES and ATTLS. Includes questions and response data.')),
+            ('download_choices', _('投票/选择 (Choices)', 'Choices'),
+             _('简单的单选或多选投票工具。包含选项、投票结果和统计信息，可用于快速收集意见。', 'Simple single-choice or multiple-choice polling tools with options, results, and statistics.')),
 
             # 其他模块
-            ('download_calendars', '日历 (Calendar)',
-             '日历包含课程的所有事件和截止日期。每个事件导出为HTML文件，包含详细的事件信息、时间和附件。'),
-            ('download_bigbluebuttonbns', 'BigBlueButton会议 (BigBlueButton)',
-             '在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。'),
-            ('download_qbanks', '题库 (Question Banks)',
-             '含用于创建测验的题目集合。包含题目内容、答案和元数据。'),
+            ('download_calendars', _('日历 (Calendar)', 'Calendar'),
+             _('日历包含课程的所有事件和截止日期。每个事件导出为HTML文件，包含详细的事件信息、时间和附件。', 'Course events and deadlines. Each event is exported as an HTML file with details, time, and attachments.')),
+            ('download_bigbluebuttonbns', _('BigBlueButton会议 (BigBlueButton)', 'BigBlueButton meetings'),
+             _('在线会议和虚拟教室系统。可下载会议信息、录像和相关资源。', 'Online meeting and virtual classroom system. Downloads meeting information, recordings, and related resources.')),
+            ('download_qbanks', _('题库 (Question Banks)', 'Question banks'),
+             _('含用于创建测验的题目集合。包含题目内容、答案和元数据。', 'Collections of questions used to create quizzes. Includes question content, answers, and metadata.')),
             
             # 特殊选项
-            ('download_descriptions', '课程描述 (Descriptions)',
-             '课程中各种资源的描述文本。描述会创建为 Markdown 文件，包含文件、任务、作业的说明信息。适合离线阅读或存档。'),
-            ('download_links_in_descriptions', '描述中的链接 (Links in Descriptions)',
-             '描述中包含的网页、文件或视频链接。可指向 Moodle 内部页面或外部资源。下载后会创建快捷方式或副本文件。'),
-            ('download_metadata_files', '元数据文件 (Metadata Files)',
-             '为资源生成的元数据文件（.json、_info等）。包含文件的详细信息、上传时间、修改记录等结构化数据，便于归档和检索。'),
+            ('download_descriptions', _('课程描述 (Descriptions)', 'Descriptions'),
+             _('课程中各种资源的描述文本。描述会创建为 Markdown 文件，包含文件、任务、作业的说明信息。适合离线阅读或存档。', 'Description text for course resources. Descriptions are saved as Markdown files with notes for files, tasks, and assignments. Useful for offline reading or archiving.')),
+            ('download_links_in_descriptions', _('描述中的链接 (Links in Descriptions)', 'Links in descriptions'),
+             _('描述中包含的网页、文件或视频链接。可指向 Moodle 内部页面或外部资源。下载后会创建快捷方式或副本文件。', 'Links in descriptions to web pages, files, or videos. They may point to Moodle pages or external resources and are saved as shortcuts or copied files.')),
+            ('download_metadata_files', _('元数据文件 (Metadata Files)', 'Metadata files'),
+             _('为资源生成的元数据文件（.json、_info等）。包含文件的详细信息、上传时间、修改记录等结构化数据，便于归档和检索。', 'Metadata files generated for resources (.json, _info, etc.) with details, upload times, change records, and other structured archive data.')),
         ]
 
         # 获取当前配置
@@ -812,8 +884,8 @@ class ConfigWizard:
             choices.append(f'{name}\t{desc}')
 
         # 显示多选界面
-        Log.blue('请选择要下载的模块类型：')
-        Log.info('[使用↑↓键移动，空格键勾选/取消，回车键确认]')
+        Log.blue(_('请选择要下载的模块类型：', 'Select module types to download:'))
+        Log.info(_('[使用↑↓键移动，空格键勾选/取消，回车键确认]', '[Use ↑↓ to move, Space to select/deselect, Enter to confirm]'))
         print('')
 
         selected_indices = Cutie.select_multiple(
@@ -847,7 +919,14 @@ class ConfigWizard:
             self.config.set_property(config_key, should_download, ensure_complete=False)
 
         print('')
-        Log.success(f'已选择 {len(selected_indices)}/{len(modules)} 个模块类型进行下载')
+        Log.success(
+            _(
+                '已选择 {selected}/{total} 个模块类型进行下载',
+                'Selected {selected}/{total} module types for download',
+                selected=len(selected_indices),
+                total=len(modules),
+            )
+        )
 
     def _select_should_download_descriptions(self):
         """
@@ -857,21 +936,26 @@ class ConfigWizard:
 
         self.section_separator()
         Log.info(
-            '在 Moodle 课程中，可以为各种资源添加描述，'
-            + '例如文件、任务、作业或纯文本。'
-            + '这些描述通常不需要下载，因为你已经读过信息或'
-            + '从上下文中知道了。但在某些情况下，'
-            + '下载这些描述可能会有用。'
-            + '描述会创建为 Markdown 文件，可以随意删除。'
+            _(
+                '在 Moodle 课程中，可以为各种资源添加描述，'
+                + '例如文件、任务、作业或纯文本。'
+                + '这些描述通常不需要下载，因为你已经读过信息或'
+                + '从上下文中知道了。但在某些情况下，'
+                + '下载这些描述可能会有用。'
+                + '描述会创建为 Markdown 文件，可以随意删除。',
+                'Moodle courses can add descriptions to resources such as files, tasks, assignments, or plain text. '
+                + 'These descriptions often do not need to be downloaded because you have already read them or know the context. '
+                + 'In some cases they may be useful. Descriptions are saved as Markdown files and can be deleted freely.'
+            )
         )
         Log.debug(
-            '创建描述文件不会花费额外时间，但如果它们只包含不必要的信息，可能会很烦人。'
+            _('创建描述文件不会花费额外时间，但如果它们只包含不必要的信息，可能会很烦人。', 'Creating description files does not take extra time, but they can be annoying if they only contain unnecessary information.')
         )
 
         print('')
 
         download_descriptions = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想要下载所选课程的描述吗？'),
+            Log.blue_str(_('你想要下载所选课程的描述吗？', 'Do you want to download descriptions for the selected courses?')),
             default_is_yes=download_descriptions,
         )
 
@@ -885,13 +969,17 @@ class ConfigWizard:
 
         self.section_separator()
         Log.info(
-            '在文件、章节、作业或课程的描述中，老师可以添加网页、'
-            + '文件或视频的链接。这些链接可以指向 Moodle 内部页面或外部网页。'
+            _(
+                '在文件、章节、作业或课程的描述中，老师可以添加网页、'
+                + '文件或视频的链接。这些链接可以指向 Moodle 内部页面或外部网页。',
+                'Teachers can add links to web pages, files, or videos in descriptions for files, sections, assignments, or courses. '
+                + 'These links can point to Moodle pages or external websites.'
+            )
         )
         print('')
 
         download_links_in_descriptions = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想要下载描述中的链接吗？'),
+            Log.blue_str(_('你想要下载描述中的链接吗？', 'Do you want to download links in descriptions?')),
             default_is_yes=download_links_in_descriptions,
         )
 
@@ -905,26 +993,34 @@ class ConfigWizard:
 
         self.section_separator()
         Log.info(
-            '在 Moodle 课程中，老师也可以链接到外部文件。'
-            + '这可以是音频、视频、文本或其他任何内容。'
-            + '特别是，老师可以链接到 YouTube 视频。'
+            _(
+                '在 Moodle 课程中，老师也可以链接到外部文件。'
+                + '这可以是音频、视频、文本或其他任何内容。'
+                + '特别是，老师可以链接到 YouTube 视频。',
+                'Teachers can also link to external files in Moodle courses. '
+                + 'These can be audio, video, text, or anything else. In particular, teachers may link to YouTube videos.'
+            )
         )
-        Log.debug('要正确下载视频，你必须安装 ffmpeg。')
+        Log.debug(_('要正确下载视频，你必须安装 ffmpeg。', 'To download videos correctly, ffmpeg must be installed.'))
 
-        Log.error('这些文件可能会显著增加下载量。')
+        Log.error(_('这些文件可能会显著增加下载量。', 'These files may significantly increase download volume.'))
 
         Log.info(
-            '如果你想按域名过滤外部链接，'
-            + '可以手动设置白名单和黑名单'
-            + '（详见 https://github.com/C0D3D3V/Moodle-DL/wiki/Download-(external)-linked-files）。'
+            _(
+                '如果你想按域名过滤外部链接，'
+                + '可以手动设置白名单和黑名单'
+                + '（详见 https://github.com/C0D3D3V/Moodle-DL/wiki/Download-(external)-linked-files）。',
+                'If you want to filter external links by domain, you can manually configure allowlists and blocklists '
+                + '(see https://github.com/C0D3D3V/Moodle-DL/wiki/Download-(external)-linked-files).'
+            )
         )
         Log.warning(
-            '请注意，外部文件的大小在下载过程中确定，所以总大小会在下载过程中变化。'
+            _('请注意，外部文件的大小在下载过程中确定，所以总大小会在下载过程中变化。', 'Note that external file sizes are determined during download, so the total size can change while downloading.')
         )
         print('')
 
         download_linked_files = Cutie.prompt_yes_or_no(
-            Log.blue_str('你想要下载所选课程的外部链接文件吗？'),
+            Log.blue_str(_('你想要下载所选课程的外部链接文件吗？', 'Do you want to download external linked files for the selected courses?')),
             default_is_yes=download_linked_files,
         )
 
@@ -936,13 +1032,18 @@ class ConfigWizard:
         """
         self.section_separator()
         Log.info(
-            '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
-            + '还有一些 Moodle 插件（如 kalvidres）无法在 Moodle 应用中显示，'
-            + '所以你需要浏览器 cookie 来下载这些插件文件。'
+            _(
+                '描述中可能包含需要浏览器 cookie 才能下载的文件链接。'
+                + '还有一些 Moodle 插件（如 kalvidres）无法在 Moodle 应用中显示，'
+                + '所以你需要浏览器 cookie 来下载这些插件文件。',
+                'Descriptions may contain file links that require browser cookies to download. '
+                + 'Some Moodle plugins (such as kalvidres) cannot be shown in the Moodle app, '
+                + 'so browser cookies are needed to download those plugin files.'
+            )
         )
 
         print('')
-        Log.success('✅ Cookie 下载功能已自动启用')
+        Log.success(_('✅ Cookie 下载功能已自动启用', '✅ Cookie-based downloading has been enabled automatically'))
 
         # 直接设置为 True，不再询问
         self.config.set_property('download_also_with_cookie', True)
@@ -951,7 +1052,7 @@ class ConfigWizard:
         from moodle_dl.utils import PathTools as PT
         moodle_url = self.config.get_moodle_URL()
         if moodle_url is None:
-            Log.error('错误：未找到 Moodle URL 配置，无法检查 cookies')
+            Log.error(_('错误：未找到 Moodle URL 配置，无法检查 cookies', 'Error: Moodle URL configuration not found; cannot check cookies'))
             return
 
         cookies_path = PT.get_cookies_path(self.config.get_misc_files_path())
@@ -961,13 +1062,13 @@ class ConfigWizard:
             has_sso_cookies = self._check_sso_cookies_exist(cookies_path, moodle_url.domain)
             if has_sso_cookies:
                 # 如果已有完整cookies，只显示简短确认
-                Log.info(f'✅ 检测到完整的 Cookies.txt 文件，将用于下载受保护的内容')
+                Log.info(_('✅ 检测到完整的 Cookies.txt 文件，将用于下载受保护的内容', '✅ Found a complete Cookies.txt file; it will be used to download protected content'))
                 print('')
                 return  # 直接返回，不显示冗长的导出流程
 
         # 只有在没有cookies或cookies不完整时，才进入完整的导出流程
         print('')
-        Log.info('现在将从浏览器导出 cookies（用于下载受保护的内容）')
+        Log.info(_('现在将从浏览器导出 cookies（用于下载受保护的内容）', 'Cookies will now be exported from the browser (for downloading protected content)'))
         print('')
 
         # 引导导出浏览器 cookies 和 API token
@@ -979,16 +1080,16 @@ class ConfigWizard:
         对于 SSO 登录，会同时导出所有必需的认证 cookies 和自动获取 API token
         """
         print('')
-        Log.info('💡 提示：')
-        Log.info('   • 将从浏览器自动导出 cookies（包含 SSO 认证信息）')
-        Log.info('   • 同时自动获取 Moodle API token')
-        Log.info('   • 无需手动打开开发者工具！')
+        Log.info(_('💡 提示：', '💡 Tip:'))
+        Log.info(_('   • 将从浏览器自动导出 cookies（包含 SSO 认证信息）', '   • Cookies will be exported automatically from the browser (including SSO authentication data)'))
+        Log.info(_('   • 同时自动获取 Moodle API token', '   • The Moodle API token will also be obtained automatically'))
+        Log.info(_('   • 无需手动打开开发者工具！', '   • You do not need to open Developer Tools manually!'))
         print('')
 
         # 获取 Moodle URL 和输出路径
         moodle_url = self.config.get_moodle_URL()
         if moodle_url is None:
-            Log.error('错误：未找到 Moodle URL 配置，无法导出 cookies')
+            Log.error(_('错误：未找到 Moodle URL 配置，无法导出 cookies', 'Error: Moodle URL configuration not found; cannot export cookies'))
             return
 
         moodle_domain = moodle_url.domain
@@ -1005,43 +1106,45 @@ class ConfigWizard:
             if has_sso_cookies:
                 # 如果cookies文件已存在且包含SSO cookies，说明在前面的token获取步骤中已经导出过
                 # 直接使用现有cookies，不再重复导出
-                Log.success(f'✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）')
-                Log.info(f'   路径: {cookies_path}')
-                Log.info('   将使用现有cookies，无需重新导出')
+                Log.success(_('✅ 已存在完整的 Cookies.txt 文件（包含 SSO cookies）', '✅ A complete Cookies.txt file already exists (including SSO cookies)'))
+                Log.info(_('   路径: {path}', '   Path: {path}', path=cookies_path))
+                Log.info(_('   将使用现有cookies，无需重新导出', '   Existing cookies will be used; no need to export again'))
                 print('')
                 return  # 直接返回，不再重复导出
             else:
-                Log.warning(f'⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies: {cookies_path}')
-                Log.info('   建议重新导出以获取完整的浏览器 cookies。')
+                Log.warning(_('⚠️  已存在 Cookies.txt 文件，但可能缺少 SSO cookies: {path}', '⚠️  Cookies.txt exists but may be missing SSO cookies: {path}', path=cookies_path))
+                Log.info(_('   建议重新导出以获取完整的浏览器 cookies。', '   Re-exporting is recommended to get complete browser cookies.'))
             print('')
 
         # 询问是否要导出浏览器 cookies
         # 默认 Yes 的情况：1) 没有 cookies 文件  2) 有文件但缺少 SSO cookies
         should_export = Cutie.prompt_yes_or_no(
-            Log.blue_str('是否现在从浏览器导出完整的 cookies（包含 SSO 登录所需的认证 cookies）？'),
+            Log.blue_str(_('是否现在从浏览器导出完整的 cookies（包含 SSO 登录所需的认证 cookies）？', 'Export complete cookies from your browser now (including cookies needed for SSO login)?')),
             default_is_yes=(not cookies_exist or not has_sso_cookies),
         )
 
         if not should_export:
             if not cookies_exist:
                 Log.warning(
-                    '跳过浏览器 cookies 导出。'
-                    + f'你可以稍后手动运行：python3 export_browser_cookies.py'
-                    + f'\n或将 Cookies.txt 文件放置到: {cookies_path}'
+                    _(
+                        '跳过浏览器 cookies 导出。你可以稍后手动运行：python3 export_browser_cookies.py\n或将 Cookies.txt 文件放置到: {path}',
+                        'Skipping browser cookie export. You can later run: python3 export_browser_cookies.py\nor place Cookies.txt at: {path}',
+                        path=cookies_path,
+                    )
                 )
             return
 
         # 询问用户选择浏览器
         print('')
-        Log.blue('请选择你使用的浏览器或内核：')
+        Log.blue(_('请选择你使用的浏览器或内核：', 'Select the browser or browser engine you use:'))
         browser_choices = [
             'Chrome',
             'Edge',
             'Firefox',
             'Safari',
-            'Chromium 内核浏览器（Brave, Vivaldi, Arc, Opera 等）',
-            'Firefox 内核浏览器（Zen, Waterfox, LibreWolf 等）',
-            '自动检测所有浏览器',
+            _('Chromium 内核浏览器（Brave, Vivaldi, Arc, Opera 等）', 'Chromium-based browsers (Brave, Vivaldi, Arc, Opera, etc.)'),
+            _('Firefox 内核浏览器（Zen, Waterfox, LibreWolf 等）', 'Firefox-based browsers (Zen, Waterfox, LibreWolf, etc.)'),
+            _('自动检测所有浏览器', 'Auto-detect all browsers'),
         ]
         browser_choice = Cutie.select(browser_choices)
 
@@ -1050,14 +1153,14 @@ class ConfigWizard:
         if browser_choice == 4:
             # Chromium 内核 - 二级选择
             print('')
-            Log.blue('请选择具体的 Chromium 内核浏览器：')
+            Log.blue(_('请选择具体的 Chromium 内核浏览器：', 'Select the specific Chromium-based browser:'))
             chromium_choices = [
                 'Chrome',
                 'Brave',
                 'Vivaldi',
                 'Opera',
                 'Chromium',
-                'Arc（通过自定义路径支持）'
+                _('Arc（通过自定义路径支持）', 'Arc (supported through custom path)')
             ]
             chromium_choice = Cutie.select(chromium_choices)
 
@@ -1074,12 +1177,12 @@ class ConfigWizard:
         elif browser_choice == 5:
             # Firefox 内核 - 二级选择
             print('')
-            Log.blue('请选择具体的 Firefox 内核浏览器：')
+            Log.blue(_('请选择具体的 Firefox 内核浏览器：', 'Select the specific Firefox-based browser:'))
             firefox_choices = [
                 'Firefox',
                 'LibreWolf',
-                'Zen Browser（通过自定义路径支持）',
-                'Waterfox（通过自定义路径支持）'
+                _('Zen Browser（通过自定义路径支持）', 'Zen Browser (supported through custom path)'),
+                _('Waterfox（通过自定义路径支持）', 'Waterfox (supported through custom path)')
             ]
             firefox_choice = Cutie.select(firefox_choices)
 
@@ -1106,7 +1209,7 @@ class ConfigWizard:
 
         # 尝试导入并运行 export_browser_cookies
         print('')
-        Log.info('正在从浏览器导出 cookies...')
+        Log.info(_('正在从浏览器导出 cookies...', 'Exporting cookies from the browser...'))
         print('')
 
         try:
@@ -1119,8 +1222,8 @@ class ConfigWizard:
                 script_path = os.path.join(os.getcwd(), 'export_browser_cookies.py')
 
             if not os.path.exists(script_path):
-                Log.error('错误：未找到 export_browser_cookies.py 文件')
-                Log.info('请确保该文件在项目根目录，或手动运行：')
+                Log.error(_('错误：未找到 export_browser_cookies.py 文件', 'Error: export_browser_cookies.py was not found'))
+                Log.info(_('请确保该文件在项目根目录，或手动运行：', 'Make sure the file is in the project root, or run manually:'))
                 Log.info('  python3 export_browser_cookies.py')
                 return
 
@@ -1144,12 +1247,12 @@ class ConfigWizard:
                     # 自动获取API token
                     if success:
                         print('')
-                        Log.info('正在自动获取Moodle API token...')
+                        Log.info(_('正在自动获取Moodle API token...', 'Automatically getting the Moodle API token...'))
                         token, privatetoken = export_module.extract_api_token_with_cookies(moodle_domain, cookies_path)
                         if token and privatetoken:
-                            Log.success('✅ 已成功获取并保存API token!')
+                            Log.success(_('✅ 已成功获取并保存API token!', '✅ API token obtained and saved successfully!'))
                         else:
-                            Log.warning('⚠️  API token获取失败，你可以稍后手动运行: moodle-dl --new-token --sso')
+                            Log.warning(_('⚠️  API token获取失败，你可以稍后手动运行: moodle-dl --new-token --sso', '⚠️  API token acquisition failed. You can run this later manually: moodle-dl --new-token --sso'))
             else:
                 # 用户选择自动检测
                 success = export_module.export_cookies_interactive(
@@ -1160,25 +1263,25 @@ class ConfigWizard:
                 )
 
             if success:
-                Log.success('✅ 浏览器 cookies 导出成功！')
+                Log.success(_('✅ 浏览器 cookies 导出成功！', '✅ Browser cookies exported successfully!'))
                 # Save the selected browser to config for future auto-refresh
                 if selected_browser:
                     self.config.set_property('preferred_browser', selected_browser)
-                    Log.info(f'✅ 已保存浏览器选择（{selected_browser}），将用于自动刷新cookies')
+                    Log.info(_('✅ 已保存浏览器选择（{browser}），将用于自动刷新cookies', '✅ Saved browser choice ({browser}); it will be used for automatic cookie refresh', browser=selected_browser))
             else:
-                Log.error('❌ 浏览器 cookies 导出失败')
-                Log.warning('你可以稍后手动导出 cookies：')
-                Log.info('  1. 在浏览器中登录你的 Moodle')
-                Log.info('  2. 运行：python3 export_browser_cookies.py')
-                Log.info(f'  3. 或手动将 Cookies.txt 放置到: {cookies_path}')
+                Log.error(_('❌ 浏览器 cookies 导出失败', '❌ Browser cookie export failed'))
+                Log.warning(_('你可以稍后手动导出 cookies：', 'You can export cookies manually later:'))
+                Log.info(_('  1. 在浏览器中登录你的 Moodle', '  1. Log in to your Moodle in the browser'))
+                Log.info(_('  2. 运行：python3 export_browser_cookies.py', '  2. Run: python3 export_browser_cookies.py'))
+                Log.info(_('  3. 或手动将 Cookies.txt 放置到: {path}', '  3. Or manually place Cookies.txt at: {path}', path=cookies_path))
 
         except ImportError as e:
-            Log.error(f'错误：无法导入 browser-cookie3 库: {e}')
-            Log.info('请先安装依赖：pip install browser-cookie3')
-            Log.info('然后手动运行：python3 export_browser_cookies.py')
+            Log.error(_('错误：无法导入 browser-cookie3 库: {error}', 'Error: unable to import browser-cookie3: {error}', error=e))
+            Log.info(_('请先安装依赖：pip install browser-cookie3', 'Install the dependency first: pip install browser-cookie3'))
+            Log.info(_('然后手动运行：python3 export_browser_cookies.py', 'Then run manually: python3 export_browser_cookies.py'))
         except Exception as e:
-            Log.error(f'导出过程出错: {e}')
-            Log.warning('你可以稍后手动运行：python3 export_browser_cookies.py')
+            Log.error(_('导出过程出错: {error}', 'Export process error: {error}', error=e))
+            Log.warning(_('你可以稍后手动运行：python3 export_browser_cookies.py', 'You can run this manually later: python3 export_browser_cookies.py'))
 
     def _check_sso_cookies_exist(self, cookies_path: str, moodle_domain: str) -> bool:
         """

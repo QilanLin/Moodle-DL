@@ -25,6 +25,7 @@ import urllib.parse
 from typing import Tuple, List, Dict, Optional
 
 from moodle_dl.utils import Log
+from moodle_dl.cli.localization import tr as _
 
 
 def extract_all_cookies_from_browser(
@@ -52,14 +53,14 @@ def extract_all_cookies_from_browser(
     """
     try:
         # v2: 直接从浏览器读取 cookies（永不读取文件）
-        logging.info(f'💡 正在从浏览器直接读取所有 cookies...')
+        logging.info(_('💡 正在从浏览器直接读取所有 cookies...', '💡 Reading all cookies directly from the browser...'))
         all_cookies = _read_all_cookies_from_browser(browser_name)
 
         if all_cookies:
-            logging.info(f'✓ 从浏览器成功读取 {len(all_cookies)} 个 cookies')
+            logging.info(_('✓ 从浏览器成功读取 {count} 个 cookies', '✓ Successfully read {count} cookies from the browser', count=len(all_cookies)))
         else:
-            logging.warning('⚠️  浏览器中没有找到 cookies')
-            logging.info('   请确保浏览器已登录 Moodle，且 SSO cookies 有效')
+            logging.warning(_('⚠️  浏览器中没有找到 cookies', '⚠️  No cookies found in the browser'))
+            logging.info(_('   请确保浏览器已登录 Moodle，且 SSO cookies 有效', '   Make sure the browser is logged in to Moodle and SSO cookies are valid'))
             return []
 
         # v3: 检测多账号情况
@@ -70,12 +71,12 @@ def extract_all_cookies_from_browser(
             selected_account = _prompt_user_for_account_selection(accounts)
             # 过滤 cookies，只保留选中账号的
             all_cookies = _filter_cookies_by_account(all_cookies, selected_account)
-            logging.info(f'✓ 已过滤为 {len(all_cookies)} 个 cookies（选定账号）')
+            logging.info(_('✓ 已过滤为 {count} 个 cookies（选定账号）', '✓ Filtered to {count} cookies for the selected account', count=len(all_cookies)))
 
         return all_cookies
 
     except Exception as e:
-        logging.error(f'❌ 提取 cookies 时出错: {e}')
+        logging.error(_('❌ 提取 cookies 时出错: {error}', '❌ Error while extracting cookies: {error}', error=e))
         return []
 
 
@@ -163,7 +164,7 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
         }
 
         if browser_name.lower() not in browser_methods:
-            logging.warning(f'⚠️  不支持的浏览器: {browser_name}')
+            logging.warning(_('⚠️  不支持的浏览器: {browser}', '⚠️  Unsupported browser: {browser}', browser=browser_name))
             return []
 
         method, needs_custom_path = browser_methods[browser_name.lower()]
@@ -172,10 +173,10 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
             # 需要自定义路径的浏览器
             cookie_path = _find_browser_cookie_path(browser_name)
             if not cookie_path:
-                logging.warning(f'⚠️  无法找到 {browser_name} 浏览器的 cookie 文件')
-                logging.info('   请确保浏览器已安装并已登录')
+                logging.warning(_('⚠️  无法找到 {browser} 浏览器的 cookie 文件', '⚠️  Could not find the cookie file for {browser}', browser=browser_name))
+                logging.info(_('   请确保浏览器已安装并已登录', '   Make sure the browser is installed and logged in'))
                 return []
-            logging.debug(f'   使用 cookie 文件: {cookie_path}')
+            logging.debug(_('   使用 cookie 文件: {path}', '   Using cookie file: {path}', path=cookie_path))
             cj = method(cookie_file=cookie_path)
         else:
             # 标准浏览器，使用默认路径
@@ -204,11 +205,11 @@ def _read_all_cookies_from_browser(browser_name: str) -> List[Dict]:
             }
             all_cookies.append(cookie_dict)
 
-        logging.info(f'✓ 从{browser_name}读取到 {len(all_cookies)} 个 cookies（所有域名）')
+        logging.info(_('✓ 从{browser}读取到 {count} 个 cookies（所有域名）', '✓ Read {count} cookies from {browser} (all domains)', browser=browser_name, count=len(all_cookies)))
         return all_cookies
 
     except Exception as e:
-        logging.error(f'❌ 从浏览器读取cookies失败: {e}')
+        logging.error(_('❌ 从浏览器读取cookies失败: {error}', '❌ Failed to read cookies from browser: {error}', error=e))
         return []
 
 
@@ -282,12 +283,12 @@ def _detect_multiple_accounts(cookies: List[Dict], browser_name: str) -> List[Di
     if has_sso_tiles_but_no_userlist:
         # ESTSSSOTILES=1 但没有 ESTSUSERLIST
         # 这表示可能有多个账号，但我们无法获取用户列表
-        logging.warning('⚠️  检测到 Microsoft 账号选择器（ESTSSSOTILES=1）')
-        logging.warning('⚠️  但无法获取账号列表（ESTSUSERLIST 不存在或解析失败）')
-        logging.warning('💡 如果登录失败，请尝试：')
-        logging.warning('   1. 在浏览器中手动选择要使用的账号')
-        logging.warning('   2. 或者使用单独的浏览器配置文件登录单个账号')
-        logging.info('✓ 继续使用当前 cookies 尝试登录...')
+        logging.warning(_('⚠️  检测到 Microsoft 账号选择器（ESTSSSOTILES=1）', '⚠️  Microsoft account picker detected (ESTSSSOTILES=1)'))
+        logging.warning(_('⚠️  但无法获取账号列表（ESTSUSERLIST 不存在或解析失败）', '⚠️  Could not get the account list (ESTSUSERLIST missing or failed to parse)'))
+        logging.warning(_('💡 如果登录失败，请尝试：', '💡 If login fails, try:'))
+        logging.warning(_('   1. 在浏览器中手动选择要使用的账号', '   1. Manually select the account to use in the browser'))
+        logging.warning(_('   2. 或者使用单独的浏览器配置文件登录单个账号', '   2. Or use a separate browser profile with only one account logged in'))
+        logging.info(_('✓ 继续使用当前 cookies 尝试登录...', '✓ Continuing with the current cookies...'))
         # 不返回，继续使用当前的 cookies
 
     if not has_multiple_estsp and not has_multiple_users:
@@ -338,7 +339,7 @@ def _detect_multiple_accounts(cookies: List[Dict], browser_name: str) -> List[Di
             })
 
         if len(account_list) > 1:
-            logging.warning(f'⚠️  检测到 {len(account_list)} 个 Microsoft 账号（来自 ESTSUSERLIST）')
+            logging.warning(_('⚠️  检测到 {count} 个 Microsoft 账号（来自 ESTSUSERLIST）', '⚠️  Detected {count} Microsoft accounts (from ESTSUSERLIST)', count=len(account_list)))
 
         return account_list
 
@@ -400,12 +401,12 @@ def _detect_multiple_accounts(cookies: List[Dict], browser_name: str) -> List[Di
             })
 
     if len(account_list) > 1:
-        logging.warning(f'⚠️  检测到 {len(account_list)} 个 Microsoft 账号在 {browser_name} 浏览器中')
+        logging.warning(_('⚠️  检测到 {count} 个 Microsoft 账号在 {browser} 浏览器中', '⚠️  Detected {count} Microsoft accounts in {browser}', count=len(account_list), browser=browser_name))
         if sso_tiles_value == '1':
-            logging.info('   检测到 ESTSSSOTILES=1，需要账号选择')
+            logging.info(_('   检测到 ESTSSSOTILES=1，需要账号选择', '   ESTSSSOTILES=1 detected; account selection may be needed'))
         for i, account in enumerate(account_list, 1):
             user_display = account.get('user_info', {}).get('email', 'Unknown')
-            logging.info(f'   账号 {i}: {user_display}')
+            logging.info(_('   账号 {index}: {user}', '   Account {index}: {user}', index=i, user=user_display))
 
     return account_list
 
@@ -517,8 +518,8 @@ def _prompt_user_for_account_selection(accounts: List[Dict]) -> Dict:
     """
     logging.info('')
     logging.info('╔════════════════════════════════════════════════════════════╗')
-    logging.info('║  检测到多个 Microsoft 账号登录                             ║')
-    logging.info('║  请选择要用于 Moodle 登录的账号                             ║')
+    logging.info(_('║  检测到多个 Microsoft 账号登录                             ║', '║  Multiple Microsoft accounts were detected                 ║'))
+    logging.info(_('║  请选择要用于 Moodle 登录的账号                             ║', '║  Select the account to use for Moodle login                 ║'))
     logging.info('╚════════════════════════════════════════════════════════════╝')
     logging.info('')
 
@@ -535,27 +536,27 @@ def _prompt_user_for_account_selection(accounts: List[Dict]) -> Dict:
             logging.info(f'  [{i}] {display_name} ({email})')
         else:
             logging.info(f'  [{i}] {email}')
-        logging.info(f'      域名: {domain}')
-        logging.info(f'      会话: {session_id}...')
+        logging.info(_('      域名: {domain}', '      Domain: {domain}', domain=domain))
+        logging.info(_('      会话: {session_id}...', '      Session: {session_id}...', session_id=session_id))
 
     logging.info('')
     while True:
         try:
-            choice = input('请输入账号编号 (1-{}): '.format(len(accounts)))
+            choice = input(_('请输入账号编号 (1-{count}): ', 'Enter account number (1-{count}): ', count=len(accounts)))
             choice_num = int(choice.strip())
             if 1 <= choice_num <= len(accounts):
                 selected = accounts[choice_num - 1]
                 user_info = selected.get('user_info', {})
-                email = user_info.get('email', f'账号 {choice_num}')
-                logging.info(f'✓ 已选择: {email}')
+                email = user_info.get('email', _('账号 {index}', 'Account {index}', index=choice_num))
+                logging.info(_('✓ 已选择: {email}', '✓ Selected: {email}', email=email))
                 return selected
             else:
-                logging.warning(f'⚠️  请输入 1 到 {len(accounts)} 之间的数字')
+                logging.warning(_('⚠️  请输入 1 到 {count} 之间的数字', '⚠️  Enter a number between 1 and {count}', count=len(accounts)))
         except ValueError:
-            logging.warning('⚠️  请输入有效的数字')
+            logging.warning(_('⚠️  请输入有效的数字', '⚠️  Enter a valid number'))
         except (EOFError, KeyboardInterrupt):
             # 在非交互环境中，默认选择第一个账号
-            logging.info('💡 非交互环境，自动选择第一个账号')
+            logging.info(_('💡 非交互环境，自动选择第一个账号', '💡 Non-interactive environment; selecting the first account automatically'))
             return accounts[0]
 
 
@@ -580,7 +581,7 @@ def _read_sso_cookies_from_browser_DEPRECATED(browser_name: str, moodle_domain: 
         }
 
         if browser_name not in browser_methods:
-            logging.warning(f'⚠️  不支持的浏览器: {browser_name}')
+            logging.warning(_('⚠️  不支持的浏览器: {browser}', '⚠️  Unsupported browser: {browser}', browser=browser_name))
             return []
 
         cj = browser_methods[browser_name]()
@@ -636,11 +637,11 @@ def _read_sso_cookies_from_browser_DEPRECATED(browser_name: str, moodle_domain: 
                 sso_cookies.append(cookie_dict)
                 logging.debug(f'✓ SSO cookie: {cookie.name} ({cookie.domain})')
 
-        logging.info(f'✓ 从{browser_name}读取到 {len(sso_cookies)} 个 SSO cookies')
+        logging.info(_('✓ 从{browser}读取到 {count} 个 SSO cookies', '✓ Read {count} SSO cookies from {browser}', browser=browser_name, count=len(sso_cookies)))
         return sso_cookies
 
     except Exception as e:
-        logging.error(f'❌ 从浏览器读取cookies失败: {e}')
+        logging.error(_('❌ 从浏览器读取cookies失败: {error}', '❌ Failed to read cookies from browser: {error}', error=e))
         return []
 
 
@@ -661,7 +662,7 @@ async def _launch_playwright_browser(playwright_obj, preferred_browser: str, hea
     browser_type = playwright_obj.firefox if preferred_browser == 'firefox' else playwright_obj.chromium
 
     if headless:
-        logging.info('🌐 启动无头浏览器...')
+        logging.info(_('🌐 启动无头浏览器...', '🌐 Launching headless browser...'))
         # 使用新的 headless 模式（真正的 Chrome/Firefox），不需要 chromium_headless_shell
         if preferred_browser == 'firefox':
             return await browser_type.launch(headless=True)
@@ -671,7 +672,7 @@ async def _launch_playwright_browser(playwright_obj, preferred_browser: str, hea
                 channel='chromium'  # 使用新的 headless 模式
             )
     else:
-        logging.info('🌐 启动有头浏览器（可见窗口，方便调试）...')
+        logging.info(_('🌐 启动有头浏览器（可见窗口，方便调试）...', '🌐 Launching headful browser (visible window, useful for debugging)...'))
         return await browser_type.launch(
             headless=False,
             slow_mo=500  # 减慢操作，方便观察
@@ -694,19 +695,19 @@ async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str
     Returns:
         元组 (visited_sso, current_url, page_content)
     """
-    logging.info(f'🔗 正在访问 Moodle: {moodle_url}')
-    logging.info('   等待 SSO 自动登录完成...')
-    logging.info('   💡 原理：只要 SSO cookies 有效，将完全自动化完成登录')
+    logging.info(_('🔗 正在访问 Moodle: {url}', '🔗 Visiting Moodle: {url}', url=moodle_url))
+    logging.info(_('   等待 SSO 自动登录完成...', '   Waiting for SSO auto-login to complete...'))
+    logging.info(_('   💡 原理：只要 SSO cookies 有效，将完全自动化完成登录', '   💡 If SSO cookies are valid, login can complete automatically.'))
 
     # 有头模式下使用更长的等待时间（5 分钟），给用户足够时间选择账号
     max_wait = 300 if not headless else 15
 
     if not headless:
         logging.info('')
-        logging.info('🌐 有头模式已启用')
-        logging.info(f'   - 最多等待 {max_wait} 秒（5分钟）')
-        logging.info('   - 如果看到账号选择页面，请手动选择要使用的账号')
-        logging.info('   - 选择完成后，程序会自动继续')
+        logging.info(_('🌐 有头模式已启用', '🌐 Headful mode is enabled'))
+        logging.info(_('   - 最多等待 {seconds} 秒（5分钟）', '   - Waiting up to {seconds} seconds (5 minutes)', seconds=max_wait))
+        logging.info(_('   - 如果看到账号选择页面，请手动选择要使用的账号', '   - If you see an account picker, manually select the account to use'))
+        logging.info(_('   - 选择完成后，程序会自动继续', '   - After selection, the program will continue automatically'))
         logging.info('')
 
     try:
@@ -722,13 +723,13 @@ async def _navigate_to_moodle_and_wait(page, moodle_domain: str, moodle_url: str
         current_url = page.url
         page_content = await page.content()
 
-        logging.info(f'📍 最终URL: {current_url}')
-        logging.debug(f'🔍 是否经历过 SSO 重定向: {visited_sso}')
+        logging.info(_('📍 最终URL: {url}', '📍 Final URL: {url}', url=current_url))
+        logging.debug(_('🔍 是否经历过 SSO 重定向: {visited}', '🔍 Visited SSO redirect: {visited}', visited=visited_sso))
 
         return visited_sso, current_url, page_content
 
     except Exception as e:
-        logging.error(f'❌ 导航出错: {e}')
+        logging.error(_('❌ 导航出错: {error}', '❌ Navigation error: {error}', error=e))
         return False, page.url, ''
 
 
@@ -753,12 +754,12 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
     # 在有头模式下，如果检测到账号选择页面，返回 0（未确定）而不是 -1（失败）
     # 这样主循环会继续等待，给用户时间选择账号
     if not headless and ('login.microsoftonline.com' in current_url or 'accounts.google.com' in current_url):
-        logging.info('⏸️  仍在账号选择页面，继续等待...')
+        logging.info(_('⏸️  仍在账号选择页面，继续等待...', '⏸️  Still on account selection page; continuing to wait...'))
         return 0  # 返回未确定，让循环继续
 
     # 检查是否在登录页面
     if '/login' in current_url.lower() or 'accounts.microsoft' in current_url or 'accounts.google' in current_url:
-        logging.warning('⚠️  仍然在登录/认证页面，登录可能失败')
+        logging.warning(_('⚠️  仍然在登录/认证页面，登录可能失败', '⚠️  Still on login/authentication page; login may have failed'))
         return -1
 
     # 检查错误标志
@@ -774,20 +775,20 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
 
     for indicator in error_indicators:
         if indicator in page_content:
-            logging.warning(f'⚠️  页面中检测到错误指示: {indicator}')
+            logging.warning(_('⚠️  页面中检测到错误指示: {indicator}', '⚠️  Detected error indicator on page: {indicator}', indicator=indicator))
             if _is_headless_moodle_auth_replay_failure(current_url, page_content, headless):
-                logging.info('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复')
-                logging.info('   建议改用默认有头模式重新初始化：moodle-dl --init --sso')
-                logging.info('   如果设置了 MOODLE_DL_HEADLESS=1 或 MOODLE_DL_HEADFUL=0，请移除该设置')
+                logging.info(_('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复', '💡 This is not a browser type issue; headless mode could not restore the existing SSO state'))
+                logging.info(_('   建议改用默认有头模式重新初始化：moodle-dl --init --sso', '   Recommended: rerun initialization in default headful mode: moodle-dl --init --sso'))
+                logging.info(_('   如果设置了 MOODLE_DL_HEADLESS=1 或 MOODLE_DL_HEADFUL=0，请移除该设置', '   If MOODLE_DL_HEADLESS=1 or MOODLE_DL_HEADFUL=0 is set, remove that setting'))
             return -1
 
     # 检查成功标志
     if 'login/logout.php' in page_content or visited_sso:
-        logging.debug('✅ 检测到登录成功标志')
+        logging.debug(_('✅ 检测到登录成功标志', '✅ Login success indicator detected'))
         return 1
 
     # 状态未确定
-    logging.debug('⚠️  无法确定登录状态')
+    logging.debug(_('⚠️  无法确定登录状态', '⚠️  Unable to determine login status'))
     return 0
 
 
@@ -835,13 +836,13 @@ async def _save_session_cookies(context, auth_manager) -> bool:
         True 如果保存成功, False 否则
     """
     if not auth_manager:
-        logging.error('❌ SSO登录失败: 必须提供 AuthSessionManager')
-        logging.error('   这是v2架构的要求，数据库必须可用')
+        logging.error(_('❌ SSO登录失败: 必须提供 AuthSessionManager', '❌ SSO login failed: AuthSessionManager is required'))
+        logging.error(_('   这是v2架构的要求，数据库必须可用', '   This is required by the v2 architecture; the database must be available'))
         return False
     
     try:
         updated_cookies = await context.cookies()
-        Log.info(f'📦 获取到 {len(updated_cookies)} 个 cookies')
+        Log.info(_('📦 获取到 {count} 个 cookies', '📦 Retrieved {count} cookies', count=len(updated_cookies)))
 
         # 显示关键 cookies（显示完整值来对比）
         for cookie in updated_cookies:
@@ -851,15 +852,15 @@ async def _save_session_cookies(context, auth_manager) -> bool:
         # 保存 cookies 到数据库
         session_id = auth_manager.save_sso_cookies(updated_cookies)
         if not session_id:
-            logging.error('❌ 保存 cookies 到数据库失败')
+            logging.error(_('❌ 保存 cookies 到数据库失败', '❌ Failed to save cookies to the database'))
             return False
 
-        logging.info(f'💾 Cookies 已保存到数据库: 会话 {session_id}')
-        logging.info(f'   共 {len(updated_cookies)} 个 cookies')
+        logging.info(_('💾 Cookies 已保存到数据库: 会话 {session_id}', '💾 Cookies saved to database: session {session_id}', session_id=session_id))
+        logging.info(_('   共 {count} 个 cookies', '   {count} cookies in total', count=len(updated_cookies)))
         return True
         
     except Exception as e:
-        logging.error(f'❌ 保存 cookies 时出错: {e}')
+        logging.error(_('❌ 保存 cookies 时出错: {error}', '❌ Error while saving cookies: {error}', error=e))
         return False
 
 
@@ -896,17 +897,17 @@ async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15, h
                 on_account_selection_page = True
                 if not headless:
                     logging.info('')
-                    logging.info('⏸️  检测到账号选择页面')
-                    logging.info(f'   当前URL: {current_url}')
-                    logging.info('   💡 请在浏览器窗口中选择要使用的账号')
-                    logging.info('   ⏳ 等待你完成选择...')
+                    logging.info(_('⏸️  检测到账号选择页面', '⏸️  Account selection page detected'))
+                    logging.info(_('   当前URL: {url}', '   Current URL: {url}', url=current_url))
+                    logging.info(_('   💡 请在浏览器窗口中选择要使用的账号', '   💡 Select the account to use in the browser window'))
+                    logging.info(_('   ⏳ 等待你完成选择...', '   ⏳ Waiting for you to finish selection...'))
                     logging.info('')
 
         # 如果访问过 SSO 并且现在回到 Moodle 域名，说明重定向完成
         if visited_sso and moodle_domain in current_url:
             logging.debug(f'✓ SSO 重定向完成，已返回 Moodle: {current_url}')
             if not headless and on_account_selection_page:
-                logging.info('✅ 账号选择完成，继续执行...')
+                logging.info(_('✅ 账号选择完成，继续执行...', '✅ Account selection completed; continuing...'))
             break
 
         if not visited_sso and moodle_domain in current_url:
@@ -964,7 +965,7 @@ async def _setup_browser_context(browser, storage_state: dict):
         validated_cookies.append(cookie)
 
     if skipped_count > 0:
-        logging.info(f'🧹 已跳过 {skipped_count} 个无效 cookies（缺少必要字段）')
+        logging.info(_('🧹 已跳过 {count} 个无效 cookies（缺少必要字段）', '🧹 Skipped {count} invalid cookies (missing required fields)', count=skipped_count))
 
     # 更新 storage state，只包含有效的 cookies
     validated_storage_state = {
@@ -972,18 +973,18 @@ async def _setup_browser_context(browser, storage_state: dict):
         'origins': storage_state.get('origins', [])
     }
 
-    logging.info(f'✓ 准备加载 {len(validated_cookies)} 个有效 cookies')
+    logging.info(_('✓ 准备加载 {count} 个有效 cookies', '✓ Preparing to load {count} valid cookies', count=len(validated_cookies)))
 
     try:
         context = await browser.new_context(
             storage_state=validated_storage_state,
             **context_options
         )
-        logging.info('✓ Storage State 已加载（所有有效 cookies 已注入）')
+        logging.info(_('✓ Storage State 已加载（所有有效 cookies 已注入）', '✓ Storage State loaded (all valid cookies injected)'))
         return context
     except Exception as e:
-        logging.warning(f'⚠️  Storage State 加载失败: {e}')
-        logging.info('   回退到创建空白 context...')
+        logging.warning(_('⚠️  Storage State 加载失败: {error}', '⚠️  Storage State failed to load: {error}', error=e))
+        logging.info(_('   回退到创建空白 context...', '   Falling back to a blank context...'))
         return await browser.new_context(**context_options)
 
 
@@ -993,19 +994,19 @@ async def _handle_uncertain_login_status(current_url: str, page_content: str):
     
     职责: 单一 - 仅处理未知登录状态的调试和日志
     """
-    logging.warning('⚠️  无法确定登录状态')
-    logging.info(f'   当前URL: {current_url}')
-    logging.info('   页面中未找到 logout 链接')
-    logging.info('   未检测到 SSO 重定向')
+    logging.warning(_('⚠️  无法确定登录状态', '⚠️  Unable to determine login status'))
+    logging.info(_('   当前URL: {url}', '   Current URL: {url}', url=current_url))
+    logging.info(_('   页面中未找到 logout 链接', '   No logout link was found on the page'))
+    logging.info(_('   未检测到 SSO 重定向', '   No SSO redirect was detected'))
 
     # 保存调试信息
     debug_path = '/tmp/moodle_login_uncertain.html'
     try:
         with open(debug_path, 'w', encoding='utf-8') as f:
             f.write(page_content)
-        logging.debug(f'📝 已保存页面内容到: {debug_path}')
+        logging.debug(_('📝 已保存页面内容到: {path}', '📝 Saved page content to: {path}', path=debug_path))
     except Exception as e:
-        logging.debug(f'保存调试文件失败: {e}')
+        logging.debug(_('保存调试文件失败: {error}', 'Failed to save debug file: {error}', error=e))
 
 
 async def _check_login_errors(page_content: str, visited_sso: bool) -> bool:
@@ -1031,12 +1032,12 @@ async def _check_login_errors(page_content: str, visited_sso: bool) -> bool:
     has_error = any(indicator in page_content for indicator in error_indicators)
 
     if has_error and not visited_sso:
-        logging.warning('⚠️  页面显示未登录，且未经历 SSO 重定向')
-        logging.warning('⚠️  SSO cookies 可能已完全过期')
+        logging.warning(_('⚠️  页面显示未登录，且未经历 SSO 重定向', '⚠️  Page indicates not logged in, and no SSO redirect occurred'))
+        logging.warning(_('⚠️  SSO cookies 可能已完全过期', '⚠️  SSO cookies may be fully expired'))
         logging.info('')
-        logging.info('💡 解决方案：')
-        logging.info('   在浏览器中访问 Moodle 并完成 SSO 登录')
-        logging.info('   之后将能够完全自动化')
+        logging.info(_('💡 解决方案：', '💡 Solution:'))
+        logging.info(_('   在浏览器中访问 Moodle 并完成 SSO 登录', '   Visit Moodle in your browser and complete SSO login'))
+        logging.info(_('   之后将能够完全自动化', '   After that, automation should work'))
         logging.info('')
         return True
     
@@ -1059,19 +1060,19 @@ async def _is_on_login_page(current_url: str, page) -> bool:
     if 'login' in current_url.lower() or 'auth' in current_url.lower():
         # 区分不同的登录页面类型
         if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
-            logging.warning('⚠️  Playwright 停留在 SSO 授权页面')
-            logging.info('   原因：需要额外的交互式验证（Playwright 自动化无法完成）')
-            logging.info('   但这不代表 SSO cookies 完全过期！')
-            logging.debug('   💡 Playwright 自动登录失败，将回退到浏览器导出的 cookies')
+            logging.warning(_('⚠️  Playwright 停留在 SSO 授权页面', '⚠️  Playwright is stuck on the SSO authorization page'))
+            logging.info(_('   原因：需要额外的交互式验证（Playwright 自动化无法完成）', '   Reason: extra interactive verification is required and Playwright cannot complete it automatically'))
+            logging.info(_('   但这不代表 SSO cookies 完全过期！', '   This does not necessarily mean the SSO cookies are fully expired.'))
+            logging.debug(_('   💡 Playwright 自动登录失败，将回退到浏览器导出的 cookies', '   💡 Playwright auto-login failed; falling back to browser-exported cookies'))
         else:
-            logging.warning('⚠️  Playwright 停留在 Moodle 登录页面')
-            logging.info('   原因：SSO cookies 可能已过期，或需要重新验证')
+            logging.warning(_('⚠️  Playwright 停留在 Moodle 登录页面', '⚠️  Playwright is stuck on the Moodle login page'))
+            logging.info(_('   原因：SSO cookies 可能已过期，或需要重新验证', '   Reason: SSO cookies may be expired or re-verification may be required'))
 
         # 保存当前页面截图（调试用）
         screenshot_path = '/tmp/moodle_sso_login_failed.png'
         try:
             await page.screenshot(path=screenshot_path)
-            logging.debug(f'📸 已保存截图到: {screenshot_path}')
+            logging.debug(_('📸 已保存截图到: {path}', '📸 Saved screenshot to: {path}', path=screenshot_path))
         except Exception:
             pass
 
@@ -1110,7 +1111,7 @@ async def auto_login_with_sso(
     try:
         from playwright.async_api import async_playwright
 
-        logging.info('🚀 正在启动自动 SSO 登录...')
+        logging.info(_('🚀 正在启动自动 SSO 登录...', '🚀 Starting automatic SSO login...'))
 
         # 1. 提取所有 cookies（完整复制用户浏览器状态）
         all_cookies = extract_all_cookies_from_browser(
@@ -1118,13 +1119,13 @@ async def auto_login_with_sso(
         )
 
         if len(all_cookies) == 0:
-            logging.warning('⚠️  没有找到任何 cookies')
-            logging.info('💡 请先在浏览器中登录一次 Moodle（完成SSO认证）')
-            logging.info('   然后 moodle-dl 将能够自动刷新 MoodleSession')
+            logging.warning(_('⚠️  没有找到任何 cookies', '⚠️  No cookies found'))
+            logging.info(_('💡 请先在浏览器中登录一次 Moodle（完成SSO认证）', '💡 First log in to Moodle once in your browser (complete SSO authentication)'))
+            logging.info(_('   然后 moodle-dl 将能够自动刷新 MoodleSession', '   Then moodle-dl will be able to refresh MoodleSession automatically'))
             return False
 
-        logging.info(f'✓ 准备将 {len(all_cookies)} 个 cookies 迁移到 Playwright 浏览器')
-        logging.info('   💡 原理：完整复制用户浏览器状态，实现自动化登录')
+        logging.info(_('✓ 准备将 {count} 个 cookies 迁移到 Playwright 浏览器', '✓ Preparing to migrate {count} cookies into the Playwright browser', count=len(all_cookies)))
+        logging.info(_('   💡 原理：完整复制用户浏览器状态，实现自动化登录', '   💡 This copies the browser session state to enable automated login'))
 
         # 2. 准备 Storage State（Playwright 的推荐方式）
         # 关键改进：使用 storageState 而不是手动 add_cookies
@@ -1134,7 +1135,7 @@ async def auto_login_with_sso(
             'origins': []  # 可选，用于存储 localStorage
         }
 
-        logging.info(f'   准备 Storage State: {len(all_cookies)} 个 cookies')
+        logging.info(_('   准备 Storage State: {count} 个 cookies', '   Preparing Storage State: {count} cookies', count=len(all_cookies)))
 
         # 3. 启动 Playwright 浏览器并使用 Storage State（原子函数）
         async with async_playwright() as p:
@@ -1165,7 +1166,7 @@ async def auto_login_with_sso(
                     if login_status == -1:
                         # 登录失败
                         if not headless and attempt < max_attempts - 1:
-                            logging.info('⏳ 等待用户完成操作...（重试中）')
+                            logging.info(_('⏳ 等待用户完成操作...（重试中）', '⏳ Waiting for you to finish the operation... (retrying)'))
                             continue
                         await browser.close()
                         return False
@@ -1173,9 +1174,9 @@ async def auto_login_with_sso(
                     elif login_status == 1:
                         # 登录成功
                         if visited_sso:
-                            Log.success('✅ SSO 自动登录成功！（经历完整 SSO 重定向）')
+                            Log.success(_('✅ SSO 自动登录成功！（经历完整 SSO 重定向）', '✅ SSO auto-login succeeded (full SSO redirect completed)'))
                         else:
-                            Log.success('✅ SSO 自动登录成功！（使用现有 cookies）')
+                            Log.success(_('✅ SSO 自动登录成功！（使用现有 cookies）', '✅ SSO auto-login succeeded (using existing cookies)'))
 
                         # 5 & 6. 提取并保存 cookies（原子函数）
                         save_success = await _save_session_cookies(context, auth_manager)
@@ -1188,7 +1189,7 @@ async def auto_login_with_sso(
                         if not headless:
                             # 有头模式：继续等待用户操作
                             if attempt < max_attempts - 1:
-                                logging.info(f'⏳ 继续等待...（第 {attempt + 1}/{max_attempts} 次尝试）')
+                                logging.info(_('⏳ 继续等待...（第 {attempt}/{max_attempts} 次尝试）', '⏳ Continuing to wait... (attempt {attempt}/{max_attempts})', attempt=attempt + 1, max_attempts=max_attempts))
                                 continue
 
                         # 无头模式或已达到最大尝试次数
@@ -1197,18 +1198,18 @@ async def auto_login_with_sso(
                         return False
 
             except Exception as page_error:
-                logging.error(f'❌ 页面加载出错: {page_error}')
+                logging.error(_('❌ 页面加载出错: {error}', '❌ Page loading error: {error}', error=page_error))
 
                 # 尝试获取当前状态
                 try:
                     current_url = page.url
-                    logging.info(f'📍 出错时的URL: {current_url}')
+                    logging.info(_('📍 出错时的URL: {url}', '📍 URL at time of error: {url}', url=current_url))
 
                     # 检查是否在 SSO 提供商页面
                     if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
-                        logging.info('💡 当前在 SSO 提供商页面')
-                        logging.info('   这可能意味着需要重新认证')
-                        logging.info('   建议：在浏览器中手动登录一次，然后重试')
+                        logging.info(_('💡 当前在 SSO 提供商页面', '💡 Currently on an SSO provider page'))
+                        logging.info(_('   这可能意味着需要重新认证', '   This may mean re-authentication is required'))
+                        logging.info(_('   建议：在浏览器中手动登录一次，然后重试', '   Recommendation: log in once manually in the browser, then retry'))
                 except Exception:
                     pass
 
@@ -1216,25 +1217,25 @@ async def auto_login_with_sso(
                 return False
 
     except ImportError as e:
-        logging.error(f'❌ 缺少依赖: {e}')
-        logging.info('💡 请安装: pip install playwright browser-cookie3')
-        logging.info('   然后运行: playwright install firefox')
+        logging.error(_('❌ 缺少依赖: {error}', '❌ Missing dependency: {error}', error=e))
+        logging.info(_('💡 请安装: pip install playwright browser-cookie3', '💡 Install: pip install playwright browser-cookie3'))
+        logging.info(_('   然后运行: playwright install firefox', '   Then run: playwright install firefox'))
         return False
 
     except Exception as e:
         error_str = str(e)
         # 检测 Playwright 浏览器未安装的错误
         if "Executable doesn't exist" in error_str and "ms-playwright" in error_str:
-            logging.error(f'❌ 自动登录失败: {e}')
+            logging.error(_('❌ 自动登录失败: {error}', '❌ Automatic login failed: {error}', error=e))
             logging.error('')
             logging.error('╔════════════════════════════════════════════════════════════╗')
-            logging.error('║  Playwright 浏览器未安装！                                   ║')
+            logging.error(_('║  Playwright 浏览器未安装！                                   ║', '║  Playwright browsers are not installed!                    ║'))
             logging.error('║                                                             ║')
-            logging.error('║  请运行以下命令安装浏览器：                                  ║')
+            logging.error(_('║  请运行以下命令安装浏览器：                                  ║', '║  Run the following command to install a browser:            ║'))
             logging.error('║                                                             ║')
             logging.error('║     playwright install chromium                            ║')
             logging.error('║                                                             ║')
-            logging.error('║  或者安装所有浏览器：                                        ║')
+            logging.error(_('║  或者安装所有浏览器：                                        ║', '║  Or install all browsers:                                   ║'))
             logging.error('║                                                             ║')
             logging.error('║     playwright install                                      ║')
             logging.error('║                                                             ║')
@@ -1242,7 +1243,7 @@ async def auto_login_with_sso(
             logging.error('╚════════════════════════════════════════════════════════════╝')
             logging.error('')
         else:
-            logging.error(f'❌ 自动登录失败: {e}')
+            logging.error(_('❌ 自动登录失败: {error}', '❌ Automatic login failed: {error}', error=e))
             import traceback
             logging.debug(traceback.format_exc())
         return False

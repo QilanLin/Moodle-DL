@@ -22,6 +22,7 @@ from moodle_dl.cli.authenticators import (
     AuthenticationError,
     ConfigurationTransactionError,
 )
+from moodle_dl.cli.localization import tr as _
 
 
 class MoodleWizard:
@@ -57,34 +58,34 @@ class MoodleWizard:
         """
         try:
             # 步骤 1：获取 Moodle URL
-            logging.info('📋 获取 Moodle URL...')
+            logging.info(_('📋 获取 Moodle URL...', '📋 Getting Moodle URL...'))
             moodle_url = self.interactively_get_moodle_url(use_stored_url)
 
             # 步骤 2：选择认证器
             if self.opts.sso or self.opts.token is not None:
-                logging.info('🔑 使用 SSO 认证器')
+                logging.info(_('🔑 使用 SSO 认证器', '🔑 Using SSO authenticator'))
                 authenticator = SSOAuthenticator(self.config, self.opts, moodle_url)
             else:
-                logging.info('🔑 使用普通登录认证器')
+                logging.info(_('🔑 使用普通登录认证器', '🔑 Using normal login authenticator'))
                 authenticator = NormalAuthenticator(self.config, self.opts, moodle_url)
 
             # 步骤 3：执行认证流程（包括前置配置、获取 token、原子性提交）
-            logging.info('🚀 开始认证流程...')
+            logging.info(_('🚀 开始认证流程...', '🚀 Starting authentication flow...'))
             token = authenticator.execute()
 
             return token
 
         except AuthenticationError as e:
-            logging.error(f'❌ 认证失败: {e}')
-            Log.error(f'认证失败: {e}')
+            logging.error(_('❌ 认证失败: {error}', '❌ Authentication failed: {error}', error=e))
+            Log.error(_('认证失败: {error}', 'Authentication failed: {error}', error=e))
             raise
         except ConfigurationTransactionError as e:
-            logging.error(f'❌ 配置提交失败: {e}')
-            Log.error(f'配置提交失败: {e}')
+            logging.error(_('❌ 配置提交失败: {error}', '❌ Failed to save configuration: {error}', error=e))
+            Log.error(_('配置提交失败: {error}', 'Failed to save configuration: {error}', error=e))
             raise
         except Exception as e:
-            logging.error(f'❌ 未预期的错误: {e}')
-            Log.error(f'未预期的错误: {e}')
+            logging.error(_('❌ 未预期的错误: {error}', '❌ Unexpected error: {error}', error=e))
+            Log.error(_('未预期的错误: {error}', 'Unexpected error: {error}', error=e))
             raise
 
     def interactively_get_moodle_url(self, use_stored_url: bool) -> MoodleURL:
@@ -96,7 +97,9 @@ class MoodleWizard:
         url_ok = False
         while not url_ok:
             url_ok = True
-            moodle_url_input = input('Moodle 的 URL（可省略 http(s)://）:   ').strip()
+            moodle_url_input = input(
+                _('Moodle 的 URL（可省略 http(s)://）:   ', 'Moodle URL (http(s):// may be omitted):   ')
+            ).strip()
 
             # 规范化 URL（自动添加 https:// 如果缺少协议）
             moodle_url = normalize_moodle_url(moodle_url_input)
@@ -104,9 +107,14 @@ class MoodleWizard:
             use_http = False
             if moodle_url.startswith('http://'):
                 Log.warning(
-                    '警告：你输入了不安全的 URL！你确定该 Moodle 无法通过 `https://` 访问吗？'
-                    + '你的所有数据将以不安全的方式传输！如果你的 Moodle 可以通过 `https://` 访问，'
-                    + '请使用 `https://` 重新运行该过程以保护你的数据。'
+                    _(
+                        '警告：你输入了不安全的 URL！你确定该 Moodle 无法通过 `https://` 访问吗？'
+                        + '你的所有数据将以不安全的方式传输！如果你的 Moodle 可以通过 `https://` 访问，'
+                        + '请使用 `https://` 重新运行该过程以保护你的数据。',
+                        'Warning: you entered an insecure URL. Are you sure this Moodle cannot be reached via `https://`? '
+                        + 'All your data will be transferred insecurely. If your Moodle is available via `https://`, '
+                        + 'rerun this process with `https://` to protect your data.'
+                    )
                 )
                 use_http = True
 

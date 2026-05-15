@@ -5,6 +5,14 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 import moodle_dl.cli as cli
+from moodle_dl.cli.localization import set_init_language
+
+
+@pytest.fixture(autouse=True)
+def reset_init_language():
+    set_init_language("zh")
+    yield
+    set_init_language("zh")
 
 
 def make_config(is_present=False):
@@ -22,6 +30,7 @@ def test_init_config_exits_when_existing_config_is_not_overridden():
     opts = make_opts()
 
     with (
+        patch("moodle_dl.cli.Cutie.select", return_value=0),
         patch("moodle_dl.cli.Cutie.prompt_yes_or_no", return_value=False) as prompt,
         patch("moodle_dl.cli.Log.error_str", return_value="overwrite?") as error_str,
         patch("moodle_dl.cli.NotificationsWizard") as notifications_wizard,
@@ -44,6 +53,7 @@ def test_init_config_runs_all_wizards_and_prints_unix_periodic_help():
     opts = make_opts(path="/workspace/course")
 
     with (
+        patch("moodle_dl.cli.Cutie.select", return_value=0),
         patch("moodle_dl.cli.NotificationsWizard") as notifications_wizard,
         patch("moodle_dl.cli.MoodleWizard") as moodle_wizard,
         patch("moodle_dl.cli.ConfigWizard") as config_wizard,
@@ -75,7 +85,7 @@ def test_init_config_runs_all_wizards_and_prints_unix_periodic_help():
     assert any("crontab -e" in message for message in periodic_messages)
     assert any('cd "/abs//workspace/course"' in message for message in periodic_messages)
     assert any('"/abs/moodle-dl"' in message for message in periodic_messages)
-    assert print_mock.call_count == 3
+    assert print_mock.call_count == 5
 
 
 def test_init_config_logs_windows_periodic_help():
@@ -83,6 +93,7 @@ def test_init_config_logs_windows_periodic_help():
     opts = make_opts()
 
     with (
+        patch("moodle_dl.cli.Cutie.select", return_value=0),
         patch("moodle_dl.cli.NotificationsWizard"),
         patch("moodle_dl.cli.MoodleWizard"),
         patch("moodle_dl.cli.ConfigWizard") as config_wizard,
@@ -97,6 +108,29 @@ def test_init_config_logs_windows_periodic_help():
     info_messages = [args[0] for args, _ in log.info.call_args_list]
     assert any("如果你想定期运行 moodle-dl" in message for message in info_messages)
     assert not any("crontab -e" in message for message in info_messages)
+
+
+def test_init_config_uses_english_language_selection_for_init_prompts():
+    config = make_config(is_present=True)
+    opts = make_opts()
+
+    with (
+        patch("moodle_dl.cli.Cutie.select", return_value=1),
+        patch("moodle_dl.cli.Cutie.prompt_yes_or_no", return_value=False) as prompt,
+        patch("moodle_dl.cli.Log.error_str", return_value="overwrite?") as error_str,
+        patch("moodle_dl.cli.NotificationsWizard") as notifications_wizard,
+        patch("moodle_dl.cli.MoodleWizard") as moodle_wizard,
+        patch("moodle_dl.cli.ConfigWizard") as config_wizard,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            cli.init_config(config, opts)
+
+    assert exc_info.value.code == 0
+    error_str.assert_called_once_with("Do you want to overwrite the existing configuration?")
+    prompt.assert_called_once_with("overwrite?")
+    notifications_wizard.assert_not_called()
+    moodle_wizard.assert_not_called()
+    config_wizard.assert_not_called()
 
 
 def test_cli_public_exports_include_wizard_classes():
