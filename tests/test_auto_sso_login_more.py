@@ -88,6 +88,26 @@ def test_extract_all_cookies_filters_when_user_selects_account():
     filter_cookies.assert_called_once_with(cookies, selected)
 
 
+def test_url_hostname_matches_ignores_redirect_uri_query():
+    login_url = (
+        'https://login.microsoftonline.com/emckclac.onmicrosoft.com/oauth2/authorize'
+        '?redirect_uri=https%3A%2F%2Fkeats.kcl.ac.uk%2Fauth%2Foidc%2F'
+    )
+
+    assert auto_sso_login._url_hostname_matches(
+        'https://keats.kcl.ac.uk/my/', 'keats.kcl.ac.uk'
+    )
+    assert auto_sso_login._url_hostname_matches(
+        'https://keats.kcl.ac.uk/my/', 'https://keats.kcl.ac.uk/'
+    )
+    assert auto_sso_login._url_hostname_matches(
+        'https://keats.kcl.ac.uk/my/', 'keats.kcl.ac.uk/'
+    )
+    assert not auto_sso_login._url_hostname_matches(login_url, 'keats.kcl.ac.uk')
+    assert auto_sso_login._is_account_selection_url(login_url)
+    assert auto_sso_login._is_sso_provider_url(login_url)
+
+
 def test_read_all_cookies_from_standard_browser_normalizes_cookie_fields(monkeypatch):
     fake_browser_cookie3 = make_fake_browser_cookie3(
         firefox=MagicMock(return_value=[
@@ -227,6 +247,31 @@ async def test_wait_for_sso_redirect_logs_headful_account_selection_and_return()
 
 
 @pytest.mark.asyncio
+async def test_wait_for_sso_redirect_does_not_treat_redirect_uri_as_moodle_return():
+    login_url = (
+        'https://login.microsoftonline.com/emckclac.onmicrosoft.com/oauth2/authorize'
+        '?redirect_uri=https%3A%2F%2Fkeats.kcl.ac.uk%2Fauth%2Foidc%2F'
+    )
+
+    class FakePage:
+        def __init__(self):
+            self.wait_for_timeout = AsyncMock()
+
+        @property
+        def url(self):
+            return login_url
+
+    page = FakePage()
+
+    result = await auto_sso_login._wait_for_sso_redirect(
+        page, 'keats.kcl.ac.uk', max_wait=2, headless=False
+    )
+
+    assert result is True
+    assert page.wait_for_timeout.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_save_session_cookies_handles_context_errors():
     context = AsyncMock()
     context.cookies = AsyncMock(side_effect=RuntimeError('context closed'))
@@ -287,7 +332,7 @@ async def test_auto_login_success_closes_browser_and_saves_cookies(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_auto_login_headful_retries_failed_status_then_succeeds(monkeypatch):
+async def test_auto_login_headful_failed_status_does_not_refresh_moodle(monkeypatch):
     install_fake_playwright(monkeypatch)
     browser, context, _page = make_browser_flow()
 
@@ -300,7 +345,7 @@ async def test_auto_login_headful_retries_failed_status_then_succeeds(monkeypatc
         patch('moodle_dl.auto_sso_login._navigate_to_moodle_and_wait', AsyncMock(
             return_value=(False, 'https://login.microsoftonline.com/', '<html>login</html>')
         )) as navigate,
-        patch('moodle_dl.auto_sso_login._check_final_login_status', AsyncMock(side_effect=[-1, 1])),
+        patch('moodle_dl.auto_sso_login._check_final_login_status', AsyncMock(return_value=-1)),
         patch('moodle_dl.auto_sso_login._save_session_cookies', AsyncMock(return_value=True)),
     ):
         result = await auto_sso_login.auto_login_with_sso(
@@ -310,8 +355,8 @@ async def test_auto_login_headful_retries_failed_status_then_succeeds(monkeypatc
             auth_manager=MagicMock(),
         )
 
-    assert result is True
-    assert navigate.await_count == 2
+    assert result is False
+    navigate.assert_awaited_once()
     browser.close.assert_awaited_once()
 
 

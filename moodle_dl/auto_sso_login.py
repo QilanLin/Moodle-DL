@@ -28,6 +28,48 @@ from moodle_dl.utils import Log
 from moodle_dl.cli.localization import tr as _
 
 
+def _url_hostname_matches(url: str, expected_domain: str) -> bool:
+    """
+    Return True only when the URL hostname equals the expected domain.
+
+    Microsoft login URLs can contain redirect_uri=https://keats... in the query
+    string while the browser is still on login.microsoftonline.com, so a plain
+    substring check is not reliable here.
+    """
+    if not url or not expected_domain:
+        return False
+
+    expected_parts = urllib.parse.urlparse(expected_domain)
+    expected_host = expected_parts.hostname
+    if expected_host is None:
+        expected_host = (
+            urllib.parse.urlparse(f'//{expected_domain}').hostname
+            or expected_domain.split('/', 1)[0]
+        )
+
+    expected_host = expected_host.lower().strip('.')
+    current_host = (urllib.parse.urlparse(url).hostname or '').lower().strip('.')
+
+    return bool(current_host) and current_host == expected_host
+
+
+def _is_sso_provider_url(url: str) -> bool:
+    host = (urllib.parse.urlparse(url or '').hostname or '').lower()
+    return any(
+        provider in host
+        for provider in ('microsoft', 'google', 'login.live.com')
+    )
+
+
+def _is_account_selection_url(url: str) -> bool:
+    host = (urllib.parse.urlparse(url or '').hostname or '').lower()
+    return host in (
+        'login.microsoftonline.com',
+        'login.live.com',
+        'accounts.google.com',
+    )
+
+
 def extract_all_cookies_from_browser(
     browser_name: str,
     moodle_domain: str,
@@ -753,12 +795,17 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
     """
     # 在有头模式下，如果检测到账号选择页面，返回 0（未确定）而不是 -1（失败）
     # 这样主循环会继续等待，给用户时间选择账号
-    if not headless and ('login.microsoftonline.com' in current_url or 'accounts.google.com' in current_url):
+    if not headless and _is_account_selection_url(current_url):
         logging.info(_('⏸️  仍在账号选择页面，继续等待...', '⏸️  Still on account selection page; continuing to wait...'))
         return 0  # 返回未确定，让循环继续
 
     # 检查是否在登录页面
-    if '/login' in current_url.lower() or 'accounts.microsoft' in current_url or 'accounts.google' in current_url:
+    if (
+        _is_sso_provider_url(current_url)
+        or '/login' in current_url.lower()
+        or 'accounts.microsoft' in current_url
+        or 'accounts.google' in current_url
+    ):
         logging.warning(_('⚠️  仍然在登录/认证页面，登录可能失败', '⚠️  Still on login/authentication page; login may have failed'))
         return -1
 
@@ -886,14 +933,16 @@ async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15, h
         await page.wait_for_timeout(1000)  # 每次等待 1 秒
         current_url = page.url
 
+        on_moodle_domain = _url_hostname_matches(current_url, moodle_domain)
+
         # 检测是否在 SSO 提供商页面
-        if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
+        if _is_sso_provider_url(current_url):
             if not visited_sso:
                 visited_sso = True
                 logging.debug(f'🔐 检测到 SSO 重定向: {current_url}')
 
             # 检测是否在账号选择页面（ESTSSSOTILES 或 account picker 相关）
-            if not on_account_selection_page and ('login.microsoftonline.com' in current_url or 'accounts.google.com' in current_url):
+            if not on_account_selection_page and _is_account_selection_url(current_url):
                 on_account_selection_page = True
                 if not headless:
                     logging.info('')
@@ -904,13 +953,13 @@ async def _wait_for_sso_redirect(page, moodle_domain: str, max_wait: int = 15, h
                     logging.info('')
 
         # 如果访问过 SSO 并且现在回到 Moodle 域名，说明重定向完成
-        if visited_sso and moodle_domain in current_url:
+        if visited_sso and on_moodle_domain:
             logging.debug(f'✓ SSO 重定向完成，已返回 Moodle: {current_url}')
             if not headless and on_account_selection_page:
                 logging.info(_('✅ 账号选择完成，继续执行...', '✅ Account selection completed; continuing...'))
             break
 
-        if not visited_sso and moodle_domain in current_url:
+        if not visited_sso and on_moodle_domain:
             logging.debug(f'⏳ 等待可能的 SSO 重定向... (第{i+1}/{max_wait}秒)')
         elif not visited_sso:
             logging.debug(f'🔍 当前URL: {current_url}')
@@ -1150,9 +1199,10 @@ async def auto_login_with_sso(
             moodle_url = f'https://{moodle_domain}/' if not moodle_domain.startswith('http') else moodle_domain
 
             try:
-                # 在有头模式下，使用循环来持续检查登录状态
-                # 这样用户有时间手动选择账号
-                max_attempts = 10 if not headless else 1  # 有头模式最多尝试 10 次（5分钟）
+                # _navigate_to_moodle_and_wait already waits up to 5 minutes in
+                # headful mode. Re-running it would reload the account picker and
+                # interrupt manual Microsoft account selection.
+                max_attempts = 1
 
                 for attempt in range(max_attempts):
                     # 导航并等待重定向完成（原子函数）
@@ -1206,7 +1256,7 @@ async def auto_login_with_sso(
                     logging.info(_('📍 出错时的URL: {url}', '📍 URL at time of error: {url}', url=current_url))
 
                     # 检查是否在 SSO 提供商页面
-                    if 'microsoft' in current_url.lower() or 'google' in current_url.lower():
+                    if _is_sso_provider_url(current_url):
                         logging.info(_('💡 当前在 SSO 提供商页面', '💡 Currently on an SSO provider page'))
                         logging.info(_('   这可能意味着需要重新认证', '   This may mean re-authentication is required'))
                         logging.info(_('   建议：在浏览器中手动登录一次，然后重试', '   Recommendation: log in once manually in the browser, then retry'))
