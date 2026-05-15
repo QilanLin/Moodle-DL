@@ -35,7 +35,9 @@ def init_config(config: ConfigHelper, opts: MoodleDlOpts):
         if not do_override_input:
             sys.exit(0)
 
-    NotificationsWizard(config, opts).interactively_configure_all_services()
+    # 初始化时不再显示通知服务配置菜单；需要恢复时取消下一行注释即可。
+    # Do not show notification service configuration during init; uncomment the next line to restore it.
+    # NotificationsWizard(config, opts).interactively_configure_all_services()
 
     MoodleWizard(config, opts).interactively_acquire_token()
 

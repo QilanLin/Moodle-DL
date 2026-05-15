@@ -48,7 +48,7 @@ def test_init_config_exits_when_existing_config_is_not_overridden():
     config_wizard.assert_not_called()
 
 
-def test_init_config_runs_all_wizards_and_prints_unix_periodic_help():
+def test_init_config_skips_notifications_and_prints_unix_periodic_help():
     config = make_config(is_present=False)
     opts = make_opts(path="/workspace/course")
 
@@ -66,8 +66,7 @@ def test_init_config_runs_all_wizards_and_prints_unix_periodic_help():
 
         cli.init_config(config, opts)
 
-    notifications_wizard.assert_called_once_with(config, opts)
-    notifications_wizard.return_value.interactively_configure_all_services.assert_called_once_with()
+    notifications_wizard.assert_not_called()
     moodle_wizard.assert_called_once_with(config, opts)
     moodle_wizard.return_value.interactively_acquire_token.assert_called_once_with()
     config_wizard.assert_called_once_with(config, opts)
