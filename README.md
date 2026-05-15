@@ -3,27 +3,28 @@
     <h2>Moodle-DL</h2>
     一个用于批量下载 Moodle 课程资料的命令行工具。
     <br>
-    当前仓库为带中文界面和若干下载逻辑改动的维护分支。
+    当前仓库为支持中英双语初始化、默认有头 SSO 登录，并包含若干下载逻辑改动的维护分支。
 </div>
 
 ---
 
-`moodle-dl` 是一个控制台程序，用来下载 Moodle 课程中日常学习所需的内容。它还支持通知、增量下载、课程筛选，以及对多种 Moodle 模块和外部链接的处理。
+`moodle-dl` 是一个控制台程序，用来下载 Moodle 课程中日常学习所需的内容。它还支持通知、增量下载、课程筛选，以及对多种 Moodle 模块和外部链接的处理。首次初始化会先让你选择中文或 English，后续初始化提示会使用所选语言显示。
 
 ## 功能概览
 
 - 下载课程文件、作业、作业提交、Book、日历事件、论坛、Workshop、Lesson、Quiz、描述内容等。
 - 处理外部链接和外部文件，例如 OpenCast、YouTube、Sciebo、OwnCloud、Kaltura、Helixmedia、Google Drive 等。
 - 支持增量下载：再次运行时只下载新增或变更内容。
-- 支持通知：Telegram、Discord、XMPP、邮件等。
-- 支持配置向导，初始化和后续配置都可以通过 CLI 完成。
+- 支持通知：Telegram、Discord、XMPP、邮件等。通知不会在首次初始化中配置，需要时可通过独立命令启用。
+- 支持中文 / English 初始化向导，后续配置也可以通过 CLI 完成。
+- SSO 登录默认使用可见浏览器窗口，便于账号选择、MFA 和浏览器 cookies 复用。
 - 支持下载你已选课的课程，以及你可见的公开课程。
 
-开发讨论主要在 GitHub Issues：<https://github.com/C0D3D3V/Moodle-DL/issues>
+本分支源码：<https://github.com/QilanLin/Moodle-DL>。上游项目与历史讨论：<https://github.com/C0D3D3V/Moodle-DL/issues>
 
 ## 安装
 
-> 注意：这是一个带中文本地化和行为调整的源码分支，建议直接从源码安装，不要依赖 PyPI。
+> 注意：这是一个带中英双语初始化和行为调整的源码分支，建议直接从源码安装，不要依赖 PyPI。
 
 ### 环境要求
 
@@ -33,7 +34,7 @@
 ### 从源码安装
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/QilanLin/Moodle-DL.git
 cd Moodle-DL
 python3 -m pip install -e .
 ```
@@ -41,6 +42,28 @@ python3 -m pip install -e .
 这里使用的是 editable install。优点是：
 - 你 `git pull` 后通常不需要重新安装。
 - 本地代码修改会直接生效。
+
+### SSO 前置条件
+
+如果只使用普通账号密码或手动 token 登录，可以跳过本节。如果你要使用 `--sso`、浏览器 cookies 读取或 API token 自动提取，请先安装浏览器自动化依赖：
+
+```bash
+python3 -m pip install playwright browser-cookie3
+```
+
+然后安装 Playwright 使用的浏览器运行时。使用 Firefox 时运行：
+
+```bash
+python3 -m playwright install firefox
+```
+
+如果你主要使用 Chrome / Edge，安装 Chromium 运行时：
+
+```bash
+python3 -m playwright install chromium
+```
+
+`--init --sso` 默认会打开可见浏览器窗口。只有在服务器或 CI 等没有桌面环境的场景，才建议显式使用 `MOODLE_DL_HEADLESS=1`。
 
 ### 更稳的运行方式
 
@@ -82,6 +105,8 @@ python3 -c "import shutil; print(shutil.which('moodle-dl'))"
 
 ### 初始化配置
 
+`--init` 和 `--init --sso` 会先显示语言选择，你可以选择 `中文` 或 `English`。
+
 普通登录：
 
 ```bash
@@ -100,7 +125,7 @@ python3 -c "import shutil; print(shutil.which('moodle-dl'))"
 python3 -m moodle_dl.main --init --sso
 ```
 
-如果确实需要无头模式，可以显式设置：
+如果确实需要无头模式，例如在没有桌面环境的服务器或 CI 中运行，可以显式设置：
 
 ```bash
 MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
@@ -120,70 +145,29 @@ MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 
 ## 常用命令
 
-- 初始化配置：
+快速开始已经覆盖首次初始化、SSO 初始化、下载和帮助。下面是后续维护时更常用的命令：
+
+| 场景 | 命令 |
+| --- | --- |
+| 打开配置向导 | `./moodle-dl --config` |
+| Token 失效后重新获取 | `./moodle-dl --new-token` |
+| 使用 SSO 重新获取 Token | `./moodle-dl --new-token --sso` |
+| 刷新浏览器 Cookies | `./moodle-dl --refresh-cookies` |
+| 重试失败下载 | `./moodle-dl --retry-failed` |
+| 指定下载目录 | `./moodle-dl --path /your/download/path` |
+| 重置已下载文件状态 | `./moodle-dl --reset-downloaded-files` |
+| 重置已下载文件状态（中文别名） | `./moodle-dl --重置下载文件` |
+
+### 通知配置
+
+首次初始化不会再弹出通知服务选择菜单。需要通知功能时，请单独运行对应命令：
 
 ```bash
-./moodle-dl --init
-```
-
-- 使用 SSO 初始化配置：
-
-```bash
-./moodle-dl --init --sso
-```
-
-- 下载课程内容：
-
-```bash
-./moodle-dl
-```
-
-- 打开配置向导：
-
-```bash
-./moodle-dl --config
-```
-
-- Token 失效后重新获取：
-
-```bash
-./moodle-dl --new-token
-```
-
-- 使用 SSO 重新获取 Token：
-
-```bash
-./moodle-dl --new-token --sso
-```
-
-- 刷新浏览器 Cookies：
-
-```bash
-./moodle-dl --refresh-cookies
-```
-
-- 重试失败下载：
-
-```bash
-./moodle-dl --retry-failed
-```
-
-- 指定下载目录：
-
-```bash
-./moodle-dl --path /your/download/path
-```
-
-- 重置已下载文件状态：
-
-```bash
-./moodle-dl --reset-downloaded-files
-```
-
-中文别名：
-
-```bash
-./moodle-dl --重置下载文件
+./moodle-dl --change-notification-mail
+./moodle-dl --change-notification-telegram
+./moodle-dl --change-notification-discord
+./moodle-dl --change-notification-ntfy
+./moodle-dl --change-notification-xmpp
 ```
 
 ## 使用说明
@@ -195,8 +179,9 @@ MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 ### `--init`
 
 - 创建初始配置。
-- CLI 配置向导会引导你完成首次设置。
+- CLI 配置向导会先让你选择中文或 English，然后引导你完成首次设置。
 - 如果学校使用 SSO，可以额外加上 `--sso`。
+- 首次初始化不会配置通知服务；通知请使用 `--change-notification-*` 命令单独配置。
 - 如果后续保存的 token 被 Moodle 拒绝，可使用 `--new-token` 重新获取。
 - 如需自动化登录，也可以额外提供 `--username`、`--password` 或 `--token`。
 
@@ -221,8 +206,10 @@ MOODLE_DL_HEADLESS=1 ./moodle-dl --init --sso
 
 相较于上游版本，这个分支包含以下定制：
 
-- 完整中文本地化：界面、向导、日志和提示信息都尽量中文化。
+- 初始化流程支持中文 / English 选择；多数维护提示仍以中文体验优先。
 - 更适合实际使用的交互体验：配置向导支持更顺畅的前进/后退导航。
+- SSO 默认使用有头模式，更适合需要账号选择、MFA 或浏览器 cookies 迁移的学校登录流程。
+- 首次初始化跳过通知服务配置，避免不需要通知的用户被额外问题打断。
 - 下载逻辑调整：
   - `yt-dlp` 只在确实需要浏览器 cookies 的嵌入式视频场景启用，例如 `kalvidres`、`helixmedia`、部分 `LTI`。
   - 普通网页链接优先生成快捷方式，而不是盲目保存整页源码。
@@ -256,6 +243,18 @@ python3 -m moodle_dl.main --help
 ```
 
 如果你之前设置过 `MOODLE_DL_HEADLESS=1` 或 `MOODLE_DL_HEADFUL=0`，请先移除该环境变量。
+
+如果报错中包含 `Executable doesn't exist` 或 `ms-playwright`，通常是 Playwright 浏览器运行时没有安装：
+
+```bash
+python3 -m playwright install firefox
+```
+
+如果报错提示缺少 `browser-cookie3` 或 `playwright`，请先安装：
+
+```bash
+python3 -m pip install playwright browser-cookie3
+```
 
 如果浏览器里登录了多个 Microsoft / Google / 学校账号，建议：
 - 手动先在浏览器里选好正确账号
@@ -294,6 +293,20 @@ python3 -m pip install -e .
 - 状态数据库：`~/.moodle-dl/moodle_state.db`
 
 某些自定义运行目录下，也可能在当前目录生成对应的 `config.json`、`MoodleDL.log`、`moodle_state.db`。
+
+## 开发与测试
+
+运行测试：
+
+```bash
+python3 -m pytest
+```
+
+查看覆盖率时可以运行（需要 `pytest-cov`）：
+
+```bash
+python3 -m pytest --cov=moodle_dl --cov-report=term-missing
+```
 
 ## 安全说明
 
@@ -341,7 +354,7 @@ python3 -m pip install -e .
 
 ## 贡献
 
-如果你希望参与维护或提交改动，请查看 `CONTRIBUTING.md`。
+欢迎通过 GitHub Issues 或 Pull Request 反馈问题和提交改动。当前仓库暂未提供独立的 `CONTRIBUTING.md`，提交前请尽量保持改动聚焦，并运行相关测试。
 
 ## 许可证
 
