@@ -131,6 +131,9 @@ class File:
             'module_modname': self.module_modname,
             'content_type': self.content_type,
             'content_isexternalfile': 1 if self.content_isexternalfile else 0,
+            'content': self.content,
+            'text_content': self.text_content,
+            'html_content': self.html_content,
             'saved_to': self.saved_to,
             'time_stamp': self.time_stamp,
             'modified': 1 if self.modified else 0,
@@ -188,7 +191,7 @@ class File:
         except (KeyError, IndexError):
             sortorder = 0
 
-        return File(
+        file = File(
             file_id=row['file_id'],
             module_id=row['module_id'],
             section_name=row['section_name'],
@@ -220,12 +223,21 @@ class File:
             sortorder=sortorder,
         )
 
+        for attribute in ('content', 'text_content', 'html_content'):
+            try:
+                setattr(file, attribute, row[attribute])
+            except (KeyError, IndexError):
+                pass
+
+        return file
+
     INSERT = """INSERT INTO files
             (course_id, course_fullname, module_id, section_name, section_id,
             module_name, content_filepath, content_filename,
             content_fileurl, content_filesize, content_timemodified,
             module_modname, content_type, content_isexternalfile,
-            saved_to, time_stamp, modified, moved, deleted, notified,
+            content, text_content, html_content, saved_to,
+            time_stamp, modified, moved, deleted, notified,
             hash, old_file_id, download_status, download_attempts,
             last_download_at, last_failed_at, last_failed_reason,
             consecutive_failures, position_in_section,
@@ -234,7 +246,8 @@ class File:
             :section_name, :section_id, :module_name, :content_filepath,
             :content_filename, :content_fileurl, :content_filesize,
             :content_timemodified, :module_modname, :content_type,
-            :content_isexternalfile, :saved_to, :time_stamp,
+            :content_isexternalfile, :content, :text_content, :html_content,
+            :saved_to, :time_stamp,
             :modified, :moved, :deleted, :notified,  :hash,
             :old_file_id, :download_status, :download_attempts,
             :last_download_at, :last_failed_at, :last_failed_reason,

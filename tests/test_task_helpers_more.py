@@ -549,7 +549,12 @@ async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_fact
         await task._download_external_url_with_fallback()
 
     printer_cls.assert_called_once_with(task.opts.cookies_text, skip_cert_verify=False, headless=True)
-    printer.print_to_pdf.assert_awaited_once_with(leganto_url, task.file.saved_to, launch_parameters=None)
+    printer.print_to_pdf.assert_awaited_once_with(
+        leganto_url,
+        task.file.saved_to,
+        launch_parameters=None,
+        course_url='https://moodle.example.com/course/view.php?id=7',
+    )
     task.create_shortcut.assert_not_awaited()
     assert task.file.saved_to.endswith('Reading List.pdf')
 
@@ -603,7 +608,51 @@ async def test_leganto_pdf_download_uses_lti_launch_payload(task_factory):
         'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
         task.file.saved_to,
         launch_parameters=[{'name': 'id_token', 'value': 'signed-token'}],
+        course_url=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_retry_with_empty_url_uses_course_launch_fallback(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = 'not-json'
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock()
+
+        await task._download_leganto_reading_list_pdf()
+
+    printer.print_to_pdf.assert_awaited_once_with(
+        '',
+        task.file.saved_to,
+        launch_parameters=None,
+        course_url='https://moodle.example.com/course/view.php?id=7',
+    )
+
+
+def test_leganto_course_url_is_only_built_for_direct_reading_list(task_factory):
+    direct = task_factory(
+        content_fileurl='https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML',
+    )
+    assert direct._leganto_course_url() == 'https://moodle.example.com/course/view.php?id=7'
+
+    lti_launch = task_factory(
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+    )
+    assert lti_launch._leganto_course_url() is None
+
+    retry_leganto_pdf = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='',
+    )
+    assert retry_leganto_pdf._leganto_course_url() == 'https://moodle.example.com/course/view.php?id=7'
 
 
 @pytest.mark.asyncio
@@ -1215,6 +1264,62 @@ async def test_extract_kalvidres_video_url_handles_browse_stage_failures(task_fa
     task._create_session_with_retry = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_video_url_uses_kcl_partner_fallback(task_factory):
+    task = task_factory()
+    session = MagicMock()
+    kalvidres_html = (
+        '<iframe src="https://moodle.example.com/filter/kaltura/lti_launch.php?id=1&amp;foo=bar"></iframe>'
+    )
+    lti_html = (
+        '<input name="target_link_uri" '
+        'value="https://kaf.kcl.ac.uk/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456">'
+    )
+    browse_html = '<html>No partner id but KCL KAF launch is valid</html>'
+    session.get.side_effect = [
+        SimpleNamespace(status_code=200, text=kalvidres_html),
+        SimpleNamespace(status_code=200, text=lti_html),
+        SimpleNamespace(status_code=200, text=browse_html),
+    ]
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    result = await task.extract_kalvidres_video_url('https://moodle.example.com/mod/kalvidres/view.php?id=1')
+
+    assert result == (
+        'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
+        'uiconf_id/123456/partner_id/2368101?iframeembed=true&entry_id=1_abcd'
+    )
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_video_url_uses_keats_kaf_partner_fallback(task_factory):
+    task = task_factory()
+    session = MagicMock()
+    kalvidres_html = (
+        '<iframe src="https://moodle.example.com/filter/kaltura/lti_launch.php?id=1&amp;foo=bar"></iframe>'
+    )
+    lti_html = (
+        '<input name="target_link_uri" '
+        'value="http://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456'
+        '?foo=1&amp;bar=2">'
+    )
+    browse_html = '<html>No partner id but KEATS KAF launch is valid</html>'
+    session.get.side_effect = [
+        SimpleNamespace(status_code=200, text=kalvidres_html),
+        SimpleNamespace(status_code=200, text=lti_html),
+        SimpleNamespace(status_code=200, text=browse_html),
+    ]
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    result = await task.extract_kalvidres_video_url('https://moodle.example.com/mod/kalvidres/view.php?id=1')
+
+    assert result == (
+        'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
+        'uiconf_id/123456/partner_id/2368101?iframeembed=true&entry_id=1_abcd'
+    )
+    assert session.get.call_args_list[2][0][0].endswith('?foo=1&bar=2')
 
 
 @pytest.mark.asyncio

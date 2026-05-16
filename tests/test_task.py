@@ -281,6 +281,39 @@ class TestKalturaExtraction(unittest.TestCase):
         result = self.task._extract_partner_id(html)
         self.assertEqual(result, "987654")
 
+    def test_extract_partner_id_with_json_spacing_and_partner_path(self):
+        """测试 JSON 和 Kaltura URL 格式的 partner ID"""
+        self.assertEqual(
+            self.task._extract_partner_id('{"partnerId": 123456}'),
+            "123456",
+        )
+        self.assertEqual(
+            self.task._extract_partner_id('https://cdn.kaltura.com/p/654321/embed'),
+            "654321",
+        )
+        self.assertEqual(
+            self.task._extract_partner_id('/embedIframeJs/uiconf_id/1/partner_id/111222?x=1'),
+            "111222",
+        )
+
+    def test_infer_partner_id_for_known_kcl_kaf_host(self):
+        """测试 KCL KAF host 的 partner ID 兜底"""
+        result = self.task._infer_partner_id_from_browse_url(
+            "https://kaf.kcl.ac.uk/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456"
+        )
+        self.assertEqual(result, "2368101")
+
+        keats_result = self.task._infer_partner_id_from_browse_url(
+            "http://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456"
+        )
+        self.assertEqual(keats_result, "2368101")
+
+        self.assertIsNone(
+            self.task._infer_partner_id_from_browse_url(
+                "https://kaf.example.com/browseandembed/index/media/entryid/1_abcd/view/playerSkin/123456"
+            )
+        )
+
     def test_extract_partner_id_invalid(self):
         """测试无效 HTML 提取 partner ID"""
         html = "<html><body>No partner ID here</body></html>"

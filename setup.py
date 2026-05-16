@@ -45,6 +45,7 @@ setup(
         'colorama>=0.4.6',
         'colorlog>=6.7.0',
         'html2text>=2020.1.16',
+        'playwright>=1.40.0',
         'readchar>=4.0.3',
         'requests>=2.24.0',
         'sentry_sdk>=0.13.5',

@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import functools
+import html
 import json
 import logging
 import os
@@ -128,11 +129,21 @@ class Task:
         'cdnakmi.kaltura.com',    # 亚洲 CDN
         'cdnapi.kaltura.com',     # 备用
     ]
+    KALTURA_PARTNER_FALLBACKS_BY_HOST = {
+        # King's Kaltura KAF pages sometimes omit partnerId in the returned
+        # browseandembed HTML while the entry id and player skin are still valid.
+        'kaf.kcl.ac.uk': '2368101',
+        'kaf.keats.kcl.ac.uk': '2368101',
+    }
 
     # 正则表达式模式（预编译）
     REGEX_ENTRY_ID = re.compile(r'/entryid/([^/]+)/')
     REGEX_UICONF_ID = re.compile(r'/playerSkin/(\d+)')
-    REGEX_PARTNER_ID = re.compile(r'partnerId[=:](\d+)')
+    REGEX_PARTNER_ID = re.compile(
+        r'(?:partnerId|partner_id)["\']?\s*[:=]\s*["\']?(\d+)'
+        r'|/p/(\d+)(?:/|$)'
+        r'|/partner_id/(\d+)(?:[/?#]|$)'
+    )
     REGEX_KALTURA_CDN = re.compile(r'https?://([^/]*kaltura\.com)/p/\d+/embed')
     REGEX_LTI_IFRAME = re.compile(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"')
     REGEX_TARGET_LINK_URI = re.compile(r'name="target_link_uri"\s+value="([^"]+)"')
@@ -267,9 +278,42 @@ class Task:
         match = self.REGEX_PARTNER_ID.search(html_content)
         if not match:
             raise KalturaExtractionError('无法从页面中提取 partner ID')
-        partner_id = match.group(1)
+        partner_id = next(group for group in match.groups() if group)
         logging.debug('[%d] ✓ Partner ID: %s', self.task_id, partner_id)
         return partner_id
+
+    def _infer_partner_id_from_browse_url(self, browseandembed_url: str) -> Optional[str]:
+        """
+        Infer a Kaltura partner ID from known institutional KAF hosts.
+
+        This is only used after parsing the browseandembed HTML failed. The
+        entry ID and uiconf ID still come from the signed LTI launch response.
+        """
+        host = urlparse.urlparse(browseandembed_url).hostname or ''
+        partner_id = self.KALTURA_PARTNER_FALLBACKS_BY_HOST.get(host.lower())
+        if partner_id:
+            logging.info(
+                '[%d] ℹ️  Using partner ID fallback for Kaltura host %s',
+                self.task_id,
+                host,
+            )
+        else:
+            logging.debug(
+                '[%d] No Kaltura partner ID fallback configured for host %s',
+                self.task_id,
+                host,
+            )
+        return partner_id
+
+    def _log_browseandembed_url(self, browseandembed_url: str) -> None:
+        """Log the non-sensitive parts of a Kaltura browseandembed URL."""
+        parsed = urlparse.urlparse(browseandembed_url)
+        logging.debug(
+            '[%d] Kaltura browseandembed target: host=%s path=%s',
+            self.task_id,
+            parsed.hostname or '',
+            parsed.path or '',
+        )
 
     def _detect_kaltura_cdn(self, html_content: str) -> Optional[str]:
         """
@@ -1272,8 +1316,9 @@ class Task:
             if not target_uri_match:
                 raise KalturaExtractionError('无法在 lti_launch 页面中找到 target_link_uri')
 
-            browseandembed_url = target_uri_match.group(1)
+            browseandembed_url = html.unescape(target_uri_match.group(1))
             logging.debug('[%d] ✓ 找到 browseandembed URL', self.task_id)
+            self._log_browseandembed_url(browseandembed_url)
 
             # ====== 阶段 5: 从 browseandembed URL 提取信息 ======
             try:
@@ -1307,8 +1352,10 @@ class Task:
             try:
                 partner_id = self._extract_partner_id(browseandembed_response.text)
             except KalturaExtractionError as e:
-                logging.error('[%d] ❌ 解析失败: %s', self.task_id, e)
-                return None
+                partner_id = self._infer_partner_id_from_browse_url(browseandembed_url)
+                if not partner_id:
+                    logging.error('[%d] ❌ 解析失败: %s', self.task_id, e)
+                    return None
 
             # ====== 阶段 8: 检测或使用备用 CDN ======
             detected_cdn = self._detect_kaltura_cdn(browseandembed_response.text)
@@ -1768,12 +1815,14 @@ class Task:
         """Save a Leganto reading list through the page's Print list action."""
         launch_parameters = None
         endpoint = self.file.content_fileurl
+        course_url = self._leganto_course_url()
 
         if self.file.content:
             try:
                 payload = json.loads(self.file.content)
                 endpoint = payload.get('endpoint') or endpoint
                 launch_parameters = payload.get('parameters')
+                course_url = payload.get('course_url') or course_url
             except (TypeError, ValueError) as exc:
                 logging.debug('[%d] Could not parse Leganto launch payload: %s', self.task_id, exc)
 
@@ -1783,7 +1832,23 @@ class Task:
             skip_cert_verify=self.opts.global_opts.skip_cert_verify,
             headless=True,
         )
-        await printer.print_to_pdf(endpoint, self.file.saved_to, launch_parameters=launch_parameters)
+        await printer.print_to_pdf(
+            endpoint,
+            self.file.saved_to,
+            launch_parameters=launch_parameters,
+            course_url=None if launch_parameters is not None else course_url,
+        )
+
+    def _leganto_course_url(self) -> Optional[str]:
+        """Return the Moodle course page used to launch Leganto with course context."""
+        if self.file.content_type != 'leganto_pdf' and not is_leganto_reading_list_url(self.file.content_fileurl):
+            return None
+
+        moodle_url = (self.opts.moodle_url or '').rstrip('/')
+        course_id = getattr(self.course, 'id', None)
+        if not moodle_url or not course_id:
+            return None
+        return f'{moodle_url}/course/view.php?id={course_id}'
 
     def _prepare_leganto_pdf_target(self):
         """Ensure the current task writes to a PDF file instead of a shortcut-like filename."""

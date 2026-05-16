@@ -4,7 +4,7 @@ import os
 import sqlite3
 import time
 from sqlite3 import Error
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.types import Course, File, MoodleDlOpts
@@ -286,7 +286,8 @@ class StateRecorder:
             "CREATE INDEX IF NOT EXISTS idx_position_in_section ON files(course_id, section_id, position_in_section);",
             # 幂等性增强：添加唯一索引，防止重复的活跃文件
             # 旧的 deleted/modified/moved 记录不再阻止新版本复用同一 URL
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0 AND modified = 0 AND moved = 0;",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url ON files(course_id, module_id, content_fileurl) WHERE deleted = 0 AND modified = 0 AND moved = 0 AND content_fileurl <> '';",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_generated ON files(course_id, module_id, content_type, content_filepath, content_filename) WHERE deleted = 0 AND modified = 0 AND moved = 0 AND content_fileurl = '';",
             # 🆕 扩展元数据字段的索引
             "CREATE INDEX IF NOT EXISTS idx_visible ON files(visible);",
             "CREATE INDEX IF NOT EXISTS idx_uservisible ON files(uservisible);",
@@ -459,10 +460,48 @@ class StateRecorder:
     @staticmethod
     def _ensure_active_file_unique_index(cursor):
         cursor.execute("DROP INDEX IF EXISTS idx_unique_file_url;")
+        cursor.execute("DROP INDEX IF EXISTS idx_unique_file_generated;")
         cursor.execute(
             """CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_url
             ON files(course_id, module_id, content_fileurl)
-            WHERE deleted = 0 AND modified = 0 AND moved = 0;"""
+            WHERE deleted = 0 AND modified = 0 AND moved = 0 AND content_fileurl <> '';"""
+        )
+        cursor.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_file_generated
+            ON files(course_id, module_id, content_type, content_filepath, content_filename)
+            WHERE deleted = 0 AND modified = 0 AND moved = 0 AND content_fileurl = '';"""
+        )
+
+    @staticmethod
+    def _active_file_identity(file: File, course_id: int) -> Tuple[str, tuple]:
+        if file.content_fileurl:
+            return (
+                """course_id = ?
+                AND module_id = ?
+                AND content_fileurl = ?
+                AND deleted = 0
+                AND modified = 0
+                AND moved = 0""",
+                (course_id, file.module_id, file.content_fileurl),
+            )
+
+        return (
+            """course_id = ?
+            AND module_id = ?
+            AND content_fileurl = ''
+            AND content_type = ?
+            AND content_filepath = ?
+            AND content_filename = ?
+            AND deleted = 0
+            AND modified = 0
+            AND moved = 0""",
+            (
+                course_id,
+                file.module_id,
+                file.content_type,
+                file.content_filepath,
+                file.content_filename,
+            ),
         )
 
     @staticmethod
@@ -952,6 +991,7 @@ class StateRecorder:
         # saves that a notification with the changes where send
 
         conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         for course in courses:
@@ -1018,8 +1058,8 @@ class StateRecorder:
         """
         保存新文件到数据库索引
         
-        幂等性保证：如果文件已存在（基于 course_id, module_id, content_fileurl），
-        则跳过插入，避免创建重复记录。
+        幂等性保证：如果文件已存在则跳过插入，避免创建重复记录。
+        有 URL 的文件按 URL 匹配；没有 URL 的合成文件按类型、路径和文件名匹配。
         
         @param file: 文件对象
         @param course_id: 课程 ID
@@ -1027,19 +1067,27 @@ class StateRecorder:
         @return: file_id（新插入的或已存在的）
         """
         conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # 幂等性检查：查询文件是否已存在
-        cursor.execute(
-            """SELECT file_id FROM files 
-               WHERE course_id = ? AND module_id = ? AND content_fileurl = ?""",
-            (course_id, file.module_id, file.content_fileurl)
-        )
+        # 幂等性检查：查询活跃文件是否已存在
+        where_clause, params = self._active_file_identity(file, course_id)
+        cursor.execute(f"""SELECT file_id FROM files WHERE {where_clause}""", params)
         existing = cursor.fetchone()
         
         if existing:
             # 文件已存在，跳过插入
             file_id = existing[0]
+            if file.saved_to:
+                cursor.execute(
+                    """UPDATE files
+                    SET saved_to = ?,
+                        position_in_section = ?
+                    WHERE file_id = ?
+                    """,
+                    (file.saved_to, file.position_in_section, file_id),
+                )
+                conn.commit()
             logging.debug(
                 f'文件已存在于数据库中，跳过插入: {file.content_filename} (file_id={file_id})'
             )
@@ -1225,15 +1273,14 @@ class StateRecorder:
 
         current_time = int(time.time())
 
-        # 检查文件是否已存在
+        # 检查活跃文件是否已存在
+        where_clause, params = self._active_file_identity(file, course_id)
         cursor.execute(
-            """SELECT file_id, download_attempts, consecutive_failures
+            f"""SELECT file_id, download_attempts, consecutive_failures
                FROM files
-               WHERE course_id = ?
-               AND module_id = ?
-               AND content_fileurl = ?
+               WHERE {where_clause}
             """,
-            (course_id, file.module_id, file.content_fileurl)
+            params,
         )
         existing = cursor.fetchone()
 
@@ -1298,17 +1345,17 @@ class StateRecorder:
 
         current_time = int(time.time())
 
+        where_clause, params = self._active_file_identity(file, course_id)
         cursor.execute(
-            """UPDATE files
+            f"""UPDATE files
             SET download_status = 'success',
                 last_download_at = ?,
                 consecutive_failures = 0,
-                last_failed_reason = NULL
-            WHERE course_id = ?
-            AND module_id = ?
-            AND content_fileurl = ?
+                last_failed_reason = NULL,
+                saved_to = ?
+            WHERE {where_clause}
             """,
-            (current_time, course_id, file.module_id, file.content_fileurl)
+            (current_time, file.saved_to, *params),
         )
 
         conn.commit()
@@ -1329,6 +1376,7 @@ class StateRecorder:
         @return: 失败的文件列表
         """
         conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
         if course_id:
@@ -1358,37 +1406,7 @@ class StateRecorder:
         results = cursor.fetchall()
         conn.close()
 
-        # 转换为 File 对象列表
-        failed_files = []
-        for row in results:
-            file_dict = dict(zip([d[0] for d in cursor.description], row))
-            file = File(
-                module_id=file_dict['module_id'],
-                section_name=file_dict['section_name'],
-                section_id=file_dict.get('section_id', 0),
-                module_name=file_dict['module_name'],
-                content_filepath=file_dict['content_filepath'],
-                content_filename=file_dict['content_filename'],
-                content_fileurl=file_dict['content_fileurl'],
-                content_filesize=file_dict['content_filesize'],
-                content_timemodified=file_dict['content_timemodified'],
-                module_modname=file_dict['module_modname'],
-                content_type=file_dict['content_type'],
-                content_isexternalfile=file_dict['content_isexternalfile'],
-                saved_to=file_dict['saved_to'],
-                time_stamp=file_dict['time_stamp'],
-                modified=file_dict['modified'],
-                moved=file_dict.get('moved', 0),
-                deleted=file_dict['deleted'],
-                notified=file_dict['notified'],
-                file_hash=file_dict.get('hash'),
-                file_id=file_dict.get('file_id'),
-                old_file_id=file_dict.get('old_file_id'),
-                position_in_section=file_dict.get('position_in_section')
-            )
-            failed_files.append(file)
-
-        return failed_files
+        return [File.fromRow(row) for row in results]
 
     def get_failed_files_with_course_info(self, min_failures: int = 1) -> Dict[int, Dict]:
         """
@@ -1433,33 +1451,7 @@ class StateRecorder:
                     'files': []
                 }
 
-            # 构造 File 对象
-            file = File(
-                module_id=row['module_id'],
-                section_name=row['section_name'],
-                section_id=row['section_id'] if row['section_id'] is not None else 0,
-                module_name=row['module_name'],
-                content_filepath=row['content_filepath'],
-                content_filename=row['content_filename'],
-                content_fileurl=row['content_fileurl'],
-                content_filesize=row['content_filesize'],
-                content_timemodified=row['content_timemodified'],
-                module_modname=row['module_modname'],
-                content_type=row['content_type'],
-                content_isexternalfile=row['content_isexternalfile'],
-                saved_to=row['saved_to'],
-                time_stamp=row['time_stamp'],
-                modified=row['modified'],
-                moved=row['moved'] if row['moved'] is not None else 0,
-                deleted=row['deleted'],
-                notified=row['notified'],
-                file_hash=row['hash'],
-                file_id=row['file_id'],
-                old_file_id=row['old_file_id'] if row['old_file_id'] is not None else 0,
-                position_in_section=row['position_in_section'] if row['position_in_section'] is not None else None
-            )
-
-            courses_dict[course_id]['files'].append(file)
+            courses_dict[course_id]['files'].append(File.fromRow(row))
 
         return courses_dict
 
@@ -1523,16 +1515,15 @@ class StateRecorder:
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
 
+        where_clause, params = self._active_file_identity(file, course_id)
         cursor.execute(
-            """UPDATE files
+            f"""UPDATE files
             SET download_status = 'retrying',
                 consecutive_failures = 0,
                 last_failed_reason = NULL
-            WHERE course_id = ?
-            AND module_id = ?
-            AND content_fileurl = ?
+            WHERE {where_clause}
             """,
-            (course_id, file.module_id, file.content_fileurl)
+            params,
         )
 
         conn.commit()

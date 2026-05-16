@@ -180,6 +180,62 @@ def test_new_file_is_idempotent_and_cache_is_cleared_after_saving(recorder, tmp_
     assert [file.content_filename for file in refreshed[0].files] == ['one.pdf', 'two.pdf']
 
 
+def test_empty_url_generated_files_do_not_overwrite_each_other(recorder, tmp_path):
+    description = make_file(
+        module_id=44,
+        filename='Introduction.html',
+        url='',
+        module_modname='lti',
+        content_type='description',
+        saved_to=str(tmp_path / 'Introduction.md'),
+    )
+    leganto_pdf = make_file(
+        module_id=44,
+        filename='Reading List.pdf',
+        url='',
+        module_modname='lti',
+        content_type='leganto_pdf',
+        saved_to=str(tmp_path / 'Reading List.pdf'),
+    )
+    leganto_pdf.content = '{"endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1"}'
+
+    recorder.save_file(description, course_id=101, course_fullname='Course One')
+    conn = sqlite3.connect(recorder.db_file)
+    try:
+        conn.execute(
+            "UPDATE files SET saved_to = ? WHERE content_filename = ?",
+            (str(tmp_path / 'wrong.pdf'), 'Introduction.html'),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    recorder.save_file(description, course_id=101, course_fullname='Course One')
+    recorder.save_failed_file(leganto_pdf, 101, 'Course One', 'print failed')
+
+    rows = read_file_rows(recorder)
+    assert len(rows) == 2
+    assert [(row['content_filename'], row['content_type'], row['download_status']) for row in rows] == [
+        ('Introduction.html', 'description', 'pending'),
+        ('Reading List.pdf', 'leganto_pdf', 'failed'),
+    ]
+
+    failed = recorder.get_failed_files(course_id=101)
+    assert len(failed) == 1
+    assert failed[0].content_filename == 'Reading List.pdf'
+    assert failed[0].content_type == 'leganto_pdf'
+    assert failed[0].content == leganto_pdf.content
+    assert failed[0].saved_to == str(tmp_path / 'Reading List.pdf')
+
+    recorder.reset_failed_file_for_retry(leganto_pdf, 101)
+    recorder.mark_download_success(leganto_pdf, 101)
+
+    rows_by_name = {row['content_filename']: row for row in read_file_rows(recorder)}
+    assert rows_by_name['Introduction.html']['download_status'] == 'pending'
+    assert rows_by_name['Introduction.html']['saved_to'] == str(tmp_path / 'Introduction.md')
+    assert rows_by_name['Reading List.pdf']['download_status'] == 'success'
+
+
 def test_modified_and_moved_files_preserve_old_references_for_notifications(recorder, tmp_path):
     old_modified_path = tmp_path / 'old-modified.pdf'
     old_modified_path.write_text('old data', encoding='utf-8')
