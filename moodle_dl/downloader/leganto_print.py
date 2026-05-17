@@ -448,6 +448,8 @@ class LegantoPdfPrinter:
         if print_item is None:
             raise RuntimeError('Could not find the Leganto "Print list" menu item')
 
+        original_url = page.url
+        await self._install_print_invocation_marker(page)
         popup_task = asyncio.create_task(context.wait_for_event('page', timeout=5_000))
         await print_item.click()
 
@@ -458,7 +460,55 @@ class LegantoPdfPrinter:
         except Exception:
             if not popup_task.done():
                 popup_task.cancel()
+
+        try:
+            await page.wait_for_load_state('domcontentloaded', timeout=15_000)
+        except Exception:
+            pass
+
+        if await self._was_print_invoked(page):
             return page
+
+        if self._is_same_leganto_list_url(original_url, page.url):
+            raise RuntimeError(
+                'Leganto "Print list" did not open a printable view; '
+                'refusing to save the regular reading-list page as PDF'
+            )
+
+        return page
+
+    async def _install_print_invocation_marker(self, page) -> None:
+        try:
+            await page.evaluate(
+                """() => {
+                    window.__moodleDlPrintInvoked = false;
+                    if (!window.__moodleDlOriginalPrint) {
+                        window.__moodleDlOriginalPrint = window.print;
+                    }
+                    window.print = () => {
+                        window.__moodleDlPrintInvoked = true;
+                    };
+                }"""
+            )
+        except Exception:
+            logging.debug('Could not install Leganto print invocation marker', exc_info=True)
+
+    async def _was_print_invoked(self, page) -> bool:
+        try:
+            return bool(await page.evaluate('() => Boolean(window.__moodleDlPrintInvoked)'))
+        except Exception:
+            return False
+
+    @staticmethod
+    def _is_same_leganto_list_url(left: str, right: str) -> bool:
+        left_parsed = urlparse.urlparse(left or '')
+        right_parsed = urlparse.urlparse(right or '')
+        return (
+            (left_parsed.hostname or '').lower() == (right_parsed.hostname or '').lower()
+            and (left_parsed.path or '') == (right_parsed.path or '')
+            and bool(LEGANTO_LIST_PATH_RE.match(left_parsed.path or ''))
+            and bool(LEGANTO_LIST_PATH_RE.match(right_parsed.path or ''))
+        )
 
     async def _is_print_item_visible(self, page) -> bool:
         return await self._visible_print_item(page) is not None

@@ -287,6 +287,7 @@ async def test_page_parse_real_fetch_and_web_fallback():
         "Page",
         "metadata.json",
     ]
+    assert files[3]["filter_urls_during_search_containing"] == ["/mod_page/content/"]
     metadata = json.loads(files[-1]["content"])
     assert metadata["settings"]["display_mode_name"] == "UNKNOWN_99"
     assert metadata["settings"]["displayoptions_parsed"] == {"popupwidth": 620}

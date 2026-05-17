@@ -360,15 +360,25 @@ class ResultBuilder:
             or re.search(r'/isPlaylist/true(?:[/?#]|$)', source_url, re.IGNORECASE)
         )
 
+    @staticmethod
+    def _is_kaltura_host(hostname: str) -> bool:
+        hostname = (hostname or '').lower()
+        return hostname.startswith('kaf.') or 'kaltura' in hostname or hostname in {'media.kcl.ac.uk'}
+
     @classmethod
     def _is_kaltura_url_candidate(cls, url: str, url_parts) -> bool:
         path = url_parts.path or ''
         url_lower = url.lower()
+        has_entry_id = cls._match_kaltura_entry_id(url) is not None
         return (
             '/filter/kaltura/lti_launch.php' in path
             or ('browseandembed' in path and 'entryid' in url_lower)
-            or (('kaltura' in url_lower or 'entryid' in url_lower) and cls._match_kaltura_entry_id(url) is not None)
+            or (has_entry_id and (cls._is_kaltura_host(url_parts.hostname) or 'kaltura' in path.lower()))
         )
+
+    @staticmethod
+    def _is_helixmedia_url_candidate(url: str, url_parts) -> bool:
+        return 'helixmedia' in (url or '').lower() and '/mod/helixmedia/view.php' in (url_parts.path or '')
 
     def _find_all_urls(
         self,
@@ -389,10 +399,10 @@ class ResultBuilder:
         """
 
         # TODO: Also parse name or alt of an link to get a better name for URLs
-        urls = list(set(re.findall(r'href=[\'"]?([^\'" >]+)', content_html)))
-        urls += list(set(re.findall(r'<a[^>]*>(http[^<]*)<\/a>', content_html)))
-        urls += list(set(re.findall(r'src=[\'"]?([^\'" >]+)', content_html)))
-        urls += list(set(re.findall(r'data=[\'"]?([^\'" >]+)', content_html)))
+        urls = list(set(re.findall(r'href=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
+        urls += list(set(re.findall(r'<a[^>]*>(http[^<]*)<\/a>', content_html, flags=re.IGNORECASE)))
+        urls += list(set(re.findall(r'src=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
+        urls += list(set(re.findall(r'data=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
         urls = list(set(urls))
 
         logging.debug(f'   🔎 _find_all_urls() found {len(urls)} raw URLs in HTML (length={len(content_html)})')
@@ -415,17 +425,17 @@ class ResultBuilder:
 
             url_parts = urlparse.urlparse(url)
             is_moodle_url = url_parts.hostname == self.moodle_domain or url_parts.netloc == self.moodle_domain
-            is_kaltura_candidate = self._is_kaltura_url_candidate(url, url_parts)
-            if is_moodle_url and not is_kaltura_candidate:
+            is_embedded_media_candidate = self._is_kaltura_url_candidate(
+                url, url_parts
+            ) or self._is_helixmedia_url_candidate(url, url_parts)
+            if is_moodle_url and not is_embedded_media_candidate:
                 # Keep the historical behavior of not creating shortcut files
-                # for ordinary internal Moodle links, but allow embedded Kaltura
+                # for ordinary internal Moodle links, but allow embedded media
                 # launches from labels/pages to become video download tasks.
                 continue
 
-            for filter_str in filter_urls_containing:
-                # Skip url if a filter matches
-                if url.find(filter_str) >= 0:
-                    continue
+            if any(filter_str and filter_str in url for filter_str in filter_urls_containing):
+                continue
 
             if url_parts.hostname == self.moodle_domain and url_parts.path.find('/theme/image.php/') >= 0:
                 url = re.sub(
@@ -481,7 +491,7 @@ class ResultBuilder:
             
             # Format 3: Kaltura URLs containing kaltura domain or entryid pattern
             # This catches other Kaltura URL formats that might be embedded in descriptions
-            elif ('kaltura' in url.lower() or 'entryid' in url.lower()) and not kaltura_converted:
+            elif self._is_kaltura_url_candidate(url, url_parts) and not kaltura_converted:
                 # Check if this looks like a Kaltura video URL
                 # Note: URL has already been decoded, so we match '/' first, then try encoded version
                 entry_id_match = self._match_kaltura_entry_id(url)
@@ -505,6 +515,9 @@ class ResultBuilder:
             # Determine filename based on URL type
             if url.startswith('data:'):
                 # Schema: data:[<mime type>][;charset=<Charset>][;base64],<Data>
+                if ',' not in url:
+                    logging.warning('Skipping malformed data URL in %s', location.get('module_name', '?'))
+                    continue
                 embedded_data = url.split(',', 1)[1]
                 mime_type = url.split(':', 1)[1].split(',', 1)[0].split(';')[0]
                 media_type = mime_type.split('/', 1)[0]
@@ -700,7 +713,8 @@ class ResultBuilder:
 
             file_hash = None
             if content_type in ('description', 'html') and not content.get('no_hash', False):
-                hashable_description = self.filter_changing_attributes(content_description)
+                hash_source = content_html if content_type == 'html' else content_description
+                hashable_description = self.filter_changing_attributes(hash_source)
                 # 🔒 安全改进：使用 SHA256 替代 SHA1（用于内容去重）
                 m = hashlib.sha256()
                 m.update(hashable_description.encode('utf-8'))

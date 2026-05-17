@@ -349,6 +349,8 @@ async def test_lesson_real_fetch_attempt_page_and_attempt_files():
     )
     assert [file["filename"] for file in attempt_files] == ["grade", "Q1", "asset.pdf", "Lesson"]
     assert attempt_files[-1]["type"] == "html"
+    assert attempt_files[-1]["filter_urls_during_search_containing"] == ["/mod_lesson/page_contents/"]
+    assert attempt_files[-1]["no_search_for_urls"] is True
 
 
 @pytest.mark.asyncio

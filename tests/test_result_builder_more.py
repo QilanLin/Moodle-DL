@@ -1,3 +1,4 @@
+import hashlib
 from unittest.mock import patch
 
 from moodle_dl.moodle.result_builder import ResultBuilder
@@ -80,6 +81,37 @@ def test_get_files_in_sections_adds_summary_positions_and_kaltura_total():
     assert summary.position_in_section == 1
     assert summary_url.position_in_section == 2
     assert video.content_filename == 'Lecture Video'
+
+
+def test_get_files_in_sections_extracts_embedded_kaltura_from_label_description():
+    builder = make_builder()
+    course_sections = [
+        {
+            'id': 5,
+            'name': 'Topic 5',
+            'summary': '',
+            'modules': [
+                {
+                    'id': 55,
+                    'name': 'Topic 5 introduction',
+                    'modname': 'label',
+                    'description': (
+                        '<iframe src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&amp;source='
+                        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2F'
+                        'entryid%2F1_topic5%2FplayerSkin%2F42864872%2F"></iframe>'
+                    ),
+                }
+            ],
+        }
+    ]
+
+    files = builder.get_files_in_sections(course_sections, fetched_mods={})
+
+    video = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
+    assert video.section_name == 'Topic 5'
+    assert video.module_name == 'Topic 5 introduction'
+    assert video.content_filename == 'Kaltura Video 1_topic5'
+    assert '/playerSkin/42864872/' in video.content_fileurl
 
 
 def test_system_file_detection_and_position_assignment():
@@ -291,6 +323,7 @@ def test_find_all_urls_skips_moodle_domain_urls_and_detects_helixmedia():
     builder = make_builder()
     html = (
         '<a href="https://keats.kcl.ac.uk/course/view.php?id=1">Moodle</a>'
+        '<a href="https://keats.kcl.ac.uk/mod/helixmedia/view.php?id=1">Internal Helix</a>'
         '<a href="https://media.example.com/mod/helixmedia/view.php?id=2">Helix</a>'
     )
 
@@ -301,9 +334,12 @@ def test_find_all_urls_skips_moodle_domain_urls_and_detects_helixmedia():
         **make_location(module_modname='label', content_filepath='/'),
     )
 
-    assert len(files) == 1
-    assert files[0].module_modname == 'cookie_mod-helixmedia'
-    assert files[0].content_fileurl == 'https://media.example.com/mod/helixmedia/view.php?id=2'
+    assert len(files) == 2
+    assert {file.module_modname for file in files} == {'cookie_mod-helixmedia'}
+    assert {file.content_fileurl for file in files} == {
+        'https://keats.kcl.ac.uk/mod/helixmedia/view.php?id=1',
+        'https://media.example.com/mod/helixmedia/view.php?id=2',
+    }
 
 
 def test_find_all_urls_handles_large_data_unknown_mime_and_long_urls():
@@ -370,6 +406,54 @@ def test_find_all_urls_converts_kaltura_variants_and_moodle_webservice_links():
     )
 
 
+def test_find_all_urls_extracts_kaltura_iframe_attribute_variants():
+    builder = make_builder()
+    html = (
+        '<iframe allowfullscreen SRC=\'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&amp;source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2FEntryId%2F1_upper%2F'
+        'playerSkin%2F42864872%2F\'></iframe>'
+        '<iframe data-name="video" src=https://kaf.keats.kcl.ac.uk/browseandembed/index/media/EntryId/'
+        '1_unquoted/playerSkin/42864872/></iframe>'
+        '<iframe src="https://media.kcl.ac.uk/embed/secure/iframe/entryId/1_media/uiConfId/50622292"></iframe>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='label', content_filepath='/'),
+    )
+
+    kaltura_files = [file for file in files if file.module_modname == 'cookie_mod-kalvidres']
+    assert {file.content_filename for file in kaltura_files} == {
+        'Kaltura Video 1_upper',
+        'Kaltura Video 1_unquoted',
+        'Kaltura Video 1_media',
+    }
+    assert any('/playerSkin/42864872/' in file.content_fileurl for file in kaltura_files)
+
+
+def test_find_all_urls_does_not_treat_generic_entryid_links_as_kaltura():
+    builder = make_builder()
+    html = (
+        '<a href="https://api.example.com/player/entryid/not-video">API</a>'
+        '<a href="https://example.com/items/EntryId/12345">Item</a>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='label', content_filepath='/'),
+    )
+
+    assert {file.content_fileurl for file in files} == {
+        'https://api.example.com/player/entryid/not-video',
+        'https://example.com/items/EntryId/12345',
+    }
+    assert all(file.module_modname == 'url-description-label' for file in files)
+
+
 def test_handle_description_extracts_same_domain_kaltura_iframe():
     builder = make_builder()
     html = (
@@ -391,6 +475,20 @@ def test_handle_description_extracts_same_domain_kaltura_iframe():
     assert '/playerSkin/42864872/' in video.content_fileurl
 
 
+def test_handle_description_extracts_same_domain_helixmedia_link():
+    builder = make_builder()
+
+    files = builder._handle_description(
+        '<p><a href="https://keats.kcl.ac.uk/mod/helixmedia/view.php?id=77">Watch</a></p>',
+        **make_location(module_name='Helix video', module_modname='label'),
+    )
+
+    video = next(file for file in files if file.module_modname == 'cookie_mod-helixmedia')
+    assert video.content_filename == 'https://keats.kcl.ac.uk/mod/helixmedia/view.php?id=77'
+    assert video.content_type == 'description-url'
+    assert video.content_fileurl == 'https://keats.kcl.ac.uk/mod/helixmedia/view.php?id=77'
+
+
 def test_find_all_urls_skips_empty_and_filter_matched_urls():
     builder = make_builder()
     files = builder._find_all_urls(
@@ -400,8 +498,54 @@ def test_find_all_urls_skips_empty_and_filter_matched_urls():
         **make_location(module_modname='page', content_filepath='/'),
     )
 
-    assert len(files) == 1
-    assert files[0].content_fileurl == 'https://blocked.example.com/file.pdf'
+    assert files == []
+
+
+def test_find_all_urls_skips_malformed_data_urls():
+    builder = make_builder()
+
+    files = builder._find_all_urls(
+        '<img src="data:text/plain"><a href="https://example.com/ok.txt">OK</a>',
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='page', content_filepath='/'),
+    )
+
+    assert [file.content_fileurl for file in files] == ['https://example.com/ok.txt']
+
+
+def test_handle_files_respects_page_and_lesson_embedded_asset_filters():
+    builder = make_builder()
+    contents = [
+        {
+            'type': 'html',
+            'filename': 'page.html',
+            'html': (
+                '<img src="/webservice/pluginfile.php/1/mod_page/content/0/image.png">'
+                '<a href="https://external.example.com/page.pdf">Page</a>'
+            ),
+            'filter_urls_during_search_containing': ['/mod_page/content/'],
+        },
+        {
+            'type': 'html',
+            'filename': 'lesson.html',
+            'html': (
+                '<img src="/webservice/pluginfile.php/1/mod_lesson/page_contents/2/image.png">'
+                '<a href="https://external.example.com/lesson.pdf">Lesson</a>'
+            ),
+            'filter_urls_during_search_containing': ['/mod_lesson/page_contents/'],
+        },
+    ]
+
+    files = builder._handle_files(contents, **make_location(module_modname='page'))
+    extracted_urls = [file.content_fileurl for file in files if file.content_type == 'description-url']
+
+    assert '/webservice/pluginfile.php/1/mod_page/content/0/image.png' not in extracted_urls
+    assert '/webservice/pluginfile.php/1/mod_lesson/page_contents/2/image.png' not in extracted_urls
+    assert set(extracted_urls) == {
+        'https://external.example.com/page.pdf',
+        'https://external.example.com/lesson.pdf',
+    }
 
 
 def test_handle_cookie_mod_uses_module_name_and_timemodified():
@@ -560,6 +704,8 @@ def test_handle_files_creates_description_hash_html_content_and_url_files():
     assert len(description.hash) == 64
     assert extracted_url.content_fileurl == 'https://example.com'
     assert html_file.html_content == '<p>Page</p>'
+    assert html_file.hash == hashlib.sha256(b'<p>Page</p>').hexdigest()
+    assert html_file.hash != hashlib.sha256(b'').hexdigest()
     assert html_file.visible == 0
     assert html_file.completion == 2
     assert html_file.timecreated == 11

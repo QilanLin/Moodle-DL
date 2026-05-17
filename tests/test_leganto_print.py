@@ -351,7 +351,7 @@ async def test_trigger_print_list_returns_popup_when_print_opens_new_page():
 
 
 @pytest.mark.asyncio
-async def test_trigger_print_list_falls_back_to_current_page_when_no_popup_opens():
+async def test_trigger_print_list_refuses_regular_page_when_no_print_action_opens():
     page = FakeLegantoPage()
     page.print_item.visible = True
 
@@ -359,10 +359,28 @@ async def test_trigger_print_list_falls_back_to_current_page_when_no_popup_opens
         async def wait_for_event(self, *_args, **_kwargs):
             raise TimeoutError('no popup')
 
-    result = await LegantoPdfPrinter()._trigger_print_list(FakeContext(), page)
+    with pytest.raises(RuntimeError, match='refusing to save the regular reading-list page'):
+        await LegantoPdfPrinter()._trigger_print_list(FakeContext(), page)
+
+    assert page.print_item.clicks == [{}]
+
+
+@pytest.mark.asyncio
+async def test_trigger_print_list_accepts_current_page_when_window_print_runs():
+    page = FakeLegantoPage()
+    page.print_item.visible = True
+    printer = LegantoPdfPrinter()
+    printer._was_print_invoked = AsyncMock(return_value=True)
+
+    class FakeContext:
+        async def wait_for_event(self, *_args, **_kwargs):
+            raise TimeoutError('no popup')
+
+    result = await printer._trigger_print_list(FakeContext(), page)
 
     assert result is page
     assert page.print_item.clicks == [{}]
+    printer._was_print_invoked.assert_awaited_once_with(page)
 
 
 @pytest.mark.asyncio

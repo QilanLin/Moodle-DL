@@ -79,6 +79,12 @@ def test_file_comparison_helpers_cover_type_path_difference_and_movement(tmp_pat
     assert StateRecorder.files_are_diffrent(description, changed_description) is True
     assert StateRecorder.files_are_moveable(description, changed_description) is False
 
+    html = make_file(content_type='html', filename='page.html', hash_value='old-html')
+    same_html = make_file(content_type='html', filename='page.html', hash_value='old-html')
+    changed_html = make_file(content_type='html', filename='page.html', hash_value='new-html')
+    assert StateRecorder.files_are_diffrent(html, same_html) is False
+    assert StateRecorder.files_are_diffrent(html, changed_html) is True
+
     html_without_hash = make_file(content_type='html', filename='page.html', hash_value=None)
     moved_html_without_hash = make_file(
         content_type='html',
