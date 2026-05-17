@@ -748,10 +748,6 @@ class ConfigHelper:
                     for cookie in cookies:
                         # 格式: domain	flag	path	secure	expires	name	value
                         domain = cookie.get('domain', '')
-                        # 如果域名不以.开头且不是localhost,添加.
-                        if domain and not domain.startswith('.') and domain != 'localhost':
-                            domain = '.' + domain
-
                         flag = 'TRUE' if domain.startswith('.') else 'FALSE'
                         path = cookie.get('path', '/')
                         secure = 'TRUE' if cookie.get('secure', 0) else 'FALSE'

@@ -809,25 +809,16 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
         logging.warning(_('⚠️  仍然在登录/认证页面，登录可能失败', '⚠️  Still on login/authentication page; login may have failed'))
         return -1
 
-    # 检查错误标志
-    error_indicators = [
-        'Sign in to your account',
-        'Invalid login',
-        'Authentication failed',
-        'Your session has expired',
-        '401',
-        '403',
-        'Unauthorized',
-    ]
-
-    for indicator in error_indicators:
-        if indicator in page_content:
-            logging.warning(_('⚠️  页面中检测到错误指示: {indicator}', '⚠️  Detected error indicator on page: {indicator}', indicator=indicator))
-            if _is_headless_moodle_auth_replay_failure(current_url, page_content, headless):
-                logging.info(_('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复', '💡 This is not a browser type issue; headless mode could not restore the existing SSO state'))
-                logging.info(_('   建议改用默认有头模式重新初始化：moodle-dl --init --sso', '   Recommended: rerun initialization in default headful mode: moodle-dl --init --sso'))
-                logging.info(_('   如果设置了 MOODLE_DL_HEADLESS=1 或 MOODLE_DL_HEADFUL=0，请移除该设置', '   If MOODLE_DL_HEADLESS=1 or MOODLE_DL_HEADFUL=0 is set, remove that setting'))
-            return -1
+    # 检查错误标志。不要把裸数字 401/403 当成失败；Moodle dashboard
+    # 的脚本、课程 ID 或资源 ID 中可能自然出现这些数字。
+    error_indicator = _find_login_error_indicator(page_content)
+    if error_indicator:
+        logging.warning(_('⚠️  页面中检测到错误指示: {indicator}', '⚠️  Detected error indicator on page: {indicator}', indicator=error_indicator))
+        if _is_headless_moodle_auth_replay_failure(current_url, page_content, headless):
+            logging.info(_('💡 当前不是浏览器类型问题，而是无头模式下未能完成现有 SSO 状态恢复', '💡 This is not a browser type issue; headless mode could not restore the existing SSO state'))
+            logging.info(_('   建议改用默认有头模式重新初始化：moodle-dl --init --sso', '   Recommended: rerun initialization in default headful mode: moodle-dl --init --sso'))
+            logging.info(_('   如果设置了 MOODLE_DL_HEADLESS=1 或 MOODLE_DL_HEADFUL=0，请移除该设置', '   If MOODLE_DL_HEADLESS=1 or MOODLE_DL_HEADFUL=0 is set, remove that setting'))
+        return -1
 
     # 检查成功标志
     if 'login/logout.php' in page_content or visited_sso:
@@ -837,6 +828,32 @@ async def _check_final_login_status(page_content: str, current_url: str, visited
     # 状态未确定
     logging.debug(_('⚠️  无法确定登录状态', '⚠️  Unable to determine login status'))
     return 0
+
+
+def _find_login_error_indicator(page_content: str) -> Optional[str]:
+    """Return the matched login/auth error marker, if the page clearly has one."""
+    textual_indicators = (
+        'Sign in to your account',
+        'Invalid login',
+        'Authentication failed',
+        'Your session has expired',
+        'You are not logged in',
+    )
+    for indicator in textual_indicators:
+        if indicator in page_content:
+            return indicator
+
+    auth_error_patterns = (
+        (r'\b401\s*[:\-]?\s*Unauthorized\b', '401 Unauthorized'),
+        (r'\bUnauthorized\s*[:\-]?\s*\(?401\)?\b', 'Unauthorized 401'),
+        (r'\b403\s*[:\-]?\s*(Forbidden|Unauthorized|Access denied)\b', '403 Forbidden'),
+        (r'\b(Forbidden|Access denied)\s*[:\-]?\s*\(?403\)?\b', 'Forbidden 403'),
+    )
+    for pattern, indicator in auth_error_patterns:
+        if re.search(pattern, page_content, flags=re.I):
+            return indicator
+
+    return None
 
 
 def _is_headless_moodle_auth_replay_failure(current_url: str, page_content: str, headless: bool) -> bool:

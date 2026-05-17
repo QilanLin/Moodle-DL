@@ -311,9 +311,9 @@ def test_cookie_text_is_rendered_from_cookie_batch_session(tmp_path):
     cookie_text = helper.get_cookies_text()
 
     assert '# Netscape HTTP Cookie File' in cookie_text
-    assert '.example.com\tTRUE\t/\tTRUE\t0\tsid\tabc' in cookie_text
+    assert 'example.com\tFALSE\t/\tTRUE\t0\tsid\tabc' in cookie_text
     assert 'localhost\tFALSE\t/moodle\tFALSE\t0\tlocal\txyz' in cookie_text
-    assert '.future.example.com\tTRUE\t/\tFALSE\t1735689600\tfuture\tvalue' in cookie_text
+    assert 'future.example.com\tFALSE\t/\tFALSE\t1735689600\tfuture\tvalue' in cookie_text
     assert 'ignored.example.com' not in cookie_text
 
 

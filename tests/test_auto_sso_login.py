@@ -273,6 +273,24 @@ class TestCheckFinalLoginStatus(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result, -1)  # Failed
 
+    async def test_login_status_plain_401_on_dashboard_after_sso_is_success(self):
+        """测试 dashboard 页面中的普通 401 数字不会误判为认证失败"""
+        page_content = '<html><body>Welcome<script>window.courseId = 401;</script></body></html>'
+        current_url = 'https://keats.kcl.ac.uk/my/'
+
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=True)
+
+        self.assertEqual(result, 1)  # Success
+
+    async def test_login_status_401_unauthorized_after_sso_still_fails(self):
+        """测试真正的 401 Unauthorized 页面仍然返回失败"""
+        page_content = '<html><body>401 Unauthorized</body></html>'
+        current_url = 'https://keats.kcl.ac.uk/my/'
+
+        result = await self.module._check_final_login_status(page_content, current_url, visited_sso=True)
+
+        self.assertEqual(result, -1)  # Failed
+
     async def test_headful_mode_microsoft_account_selection_page(self):
         """测试有头模式下在 Microsoft 账号选择页面返回未确定（而非失败）"""
         page_content = '<html><body>Sign in to your account</body></html>'

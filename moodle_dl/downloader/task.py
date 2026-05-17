@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import base64
+import binascii
 import functools
 import html
 import json
@@ -134,11 +136,20 @@ class Task:
         # browseandembed HTML while the entry id and player skin are still valid.
         'kaf.kcl.ac.uk': '2368101',
         'kaf.keats.kcl.ac.uk': '2368101',
+        'keats.kcl.ac.uk': '2368101',
+        'media.kcl.ac.uk': '2368101',
+    }
+    KALTURA_UICONF_FALLBACKS_BY_HOST = {
+        # Some KCL description links only contain an entry id. The same public
+        # player config is used by the direct media.kcl.ac.uk embeds.
+        'keats.kcl.ac.uk': '50622292',
+        'media.kcl.ac.uk': '50622292',
     }
 
     # 正则表达式模式（预编译）
-    REGEX_ENTRY_ID = re.compile(r'/entryid/([^/]+)/')
-    REGEX_UICONF_ID = re.compile(r'/playerSkin/(\d+)')
+    REGEX_ENTRY_ID = re.compile(r'/entryid/([^/?#]+)(?:[/?#]|$)', re.I)
+    REGEX_UICONF_ID = re.compile(r'/(?:playerSkin|uiConfId|uiconf_id)/(\d+)', re.I)
+    REGEX_KALTURA_PLAYLIST = re.compile(r'/isPlaylist/true(?:[/?#]|$)', re.I)
     REGEX_PARTNER_ID = re.compile(
         r'(?:partnerId|partner_id)["\']?\s*[:=]\s*["\']?(\d+)'
         r'|/p/(\d+)(?:/|$)'
@@ -305,6 +316,74 @@ class Task:
             )
         return partner_id
 
+    def _infer_uiconf_id_from_browse_url(self, browseandembed_url: str) -> Optional[str]:
+        """Infer a Kaltura uiconf ID for known KCL hosts when the URL omits it."""
+        host = urlparse.urlparse(browseandembed_url).hostname or ''
+        uiconf_id = self.KALTURA_UICONF_FALLBACKS_BY_HOST.get(host.lower())
+        if uiconf_id:
+            logging.info(
+                '[%d] ℹ️  Using uiconf_id fallback for Kaltura host %s',
+                self.task_id,
+                host,
+            )
+        return uiconf_id
+
+    @staticmethod
+    def _source_url_from_kaltura_lti_launch(url: str) -> Optional[str]:
+        """Return the Kaltura source URL embedded in Moodle's lti_launch.php URL."""
+        parsed = urlparse.urlparse(url or '')
+        if not (parsed.path or '').endswith('/filter/kaltura/lti_launch.php'):
+            return None
+
+        source_values = urlparse.parse_qs(parsed.query).get('source')
+        if not source_values:
+            return None
+
+        return html.unescape(source_values[0])
+
+    def _build_kaltura_url_from_known_embed_url(self, url: str) -> Optional[str]:
+        """
+        Build a yt-dlp-friendly Kaltura URL from URLs that already contain the
+        entry id and player skin.
+
+        Moodle descriptions sometimes contain KCL Kaltura embed URLs directly,
+        or Moodle's lti_launch.php wrapper with the real KAF URL in the source
+        query parameter. Fetching those pages is unnecessary and can fail on
+        local certificate stores, so derive the stable player URL directly.
+        """
+        source_url = self._source_url_from_kaltura_lti_launch(url) or url
+        partner_id = self._infer_partner_id_from_browse_url(source_url)
+        if not partner_id:
+            return None
+
+        try:
+            entry_id = self._extract_entry_id(source_url)
+        except KalturaExtractionError:
+            return None
+
+        try:
+            uiconf_id = self._extract_uiconf_id(source_url)
+        except KalturaExtractionError:
+            uiconf_id = self._infer_uiconf_id_from_browse_url(source_url)
+            if not uiconf_id:
+                return None
+
+        if self.REGEX_KALTURA_PLAYLIST.search(source_url):
+            return self._build_kaltura_playlist_url(
+                partner_id,
+                uiconf_id,
+                entry_id,
+                self.KALTURA_CDN_FALLBACKS[0],
+                source_url,
+            )
+
+        return self._build_kaltura_url(
+            partner_id,
+            uiconf_id,
+            entry_id,
+            self.KALTURA_CDN_FALLBACKS[0],
+        )
+
     def _log_browseandembed_url(self, browseandembed_url: str) -> None:
         """Log the non-sensitive parts of a Kaltura browseandembed URL."""
         parsed = urlparse.urlparse(browseandembed_url)
@@ -345,6 +424,33 @@ class Task:
             f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
         )
         logging.debug('[%d] 🔗 构建 Kaltura URL (CDN: %s)', self.task_id, cdn)
+        return url
+
+    def _build_kaltura_playlist_url(
+        self,
+        partner_id: str,
+        uiconf_id: str,
+        playlist_id: str,
+        cdn: str,
+        source_url: str,
+    ) -> str:
+        """Build a yt-dlp-friendly Kaltura URL for KAF playlist embeds."""
+        source_host = urlparse.urlparse(source_url).hostname or ''
+        params = {
+            'wid': f'_{partner_id}',
+            'iframeembed': 'true',
+            'playerId': 'kaltura_player_',
+            'flashvars[playlistAPI.kpl0Id]': playlist_id,
+        }
+        if source_host:
+            params['flashvars[playlistAPI.playlistUrl]'] = (
+                f'https://{source_host}/playlist/details/{{playlistAPI.kpl0Id}}'
+            )
+        url = (
+            f'https://{cdn}/html5/html5lib/v2.101/mwEmbedFrame.php/'
+            f'p/{partner_id}/uiconf_id/{uiconf_id}?{urlparse.urlencode(params)}'
+        )
+        logging.debug('[%d] 🔗 构建 Kaltura playlist URL (CDN: %s)', self.task_id, cdn)
         return url
 
     @staticmethod
@@ -710,7 +816,15 @@ class Task:
         @return: False if the page should be downloaded anyway; True if yt-dlp has processed the URL and we are done
         """
         # We try to limit the filename to < 250 chars
-        if self.file.content_type == 'description-url':
+        is_kaltura_playlist = 'playlistAPI.kpl0Id' in urlparse.unquote(dl_url)
+        if is_kaltura_playlist:
+            base_name = os.path.splitext(self.filename)[0]
+            safe_base_name = PT.truncate_filename(base_name, is_file=False, max_length=120)
+            filename_template = (
+                f'{safe_base_name} - %(playlist_index)02d - '
+                '%(title).120B (%(id).32B).%(ext)s'
+            )
+        elif self.file.content_type == 'description-url':
             filename_template = '%(title).180B (%(id).32B).%(ext)s'
         else:
             # For kalvidres and other videos, use the Moodle-provided filename directly
@@ -1248,6 +1362,11 @@ class Task:
         """
         try:
             logging.debug('[%d] 🔍 开始提取 Kaltura 视频 URL: %s', self.task_id, url[:80] + '...')
+
+            known_embed_url = self._build_kaltura_url_from_known_embed_url(url)
+            if known_embed_url:
+                logging.info('[%d] ✅ 从已知 Kaltura 嵌入 URL 构建视频 URL', self.task_id)
+                return known_embed_url
             
             # 创建带重试机制的 session
             session = self._create_session_with_retry()
@@ -1658,6 +1777,7 @@ class Task:
         返回: True 如果准备成功，False 如果需要停止
         """
         PT.make_dirs(self.destination)
+        self._saved_to_before_prepare = self.file.saved_to
 
         # 如果文件已修改，重命名旧文件
         if self.file.modified:
@@ -1747,13 +1867,20 @@ class Task:
         video_path = str(self.file.saved_to)
         text_path = os.path.splitext(video_path)[0] + '_notes.md'
 
-        # 提取文本内容
-        logging.info('[%d] Extracting kalvidres text content...', self.task_id)
-        await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
+        kaltura_url = self._build_kaltura_url_from_known_embed_url(self.file.content_fileurl)
+        if kaltura_url:
+            logging.info(
+                '[%d] Direct Kaltura embed URL detected; skipping text extraction',
+                self.task_id,
+            )
+        else:
+            # 提取文本内容
+            logging.info('[%d] Extracting kalvidres text content...', self.task_id)
+            await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
 
-        # 提取 Kaltura 视频 URL
-        logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)
-        kaltura_url = await self.extract_kalvidres_video_url(self.file.content_fileurl)
+            # 提取 Kaltura 视频 URL
+            logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)
+            kaltura_url = await self.extract_kalvidres_video_url(self.file.content_fileurl)
 
         if kaltura_url:
             # 使用提取的 URL 下载
@@ -1783,18 +1910,9 @@ class Task:
         download_success = False
 
         if is_leganto_reading_list_url(self.file.content_fileurl):
-            original_filename = self.filename
-            original_saved_to = self.file.saved_to
-            try:
-                await self._download_leganto_reading_list_pdf()
-                logging.debug('[%d] Leganto reading list saved as PDF', self.task_id)
-                return
-            except Exception as e:
-                logging.warning('[%d] Leganto PDF export failed: %r; creating shortcut instead', self.task_id, e)
-                if self.file.saved_to and self.file.saved_to != original_saved_to:
-                    PT.remove_file(self.file.saved_to)
-                self.filename = original_filename
-                self.file.saved_to = original_saved_to
+            await self._download_leganto_reading_list_pdf()
+            logging.debug('[%d] Leganto reading list saved as PDF', self.task_id)
+            return
         
         if self.opts.download_linked_files and not self.is_filtered_external_domain():
             try:
@@ -1816,6 +1934,7 @@ class Task:
         launch_parameters = None
         endpoint = self.file.content_fileurl
         course_url = self._leganto_course_url()
+        moodle_launch_url = self._leganto_moodle_launch_url()
 
         if self.file.content:
             try:
@@ -1826,18 +1945,74 @@ class Task:
             except (TypeError, ValueError) as exc:
                 logging.debug('[%d] Could not parse Leganto launch payload: %s', self.task_id, exc)
 
+        token_expiry = self._leganto_lti_launch_token_expiry(launch_parameters)
+        if token_expiry is not None and token_expiry <= time.time() + 30:
+            logging.info(
+                '[%d] Leganto LTI launch token has expired; refreshing from Moodle module',
+                self.task_id,
+            )
+            launch_parameters = None
+            endpoint = moodle_launch_url or endpoint
+
+        if not endpoint and not launch_parameters and not moodle_launch_url and not course_url:
+            raise RuntimeError('Leganto launch data is unavailable')
+
         self._prepare_leganto_pdf_target()
         printer = LegantoPdfPrinter(
             self.opts.cookies_text,
             skip_cert_verify=self.opts.global_opts.skip_cert_verify,
             headless=True,
         )
-        await printer.print_to_pdf(
-            endpoint,
-            self.file.saved_to,
-            launch_parameters=launch_parameters,
-            course_url=None if launch_parameters is not None else course_url,
-        )
+        try:
+            await printer.print_to_pdf(
+                endpoint or moodle_launch_url or course_url,
+                self.file.saved_to,
+                launch_parameters=launch_parameters,
+                moodle_launch_url=None if launch_parameters is not None else moodle_launch_url,
+                course_url=None if launch_parameters is not None or moodle_launch_url else course_url,
+            )
+        except RuntimeError as exc:
+            if launch_parameters is None or not moodle_launch_url:
+                raise
+            logging.warning(
+                '[%d] Stored Leganto LTI launch failed (%s); retrying from Moodle module',
+                self.task_id,
+                exc,
+            )
+            await printer.print_to_pdf(
+                moodle_launch_url,
+                self.file.saved_to,
+                moodle_launch_url=moodle_launch_url,
+                course_url=None,
+            )
+
+    def _leganto_lti_launch_token_expiry(self, launch_parameters) -> Optional[int]:
+        """Return the expiry timestamp of a Leganto LTI id_token, if readable."""
+        if not launch_parameters:
+            return None
+
+        for parameter in launch_parameters:
+            if not isinstance(parameter, dict) or parameter.get('name') != 'id_token':
+                continue
+
+            token = parameter.get('value')
+            if not isinstance(token, str):
+                return None
+
+            parts = token.split('.')
+            if len(parts) < 2:
+                return None
+
+            payload = parts[1]
+            payload += '=' * (-len(payload) % 4)
+            try:
+                decoded_payload = base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8')
+                expiry = json.loads(decoded_payload).get('exp')
+                return int(expiry) if expiry is not None else None
+            except (binascii.Error, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):
+                return None
+
+        return None
 
     def _leganto_course_url(self) -> Optional[str]:
         """Return the Moodle course page used to launch Leganto with course context."""
@@ -1850,8 +2025,21 @@ class Task:
             return None
         return f'{moodle_url}/course/view.php?id={course_id}'
 
+    def _leganto_moodle_launch_url(self) -> Optional[str]:
+        """Return the Moodle LTI module URL used to refresh a Leganto launch."""
+        if self.file.content_type != 'leganto_pdf':
+            return None
+
+        moodle_url = (self.opts.moodle_url or '').rstrip('/')
+        module_id = getattr(self.file, 'module_id', None)
+        if not moodle_url or not module_id:
+            return None
+        return f'{moodle_url}/mod/lti/view.php?id={module_id}'
+
     def _prepare_leganto_pdf_target(self):
         """Ensure the current task writes to a PDF file instead of a shortcut-like filename."""
+        previous_saved_to = getattr(self, '_saved_to_before_prepare', None)
+
         source_name = self.file.module_name or self.file.content_filename or 'Reading List'
         if self.file.content_filename and not self.file.content_filename.lower().startswith(('http://', 'https://')):
             source_name = self.file.content_filename
@@ -1862,7 +2050,29 @@ class Task:
 
         if self.file.saved_to:
             PT.remove_file(self.file.saved_to)
+        self._remove_leganto_shortcut_fallbacks(previous_saved_to)
         self.set_path(True)
+        self._remove_leganto_shortcut_fallbacks()
+
+    def _remove_leganto_shortcut_fallbacks(self, target_path: str = None):
+        """Remove shortcut files left by older Leganto fallback behavior."""
+        target_path = target_path or self.file.saved_to
+        if not target_path:
+            return
+        base_path, extension = os.path.splitext(target_path)
+        if extension.lower() not in ('.pdf', '.url', '.webloc', '.desktop'):
+            return
+        for link_extension in ('.url', '.webloc', '.desktop'):
+            self._remove_path_and_appledouble(base_path + link_extension)
+
+    @staticmethod
+    def _remove_path_and_appledouble(path: str) -> None:
+        PT.remove_file(path)
+        try:
+            path_obj = Path(path)
+            PT.remove_file(str(path_obj.with_name(f'._{path_obj.name}')))
+        except (OSError, ValueError):
+            pass
     
     async def _handle_error(self, dl_err: Exception):
         """

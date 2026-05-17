@@ -147,14 +147,15 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         service.log_download_status = AsyncMock()
         service._display_download_summary = MagicMock()
 
-        with patch('moodle_dl.downloader.download_service.random.uniform', return_value=0.2):
+        with patch('moodle_dl.downloader.download_service.random.uniform', return_value=0.2) as mock_uniform:
             with patch('moodle_dl.downloader.download_service.asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
                 asyncio.run(service.real_run())
 
         service.database.batch_delete_files.assert_called_once_with(service.courses)
         first.run.assert_awaited_once()
         second.run.assert_awaited_once()
-        mock_sleep.assert_awaited_once_with(0.5)
+        mock_uniform.assert_called_once_with(0, 3)
+        mock_sleep.assert_awaited_once_with(3.2)
         service._display_download_summary.assert_called_once()
 
     def test_real_run_returns_when_queue_is_empty(self):

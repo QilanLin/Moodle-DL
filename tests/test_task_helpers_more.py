@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
+import base64
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
+from urllib import parse as urlparse
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -22,6 +25,11 @@ class FakeAsyncContext:
 
     async def __aexit__(self, exc_type, exc, tb):
         return False
+
+
+def make_jwt(payload):
+    encoded_payload = base64.urlsafe_b64encode(json.dumps(payload).encode('utf-8')).decode('ascii').rstrip('=')
+    return f'header.{encoded_payload}.signature'
 
 
 @pytest.fixture
@@ -506,6 +514,36 @@ async def test_cookie_mod_and_kalvidres_download_helpers_restore_original_url(ta
 
 
 @pytest.mark.asyncio
+async def test_kalvidres_direct_embed_download_skips_text_extraction(task_factory, tmp_path):
+    task = task_factory(
+        module_modname='cookie_mod-kalvidres',
+        content_fileurl='https://media.kcl.ac.uk/embed/secure/iframe/entryId/1_5eu7vehb/uiConfId/50622292',
+    )
+    task.file.saved_to = str(tmp_path / 'video.mp4')
+    task.extract_kalvidres_text = AsyncMock()
+    task.extract_kalvidres_video_url = AsyncMock()
+
+    downloaded_urls = []
+
+    async def record_download(**_kwargs):
+        downloaded_urls.append(task.file.content_fileurl)
+
+    task.external_download_url = AsyncMock(side_effect=record_download)
+
+    await task._handle_kalvidres_download()
+
+    task.extract_kalvidres_text.assert_not_awaited()
+    task.extract_kalvidres_video_url.assert_not_awaited()
+    assert downloaded_urls == [
+        'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
+        'uiconf_id/50622292/partner_id/2368101?iframeembed=true&entry_id=1_5eu7vehb'
+    ]
+    assert task.file.content_fileurl == (
+        'https://media.kcl.ac.uk/embed/secure/iframe/entryId/1_5eu7vehb/uiConfId/50622292'
+    )
+
+
+@pytest.mark.asyncio
 async def test_external_url_fallback_downloads_when_allowed_and_creates_shortcut_otherwise(task_factory):
     downloadable = task_factory(module_modname='url', download_linked_files=True)
     downloadable.is_filtered_external_domain = MagicMock(return_value=False)
@@ -553,6 +591,7 @@ async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_fact
         leganto_url,
         task.file.saved_to,
         launch_parameters=None,
+        moodle_launch_url=None,
         course_url='https://moodle.example.com/course/view.php?id=7',
     )
     task.create_shortcut.assert_not_awaited()
@@ -560,7 +599,7 @@ async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_fact
 
 
 @pytest.mark.asyncio
-async def test_external_url_fallback_creates_shortcut_when_leganto_pdf_export_fails(task_factory):
+async def test_external_url_fallback_raises_when_leganto_pdf_export_fails(task_factory):
     leganto_url = 'https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML'
     task = task_factory(
         module_modname='url',
@@ -569,18 +608,17 @@ async def test_external_url_fallback_creates_shortcut_when_leganto_pdf_export_fa
         download_linked_files=False,
     )
     await task._prepare_download()
-    original_saved_to = task.file.saved_to
     task.create_shortcut = AsyncMock()
 
     with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
         printer = printer_cls.return_value
         printer.print_to_pdf = AsyncMock(side_effect=RuntimeError('print failed'))
 
-        await task._download_external_url_with_fallback()
+        with pytest.raises(RuntimeError, match='print failed'):
+            await task._download_external_url_with_fallback()
 
-    task.create_shortcut.assert_awaited_once()
-    assert task.filename == 'Reading List'
-    assert task.file.saved_to == original_saved_to
+    task.create_shortcut.assert_not_awaited()
+    assert task.filename == 'Reading List.pdf'
 
 
 @pytest.mark.asyncio
@@ -608,6 +646,94 @@ async def test_leganto_pdf_download_uses_lti_launch_payload(task_factory):
         'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
         task.file.saved_to,
         launch_parameters=[{'name': 'id_token', 'value': 'signed-token'}],
+        moodle_launch_url=None,
+        course_url=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_target_removes_previous_shortcut_fallback(task_factory, tmp_path):
+    old_shortcut = tmp_path / 'Week 1' / '*07* Reading List.webloc'
+    old_shortcut.parent.mkdir(parents=True, exist_ok=True)
+    old_shortcut.write_text('old shortcut', encoding='utf-8')
+    old_appledouble = old_shortcut.with_name(f'._{old_shortcut.name}')
+    old_appledouble.write_text('old metadata', encoding='utf-8')
+
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+    )
+    task.file.saved_to = str(old_shortcut)
+
+    await task._prepare_download()
+    task._prepare_leganto_pdf_target()
+
+    assert task.file.saved_to.endswith('Reading List.pdf')
+    assert not old_shortcut.exists()
+    assert not old_appledouble.exists()
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_download_retries_from_moodle_module_when_stored_launch_fails(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = json.dumps({
+        'endpoint': 'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        'parameters': [{'name': 'id_token', 'value': make_jwt({'exp': 9999999999})}],
+    })
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock(side_effect=[RuntimeError('Invalid token'), None])
+
+        await task._download_leganto_reading_list_pdf()
+
+    assert printer.print_to_pdf.await_args_list[0].kwargs == {
+        'launch_parameters': [{'name': 'id_token', 'value': make_jwt({'exp': 9999999999})}],
+        'moodle_launch_url': None,
+        'course_url': None,
+    }
+    assert printer.print_to_pdf.await_args_list[1].args == (
+        'https://moodle.example.com/mod/lti/view.php?id=10',
+        task.file.saved_to,
+    )
+    assert printer.print_to_pdf.await_args_list[1].kwargs == {
+        'moodle_launch_url': 'https://moodle.example.com/mod/lti/view.php?id=10',
+        'course_url': None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_download_refreshes_expired_lti_launch_payload(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = json.dumps({
+        'endpoint': 'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        'parameters': [{'name': 'id_token', 'value': make_jwt({'exp': 100})}],
+    })
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock()
+
+        await task._download_leganto_reading_list_pdf()
+
+    printer.print_to_pdf.assert_awaited_once_with(
+        'https://moodle.example.com/mod/lti/view.php?id=10',
+        task.file.saved_to,
+        launch_parameters=None,
+        moodle_launch_url='https://moodle.example.com/mod/lti/view.php?id=10',
         course_url=None,
     )
 
@@ -630,11 +756,35 @@ async def test_leganto_pdf_retry_with_empty_url_uses_course_launch_fallback(task
         await task._download_leganto_reading_list_pdf()
 
     printer.print_to_pdf.assert_awaited_once_with(
-        '',
+        'https://moodle.example.com/mod/lti/view.php?id=10',
         task.file.saved_to,
         launch_parameters=None,
-        course_url='https://moodle.example.com/course/view.php?id=7',
+        moodle_launch_url='https://moodle.example.com/mod/lti/view.php?id=10',
+        course_url=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_process_raises_when_export_fails(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    await task._prepare_download()
+
+    with patch.object(
+        task,
+        '_download_leganto_reading_list_pdf',
+        AsyncMock(side_effect=RuntimeError('Failed LTI')),
+    ):
+        with pytest.raises(RuntimeError, match='Failed LTI'):
+            await task._execute_download()
+
+    assert task.filename == 'Reading List.pdf'
+    assert task.file.content_fileurl == ''
+    assert task.file.saved_to.endswith('Reading List.pdf')
 
 
 def test_leganto_course_url_is_only_built_for_direct_reading_list(task_factory):
@@ -653,6 +803,7 @@ def test_leganto_course_url_is_only_built_for_direct_reading_list(task_factory):
         content_fileurl='',
     )
     assert retry_leganto_pdf._leganto_course_url() == 'https://moodle.example.com/course/view.php?id=7'
+    assert retry_leganto_pdf._leganto_moodle_launch_url() == 'https://moodle.example.com/mod/lti/view.php?id=10'
 
 
 @pytest.mark.asyncio
@@ -1323,6 +1474,73 @@ async def test_extract_kalvidres_video_url_uses_keats_kaf_partner_fallback(task_
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ('source_url', 'expected_uiconf', 'expected_entry'),
+    [
+        (
+            'https://media.kcl.ac.uk/embed/secure/iframe/entryId/1_5eu7vehb/uiConfId/50622292',
+            '50622292',
+            '1_5eu7vehb',
+        ),
+        (
+            'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&source='
+            'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2F'
+            'entryid%2F1_3ljlwqoz%2FplayerSkin%2F42864872%2F',
+            '42864872',
+            '1_3ljlwqoz',
+        ),
+        (
+            'https://keats.kcl.ac.uk/browseandembed/index/media/entryid/1_l0ay588r',
+            '50622292',
+            '1_l0ay588r',
+        ),
+    ],
+)
+async def test_extract_kalvidres_video_url_builds_from_known_kcl_embed_urls(
+    task_factory,
+    source_url,
+    expected_uiconf,
+    expected_entry,
+):
+    task = task_factory()
+    task._create_session_with_retry = MagicMock(side_effect=AssertionError('network should not be used'))
+
+    result = await task.extract_kalvidres_video_url(source_url)
+
+    assert result == (
+        'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
+        f'uiconf_id/{expected_uiconf}/partner_id/2368101?iframeembed=true&entry_id={expected_entry}'
+    )
+    task._create_session_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_video_url_builds_playlist_url_from_kaf_source(task_factory):
+    source_url = (
+        'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2F'
+        'entryid%2F1_3ljlwqoz%2FshowDescription%2Ffalse%2FplayerSkin%2F42864872%2F'
+        'isPlaylist%2Ftrue%2F'
+    )
+    task = task_factory()
+    task._create_session_with_retry = MagicMock(side_effect=AssertionError('network should not be used'))
+
+    result = await task.extract_kalvidres_video_url(source_url)
+
+    parsed = urlparse.urlparse(result)
+    query = urlparse.parse_qs(parsed.query)
+    assert parsed.netloc == 'cdnapisec.kaltura.com'
+    assert parsed.path == '/html5/html5lib/v2.101/mwEmbedFrame.php/p/2368101/uiconf_id/42864872'
+    assert query['wid'] == ['_2368101']
+    assert query['flashvars[playlistAPI.kpl0Id]'] == ['1_3ljlwqoz']
+    assert query['flashvars[playlistAPI.playlistUrl]'] == [
+        'https://kaf.keats.kcl.ac.uk/playlist/details/{playlistAPI.kpl0Id}'
+    ]
+    assert 'entry_id' not in query
+    task._create_session_with_retry.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_extract_kalvidres_video_url_handles_bad_browse_url_and_unknown_errors(task_factory):
     bad_browse = task_factory()
     bad_session = MagicMock()
@@ -1407,6 +1625,39 @@ async def test_download_using_yt_dlp_success_sets_options_and_password(task_fact
     assert ydl.params['videopassword'] == 'secret'
     assert 'cookiefile' in ydl.opts
     add_extractors.assert_called_once_with(ydl)
+
+
+@pytest.mark.asyncio
+async def test_download_using_yt_dlp_uses_distinct_names_for_kaltura_playlist_items(
+    task_factory,
+    fake_yt_dlp,
+):
+    fake_cls, _add_extractors = fake_yt_dlp
+    task = task_factory(
+        content_type='cookie_mod',
+        content_filename='CVs and VMock - Video (1_3ljlwqoz).mp4',
+    )
+    infos = HeadInfo(
+        content_type='text/html',
+        content_length=1,
+        last_modified=None,
+        final_url='https://cdnapisec.kaltura.com/html5/html5lib/v2.101/mwEmbedFrame.php',
+        guessed_file_name='mwEmbedFrame.php',
+        host='cdnapisec.kaltura.com',
+    )
+
+    assert await task.download_using_yt_dlp(
+        'https://cdnapisec.kaltura.com/html5/html5lib/v2.101/mwEmbedFrame.php?'
+        'flashvars%5BplaylistAPI.kpl0Id%5D=1_3ljlwqoz',
+        infos,
+        delete_if_successful=True,
+    ) is True
+
+    outtmpl = fake_cls.instances[0].opts['outtmpl']
+    assert 'CVs and VMock - Video (1_3ljlwqoz)' in outtmpl
+    assert '%(playlist_index)02d' in outtmpl
+    assert '%(title).120B' in outtmpl
+    assert '%(id).32B' in outtmpl
 
 
 @pytest.mark.asyncio

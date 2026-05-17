@@ -145,6 +145,7 @@ class LegantoPdfPrinter:
         output_path: str,
         *,
         launch_parameters: Optional[List[Dict[str, str]]] = None,
+        moodle_launch_url: Optional[str] = None,
         course_url: Optional[str] = None,
     ) -> None:
         try:
@@ -176,6 +177,8 @@ class LegantoPdfPrinter:
 
                 if launch_parameters is not None:
                     await self._launch_lti_form(page, url, launch_parameters)
+                elif moodle_launch_url:
+                    page = await self._open_moodle_lti_launch(context, page, moodle_launch_url)
                 elif course_url:
                     page = await self._open_from_moodle_course(context, page, course_url)
                 else:
@@ -257,6 +260,107 @@ class LegantoPdfPrinter:
                 popup_task.cancel()
             await page.wait_for_load_state('domcontentloaded', timeout=self.PRINT_TIMEOUT_MS)
             return page
+
+    async def _open_moodle_lti_launch(self, context, page, launch_url: str):
+        popup_task = asyncio.create_task(context.wait_for_event('page', timeout=8_000))
+        try:
+            await page.goto(launch_url, wait_until='domcontentloaded', timeout=self.PRINT_TIMEOUT_MS)
+            await self._stabilize_page(page)
+            leganto_page = await self._wait_for_leganto_page(context, page, timeout_ms=10_000)
+            if leganto_page is not None:
+                return leganto_page
+
+            if not popup_task.done():
+                popup_task.cancel()
+            popup_task = asyncio.create_task(context.wait_for_event('page', timeout=8_000))
+            submitted = await self._submit_visible_lti_form(page)
+            if submitted:
+                await self._stabilize_page(page)
+                leganto_page = await self._wait_for_leganto_page(context, page, timeout_ms=10_000)
+                return leganto_page or await self._maybe_get_popup(popup_task, timeout_ms=1_000) or page
+            if not popup_task.done():
+                popup_task.cancel()
+
+            launch_control = await self._find_lti_launch_control(page)
+            if launch_control is not None:
+                if not popup_task.done():
+                    popup_task.cancel()
+                popup_task = asyncio.create_task(context.wait_for_event('page', timeout=8_000))
+                try:
+                    await launch_control.click(timeout=10_000)
+                except Exception:
+                    await launch_control.click(timeout=10_000, force=True)
+                leganto_page = await self._wait_for_leganto_page(context, page, timeout_ms=10_000)
+                if leganto_page is not None:
+                    return leganto_page
+                popup = await self._maybe_get_popup(popup_task, timeout_ms=1_000)
+                if popup is not None and self._is_leganto_page_url(popup.url):
+                    return popup
+                await page.wait_for_load_state('domcontentloaded', timeout=self.PRINT_TIMEOUT_MS)
+
+            return page
+        finally:
+            if not popup_task.done():
+                popup_task.cancel()
+
+    async def _wait_for_leganto_page(self, context, current_page, *, timeout_ms: int):
+        deadline = asyncio.get_running_loop().time() + timeout_ms / 1000
+        while asyncio.get_running_loop().time() < deadline:
+            for candidate in context.pages:
+                if self._is_leganto_page_url(candidate.url):
+                    try:
+                        await candidate.wait_for_load_state('domcontentloaded', timeout=1_000)
+                    except Exception:
+                        pass
+                    return candidate
+            await current_page.wait_for_timeout(250)
+        return None
+
+    @staticmethod
+    def _is_leganto_page_url(url: str) -> bool:
+        parsed = urlparse.urlparse(url or '')
+        return (parsed.hostname or '').lower() == 'rl.kcl.ac.uk' and '/leganto/' in (parsed.path or '')
+
+    async def _maybe_get_popup(self, popup_task, *, timeout_ms: int):
+        try:
+            popup = await asyncio.wait_for(asyncio.shield(popup_task), timeout=timeout_ms / 1000)
+            await popup.wait_for_load_state('domcontentloaded', timeout=self.PRINT_TIMEOUT_MS)
+            return popup
+        except Exception:
+            if not popup_task.done():
+                popup_task.cancel()
+            return None
+
+    async def _submit_visible_lti_form(self, page) -> bool:
+        forms = page.locator('form[action*="rl.kcl.ac.uk"], form[action*="/lti/"]')
+        count = await forms.count()
+        for index in range(min(count, 5)):
+            form = forms.nth(index)
+            try:
+                await form.evaluate('form => form.submit()')
+                return True
+            except Exception:
+                continue
+        return False
+
+    async def _find_lti_launch_control(self, page):
+        candidates = [
+            page.get_by_role('button', name=re.compile(r'(launch|open|continue|reading list)', re.I)),
+            page.get_by_role('link', name=re.compile(r'(launch|open|continue|reading list)', re.I)),
+            page.locator('input[type="submit"], button[type="submit"]'),
+            page.locator('a[href*="/mod/lti/view.php"], a[href*="rl.kcl.ac.uk"], a[href*="leganto"]'),
+        ]
+
+        for candidate in candidates:
+            count = await candidate.count()
+            for index in range(min(count, 10)):
+                control = candidate.nth(index)
+                try:
+                    if await control.is_visible() and await control.is_enabled():
+                        return control
+                except Exception:
+                    continue
+        return None
 
     async def _find_moodle_reading_list_link(self, page):
         candidates = [

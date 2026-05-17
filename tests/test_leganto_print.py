@@ -366,6 +366,29 @@ async def test_trigger_print_list_falls_back_to_current_page_when_no_popup_opens
 
 
 @pytest.mark.asyncio
+async def test_wait_for_leganto_page_finds_existing_popup():
+    class FakePage:
+        def __init__(self, url):
+            self.url = url
+            self.waits = 0
+
+        async def wait_for_load_state(self, *_args, **_kwargs):
+            self.waits += 1
+
+        async def wait_for_timeout(self, *_args):
+            raise AssertionError('Leganto popup should be found without polling timeout')
+
+    moodle_page = FakePage('https://keats.kcl.ac.uk/mod/lti/view.php?id=1')
+    leganto_page = FakePage('https://rl.kcl.ac.uk/leganto/nui/lists/123?auth=SAML')
+    context = SimpleNamespace(pages=[moodle_page, leganto_page])
+
+    result = await LegantoPdfPrinter()._wait_for_leganto_page(context, moodle_page, timeout_ms=1000)
+
+    assert result is leganto_page
+    assert leganto_page.waits == 1
+
+
+@pytest.mark.asyncio
 async def test_print_to_pdf_closes_browser_context_and_filters_launch_cookies(tmp_path, monkeypatch):
     class FakePdfPage:
         def __init__(self):
