@@ -5,7 +5,7 @@ import logging
 import mimetypes
 import re
 import urllib.parse as urlparse
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from moodle_dl.types import Course, File, MoodleURL
 from moodle_dl.utils import PathTools as PT, UrlHelper
@@ -335,6 +335,41 @@ class ResultBuilder:
 
         return description
 
+    @staticmethod
+    def _match_kaltura_entry_id(url: str):
+        return re.search(r'entryid/([^/&?#]+)', url, re.IGNORECASE) or re.search(
+            r'entryid%2F([^/%&?#]+)', url, re.IGNORECASE
+        )
+
+    @staticmethod
+    def _get_kaltura_lti_source_url(url: str) -> Optional[str]:
+        parsed = urlparse.urlparse(url or '')
+        if '/filter/kaltura/lti_launch.php' not in (parsed.path or ''):
+            return None
+
+        source_values = urlparse.parse_qs(parsed.query).get('source')
+        if not source_values:
+            return None
+
+        return html.unescape(urlparse.unquote(source_values[0]))
+
+    @classmethod
+    def _kaltura_source_has_player_context(cls, source_url: str) -> bool:
+        return bool(
+            re.search(r'/(?:playerSkin|uiConfId|uiconf_id)/\d+', source_url, re.IGNORECASE)
+            or re.search(r'/isPlaylist/true(?:[/?#]|$)', source_url, re.IGNORECASE)
+        )
+
+    @classmethod
+    def _is_kaltura_url_candidate(cls, url: str, url_parts) -> bool:
+        path = url_parts.path or ''
+        url_lower = url.lower()
+        return (
+            '/filter/kaltura/lti_launch.php' in path
+            or ('browseandembed' in path and 'entryid' in url_lower)
+            or (('kaltura' in url_lower or 'entryid' in url_lower) and cls._match_kaltura_entry_id(url) is not None)
+        )
+
     def _find_all_urls(
         self,
         content_html: str,
@@ -379,12 +414,12 @@ class ResultBuilder:
             url = urlparse.unquote(url)
 
             url_parts = urlparse.urlparse(url)
-            if (
-                url_parts.hostname == self.moodle_domain
-                or url_parts.netloc == self.moodle_domain
-                and no_search_for_moodle_urls
-            ):
-                # Skip if no moodle urls should be found
+            is_moodle_url = url_parts.hostname == self.moodle_domain or url_parts.netloc == self.moodle_domain
+            is_kaltura_candidate = self._is_kaltura_url_candidate(url, url_parts)
+            if is_moodle_url and not is_kaltura_candidate:
+                # Keep the historical behavior of not creating shortcut files
+                # for ordinary internal Moodle links, but allow embedded Kaltura
+                # launches from labels/pages to become video download tasks.
                 continue
 
             for filter_str in filter_urls_containing:
@@ -414,18 +449,15 @@ class ResultBuilder:
             # Format 1: Kaltura LTI launch URLs
             # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
             if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
-                # Extract entry_id from the source parameter
-                # URL format: ...source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2F...%2Fentryid%2F1_uwhesokp%2F...
-                # Note: URL has already been decoded by urlparse.unquote(), so we match '/' only
-                # But we also handle cases where URL might still contain encoded characters (double encoding)
-                entry_id_match = re.search(r'entryid/([^/&?]+)', url) or re.search(r'entryid%2F([^/%&?]+)', url)
+                source_url = self._get_kaltura_lti_source_url(url)
+                entry_id_match = self._match_kaltura_entry_id(source_url or url)
                 if entry_id_match:
                     entry_id = entry_id_match.group(1)
-                    # Additional decode if entry_id contains encoded characters
                     entry_id = urlparse.unquote(entry_id)
-                    # Convert to kalvidres URL format (same as standalone kalvidres modules)
-                    # This allows the video to be downloaded using the existing kalvidres handler
-                    url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+                    if not source_url or not self._kaltura_source_has_player_context(source_url):
+                        # Older tests and some Moodle instances only expose the
+                        # entry id. Keep the legacy normalized URL in that case.
+                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
                     location['module_modname'] = 'cookie_mod-kalvidres'
                     kaltura_converted = True
                     logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
@@ -433,12 +465,9 @@ class ResultBuilder:
             # Format 2: Direct Kaltura browseandembed URLs
             # Format: .../browseandembed/index/media/entryid/1_xxxxx/...
             elif 'browseandembed' in url_parts.path and 'entryid' in url:
-                # Note: URL has already been decoded, so we match '/' only
-                # But we also handle cases where URL might still contain encoded characters (double encoding)
-                entry_id_match = re.search(r'entryid/([^/&?]+)', url) or re.search(r'entryid%2F([^/%&?]+)', url)
+                entry_id_match = self._match_kaltura_entry_id(url)
                 if entry_id_match:
                     entry_id = entry_id_match.group(1)
-                    # Additional decode if entry_id contains encoded characters
                     entry_id = urlparse.unquote(entry_id)
                     # Normalize to standard kalvidres URL format
                     if url_parts.hostname == self.moodle_domain:
@@ -455,7 +484,7 @@ class ResultBuilder:
             elif ('kaltura' in url.lower() or 'entryid' in url.lower()) and not kaltura_converted:
                 # Check if this looks like a Kaltura video URL
                 # Note: URL has already been decoded, so we match '/' first, then try encoded version
-                entry_id_match = re.search(r'entryid/([^/&?]+)', url, re.IGNORECASE) or re.search(r'entryid%2F([^/%&?]+)', url, re.IGNORECASE)
+                entry_id_match = self._match_kaltura_entry_id(url)
                 if entry_id_match:
                     entry_id = entry_id_match.group(1)
                     # Additional decode if entry_id contains encoded characters

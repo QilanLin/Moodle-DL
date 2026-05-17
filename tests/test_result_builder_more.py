@@ -335,6 +335,9 @@ def test_find_all_urls_converts_kaltura_variants_and_moodle_webservice_links():
     html = (
         '<a href="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source='
         'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_lti%2F">LTI</a>'
+        '<iframe src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&amp;source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_same%2F'
+        'playerSkin%2F42864872%2F"></iframe>'
         '<a href="https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_direct/">Direct</a>'
         '<a href="https://kaf.keats.kcl.ac.uk/player/entryid/1_generic/">Generic</a>'
         '<a href="https://keats.kcl.ac.uk/webservice/pluginfile.php/1/file.pdf">Pluginfile</a>'
@@ -349,16 +352,43 @@ def test_find_all_urls_converts_kaltura_variants_and_moodle_webservice_links():
 
     kaltura_files = [file for file in files if file.module_modname == 'cookie_mod-kalvidres']
 
-    assert len(kaltura_files) == 3
+    assert len(kaltura_files) == 4
     assert {file.content_filename for file in kaltura_files} == {
         'Kaltura Video 1_lti',
+        'Kaltura Video 1_same',
         'Kaltura Video 1_direct',
         'Kaltura Video 1_generic',
     }
+    same_domain_lti = next(file for file in kaltura_files if file.content_filename == 'Kaltura Video 1_same')
+    assert same_domain_lti.content_fileurl.startswith(
+        'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?'
+    )
+    assert '/playerSkin/42864872/' in same_domain_lti.content_fileurl
     assert any(
         file.content_fileurl.startswith('https://keats.kcl.ac.uk/browseandembed/index/media/entryid/')
         for file in kaltura_files
     )
+
+
+def test_handle_description_extracts_same_domain_kaltura_iframe():
+    builder = make_builder()
+    html = (
+        '<div class="kaltura-player-container">'
+        '<iframe src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&amp;source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_topic5%2F'
+        'showTitle%2Ffalse%2FplayerSkin%2F42864872%2F"></iframe>'
+        '</div>'
+    )
+
+    files = builder._handle_description(
+        html,
+        **make_location(module_name='Topic 5 introduction', module_modname='label'),
+    )
+
+    video = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
+    assert video.content_filename == 'Kaltura Video 1_topic5'
+    assert video.content_type == 'description-url'
+    assert '/playerSkin/42864872/' in video.content_fileurl
 
 
 def test_find_all_urls_skips_empty_and_filter_matched_urls():
