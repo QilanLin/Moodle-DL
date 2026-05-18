@@ -610,6 +610,28 @@ def test_incomplete_download_lifecycle(recorder):
     assert recorder.get_incomplete_download(7, '/tmp/file.pdf') is None
 
 
+def test_get_incomplete_files_with_course_info_returns_file_rows(recorder):
+    file = make_file(filename='resume.pdf', url='https://example.com/resume.pdf')
+    recorder.save_file(file, 101, 'Course One')
+    file_id = read_file_rows(recorder)[0]['file_id']
+
+    recorder.save_incomplete_download(
+        file_id=file_id,
+        file_url='https://example.com/resume.pdf',
+        file_path='/tmp/resume.pdf',
+        total_bytes=100,
+        downloaded_bytes=25,
+        server_supports_range=True,
+    )
+
+    courses = recorder.get_incomplete_files_with_course_info()
+
+    assert list(courses.keys()) == [101]
+    assert courses[101]['course_fullname'] == 'Course One'
+    assert [row.content_filename for row in courses[101]['files']] == ['resume.pdf']
+    assert courses[101]['files'][0].file_id == file_id
+
+
 def test_cleanup_old_incomplete_downloads_uses_cutoff(recorder):
     recorder.save_incomplete_download(1, 'https://example.com/old', '/tmp/old', 100, 10)
     recorder.save_incomplete_download(2, 'https://example.com/new', '/tmp/new', 100, 10)

@@ -36,7 +36,7 @@ from moodle_dl.downloader.fake_download_service import FakeDownloadService
 from moodle_dl.downloader.task import Task
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.notifications import get_all_notify_services
-from moodle_dl.types import Course, MoodleDlOpts
+from moodle_dl.types import Course, File, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import ProcessLock, check_debug
 from moodle_dl.version import __version__
@@ -75,6 +75,8 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
         MoodleWizard(config, opts).interactively_acquire_token(use_stored_url=True)
     elif opts.refresh_cookies:
         refresh_cookies_only(config, opts)
+    elif opts.resume:
+        resume_downloads(config, opts)
     elif opts.retry_failed:
         retry_failed_downloads(config, opts)
     else:
@@ -164,6 +166,78 @@ def _load_failed_files_as_courses(database: StateRecorder) -> List[Course]:
         courses.append(course)
 
     return courses
+
+
+def _load_incomplete_download_files_as_courses(database: StateRecorder) -> List[Course]:
+    """Load resumable incomplete downloads from the database as Course objects."""
+    courses_dict = database.get_incomplete_files_with_course_info()
+
+    if not courses_dict:
+        return []
+
+    courses = []
+    for course_id, course_info in courses_dict.items():
+        courses.append(
+            Course(
+                _id=course_id,
+                fullname=course_info['course_fullname'],
+                files=course_info['files'],
+            )
+        )
+
+    return courses
+
+
+def _file_resume_identity(file: File) -> tuple:
+    if file.file_id is not None:
+        return ('file_id', file.file_id)
+    return (
+        'path',
+        file.module_id,
+        file.content_type,
+        file.content_filepath,
+        file.content_filename,
+        file.content_fileurl,
+    )
+
+
+def _merge_course_file_lists(primary_courses: List[Course], extra_courses: List[Course]) -> List[Course]:
+    """Merge course file lists while keeping primary order and avoiding duplicate files."""
+    merged_by_course_id = {}
+    file_identities_by_course_id = {}
+    merged_courses = []
+
+    for course in primary_courses:
+        merged_course = Course(course.id, course.fullname, list(course.files))
+        merged_course.overwrite_name_with = course.overwrite_name_with
+        merged_course.create_directory_structure = course.create_directory_structure
+        merged_course.excluded_sections = list(course.excluded_sections)
+        merged_by_course_id[course.id] = merged_course
+        file_identities_by_course_id[course.id] = {
+            _file_resume_identity(file) for file in merged_course.files
+        }
+        merged_courses.append(merged_course)
+
+    for course in extra_courses:
+        if course.id not in merged_by_course_id:
+            merged_course = Course(course.id, course.fullname, [])
+            merged_course.overwrite_name_with = course.overwrite_name_with
+            merged_course.create_directory_structure = course.create_directory_structure
+            merged_course.excluded_sections = list(course.excluded_sections)
+            merged_by_course_id[course.id] = merged_course
+            file_identities_by_course_id[course.id] = set()
+            merged_courses.append(merged_course)
+
+        merged_course = merged_by_course_id[course.id]
+        known_file_identities = file_identities_by_course_id[course.id]
+        for file in course.files:
+            file_identity = _file_resume_identity(file)
+            if file_identity in known_file_identities:
+                continue
+            merged_course.files.append(file)
+            known_file_identities.add(file_identity)
+
+    return merged_courses
 
 
 def _reset_failed_files_for_retry(database: StateRecorder, courses: List[Course]) -> None:
@@ -264,6 +338,12 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
 
     # Step 7: Print results
     _print_retry_results(new_failed_downloads)
+
+
+def resume_downloads(config: ConfigHelper, opts: MoodleDlOpts):
+    """Resume downloads from the saved database state."""
+    logging.info('继续上次下载。 / Resuming the previous download.')
+    run_main(config, opts)
 
 
 def refresh_cookies_only(config: ConfigHelper, opts: MoodleDlOpts):
@@ -432,6 +512,19 @@ def run_main(config: ConfigHelper, opts: MoodleDlOpts):
         logging.debug('Checking for changes for the configured Moodle-Account....')
         database = StateRecorder(config, opts)
         changed_courses = asyncio.run(moodle.fetch_state(database))
+
+        if opts.resume:
+            incomplete_courses = _load_incomplete_download_files_as_courses(database)
+            if incomplete_courses:
+                incomplete_count = sum(len(course.files) for course in incomplete_courses)
+                logging.info(
+                    '找到 %d 个未完成下载，将加入本次续传。 / Found %d incomplete download(s) to resume.',
+                    incomplete_count,
+                    incomplete_count,
+                )
+                changed_courses = _merge_course_file_lists(changed_courses, incomplete_courses)
+            else:
+                logging.info('未找到单独的未完成下载记录，将继续下载扫描到的剩余文件。')
 
         if opts.log_responses:
             logging.info("All JSON-responses from Moodle have been written to the responses.log file.")
@@ -713,6 +806,17 @@ def get_parser():
         help=(
             'Retry downloading all previously failed files. '
             + 'This will attempt to re-download files that failed in previous runs.'
+        ),
+    )
+
+    group.add_argument(
+        '--resume',
+        dest='resume',
+        default=False,
+        action='store_true',
+        help=(
+            'Resume a previously interrupted download. This re-scans Moodle for remaining files '
+            + 'and also retries resumable incomplete downloads stored in the local database.'
         ),
     )
 

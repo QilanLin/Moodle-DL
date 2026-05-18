@@ -1721,6 +1721,43 @@ class StateRecorder:
         finally:
             conn.close()
 
+    def get_incomplete_files_with_course_info(self, max_attempts: int = 5) -> Dict[int, Dict]:
+        """
+        获取仍可续传的未完成下载，并附带课程和文件信息。
+
+        @param max_attempts: 最大尝试次数
+        @return: 字典，键为 course_id，值为包含 course_fullname 和 files 列表的字典
+        """
+        conn = sqlite3.connect(self.db_file)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute(
+                """SELECT f.*
+                FROM incomplete_downloads i
+                JOIN files f ON f.file_id = i.file_id
+                WHERE i.status = 'pending'
+                AND i.attempts < ?
+                ORDER BY i.last_update_time DESC, f.course_id
+                """,
+                (max_attempts,),
+            )
+
+            courses_dict = {}
+            for row in cursor.fetchall():
+                course_id = row['course_id']
+                if course_id not in courses_dict:
+                    courses_dict[course_id] = {
+                        'course_fullname': row['course_fullname'],
+                        'files': [],
+                    }
+                courses_dict[course_id]['files'].append(File.fromRow(row))
+
+            return courses_dict
+        finally:
+            conn.close()
+
     def cleanup_old_incomplete_downloads(self, days_old: int = 7):
         """
         清理超过指定天数的未完成下载记录

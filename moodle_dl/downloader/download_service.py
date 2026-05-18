@@ -47,8 +47,8 @@ class DownloadPauseController:
         )
         self._thread.start()
         logging.info(
-            '快捷键 / Hotkeys: 按 p 在当前文件完成后暂停；暂停后按 p 或 r 继续。'
-            ' / Press p to pause after the current file finishes; press p or r to resume.'
+            '快捷键 / Hotkeys: 按 P 在当前文件完成后暂停；暂停后按 R 继续。'
+            ' / Press P to pause after the current file finishes; press R to resume.'
         )
 
     def stop(self) -> None:
@@ -60,12 +60,8 @@ class DownloadPauseController:
     def handle_key(self, key: str) -> str:
         if key in self.PAUSE_KEYS:
             with self._lock:
-                if self._paused:
-                    self._paused = False
-                    return 'resume'
-                if self._pause_requested:
-                    self._pause_requested = False
-                    return 'pause_cancelled'
+                if self._paused or self._pause_requested:
+                    return ''
                 self._pause_requested = True
                 return 'pause_requested'
 
@@ -102,10 +98,6 @@ class DownloadPauseController:
                     '已请求暂停：当前文件下载完成后会暂停。'
                     ' / Pause requested: download will pause after the current file finishes.'
                 )
-            elif action == 'pause_cancelled':
-                logging.info(
-                    '已取消暂停请求。 / Pending pause request cancelled.'
-                )
             elif action == 'resume':
                 logging.info('继续下载。 / Resuming download.')
 
@@ -124,7 +116,7 @@ class DownloadPauseController:
         if not self.consume_pause_request():
             return
 
-        logging.info('下载已暂停。按 p 或 r 继续。 / Download paused. Press p or r to resume.')
+        logging.info('下载已暂停。按 R 继续。 / Download paused. Press R to resume.')
         while self.is_paused():
             await asyncio.sleep(self.poll_interval)
         logging.info('下载已恢复。 / Download resumed.')

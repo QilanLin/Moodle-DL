@@ -206,18 +206,21 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         service.pause_controller.start.assert_not_called()
         service.pause_controller.stop.assert_not_called()
 
-    def test_pause_controller_hotkeys_request_cancel_and_resume_pause(self):
+    def test_pause_controller_hotkeys_request_and_resume_pause(self):
         controller = DownloadPauseController(enabled=False)
 
         self.assertEqual(controller.handle_key('x'), '')
-        self.assertEqual(controller.handle_key('p'), 'pause_requested')
+        self.assertEqual(controller.handle_key('P'), 'pause_requested')
+        self.assertEqual(controller.handle_key('P'), '')
         self.assertTrue(controller.consume_pause_request())
         self.assertTrue(controller.is_paused())
-        self.assertEqual(controller.handle_key('r'), 'resume')
+        self.assertEqual(controller.handle_key('P'), '')
+        self.assertTrue(controller.is_paused())
+        self.assertEqual(controller.handle_key('R'), 'resume')
         self.assertFalse(controller.is_paused())
 
         self.assertEqual(controller.handle_key('P'), 'pause_requested')
-        self.assertEqual(controller.handle_key('p'), 'pause_cancelled')
+        self.assertEqual(controller.handle_key('R'), 'resume')
         self.assertFalse(controller.consume_pause_request())
         self.assertFalse(controller.is_paused())
 

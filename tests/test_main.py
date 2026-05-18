@@ -98,7 +98,7 @@ class TestGetParser(unittest.TestCase):
         optional_flags = [
             '--init', '--init-sso', '--download-courses',
             '--new-token', '--refresh-cookies',
-            '--retry-failed', '--verbose', '--quiet'
+            '--retry-failed', '--resume', '--verbose', '--quiet'
         ]
 
         for flag in optional_flags:
@@ -150,6 +150,14 @@ class TestGetParser(unittest.TestCase):
         self.assertTrue(opts.skip_cert_verify)
         self.assertTrue(opts.verbose)
         self.assertTrue(opts.log_to_file)
+
+    def test_parser_parses_resume_flag(self):
+        """测试 --resume 会解析到 MoodleDlOpts 字段"""
+        parser = get_parser()
+
+        opts = parser.parse_args(['--resume'])
+
+        self.assertTrue(opts.resume)
 
     def test_parser_rejects_invalid_path(self):
         """测试不存在的路径会被 argparse 拒绝"""
@@ -231,6 +239,13 @@ class TestChooseTask(unittest.TestCase):
         self.opts.retry_failed = True
         choose_task(self.config, self.opts)
         mock_retry.assert_called_once_with(self.config, self.opts)
+
+    @patch('moodle_dl.main.resume_downloads')
+    def test_choose_task_resume_flag(self, mock_resume):
+        """测试 --resume 标志"""
+        self.opts.resume = True
+        choose_task(self.config, self.opts)
+        mock_resume.assert_called_once_with(self.config, self.opts)
 
     @patch('moodle_dl.main.DatabaseManager')
     def test_choose_task_delete_old_files_flag(self, mock_db_class):
@@ -400,6 +415,41 @@ class TestRetryFailedDownloadsHelpers(unittest.TestCase):
 
         self.assertIsInstance(result, list)
         self.assertEqual(len(result), 0)
+
+    def test_load_incomplete_download_files_as_courses(self):
+        """测试加载未完成下载返回课程列表"""
+        database = MagicMock()
+        resumable_file = MagicMock(file_id=42)
+        database.get_incomplete_files_with_course_info.return_value = {
+            1: {
+                'course_fullname': 'Course 1',
+                'files': [resumable_file],
+            }
+        }
+
+        from moodle_dl.main import _load_incomplete_download_files_as_courses
+
+        result = _load_incomplete_download_files_as_courses(database)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].id, 1)
+        self.assertEqual(result[0].files, [resumable_file])
+
+    def test_merge_course_file_lists_deduplicates_by_file_id(self):
+        """测试续传队列合并时不会重复同一个文件"""
+        from moodle_dl.main import _merge_course_file_lists
+
+        primary_file = MagicMock(file_id=42)
+        duplicate_file = MagicMock(file_id=42)
+        extra_file = MagicMock(file_id=43)
+
+        merged = _merge_course_file_lists(
+            [Course(1, 'Course', [primary_file])],
+            [Course(1, 'Course', [duplicate_file, extra_file])],
+        )
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].files, [primary_file, extra_file])
 
 
 class TestCreateDownloader(unittest.TestCase):
@@ -624,6 +674,40 @@ class TestRunMain(unittest.TestCase):
         mock_capture_exception.assert_not_called()
         notified_error = notify_service.notify_about_error.call_args.args[0]
         self.assertIn('RuntimeError', notified_error)
+
+    @patch('moodle_dl.main.DownloadService')
+    @patch('moodle_dl.main._load_incomplete_download_files_as_courses')
+    @patch('moodle_dl.main.StateRecorder')
+    @patch('moodle_dl.main.MoodleService')
+    @patch('moodle_dl.main.get_all_notify_services', return_value=[])
+    @patch('moodle_dl.main.connect_sentry', return_value=False)
+    def test_run_main_resume_merges_incomplete_downloads(
+        self,
+        mock_connect_sentry,
+        mock_get_services,
+        mock_moodle_class,
+        mock_db_class,
+        mock_load_incomplete,
+        mock_download_class,
+    ):
+        """测试 --resume 会把数据库中的未完成下载加入下载队列"""
+        self.opts.resume = True
+        scanned_file = MagicMock(file_id=1)
+        duplicate_file = MagicMock(file_id=1)
+        incomplete_file = MagicMock(file_id=2)
+        scanned_course = Course(10, 'Course', [scanned_file])
+        incomplete_course = Course(10, 'Course', [duplicate_file, incomplete_file])
+        mock_moodle_class.return_value.fetch_state = AsyncMock(return_value=[scanned_course])
+        mock_load_incomplete.return_value = [incomplete_course]
+        mock_db_class.return_value.changes_to_notify.return_value = []
+        mock_download_class.return_value.get_failed_tasks.return_value = []
+
+        run_main(self.config, self.opts)
+
+        queued_courses = mock_download_class.call_args.args[0]
+        self.assertEqual(len(queued_courses), 1)
+        self.assertEqual(queued_courses[0].files, [scanned_file, incomplete_file])
+        mock_load_incomplete.assert_called_once_with(mock_db_class.return_value)
 
 
 class TestRefreshCookiesOnly(unittest.TestCase):

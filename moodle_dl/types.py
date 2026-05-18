@@ -356,6 +356,7 @@ class MoodleDlOpts:
     log_responses: bool = False
     add_all_visible_courses: bool = False
     retry_failed: bool = False
+    resume: bool = False
     refresh_cookies: bool = False
     sso: bool = False
     username: str = ''
