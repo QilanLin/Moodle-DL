@@ -537,3 +537,56 @@ class TestGenAllTasksFlow(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_rewrite_downloaded_html_resource_links_after_tasks_finish(tmp_path):
+    html_path = tmp_path / 'Book.html'
+    image_path = tmp_path / '02 - Faculty student VM' / '*39* student-vms-01.png'
+    image_path.parent.mkdir()
+    html_path.write_text(
+        '<img src="https://keats.kcl.ac.uk/pluginfile.php/112/mod_book/chapter/785/student-vms-01.png" '
+        'alt="VM Control panel">',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    html_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='Software installation instructions',
+        content_filepath='/',
+        content_filename='Software installation instructions.html',
+        content_fileurl='',
+        content_filesize=0,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='html',
+        content_isexternalfile=False,
+        saved_to=str(html_path),
+    )
+    image_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='Software installation instructions',
+        content_filepath='/02 - Faculty student VM/',
+        content_filename='student-vms-01.png',
+        content_fileurl=(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/112/mod_book/chapter/785/'
+            'student-vms-01.png?token=secret&offline=1'
+        ),
+        content_filesize=1,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='file',
+        content_isexternalfile=False,
+        saved_to=str(image_path),
+    )
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = [Course(1, 'Course', [html_file, image_file])]
+    service.all_tasks = []
+
+    assert service._rewrite_downloaded_html_resource_links() == 1
+    assert 'src="02 - Faculty student VM/*39* student-vms-01.png"' in html_path.read_text(encoding='utf-8')

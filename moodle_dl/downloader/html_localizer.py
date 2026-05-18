@@ -1,0 +1,116 @@
+# -*- coding: utf-8 -*-
+import html
+import os
+import re
+import urllib.parse
+from typing import Dict, Iterable, Tuple
+
+from moodle_dl.types import File
+
+
+HTML_RESOURCE_ATTR_PATTERN = re.compile(
+    r'(?P<prefix>\b(?:src|href|poster|data)\s*=\s*)'
+    r'(?P<quote>["\'])'
+    r'(?P<url>.*?)'
+    r'(?P=quote)',
+    flags=re.IGNORECASE | re.DOTALL,
+)
+
+
+def canonical_resource_url(url: str) -> str:
+    """Return a stable key for matching HTML resource URLs to downloaded files."""
+    if not isinstance(url, str):
+        return ''
+
+    url = html.unescape(url).strip()
+    if not url:
+        return ''
+
+    lowered = url.lower()
+    if lowered.startswith(('#', 'data:', 'mailto:', 'javascript:', 'tel:')):
+        return ''
+
+    url, _fragment = urllib.parse.urldefrag(url)
+    parsed = urllib.parse.urlsplit(url)
+    if not parsed.netloc:
+        return ''
+
+    path = urllib.parse.unquote(parsed.path or '')
+    path = path.replace('/webservice/pluginfile.php', '/pluginfile.php')
+    path = _normalize_token_pluginfile_path(path)
+
+    if '/pluginfile.php' in path:
+        query = ''
+    else:
+        query = _stable_query(parsed.query)
+
+    return urllib.parse.urlunsplit(('', parsed.netloc.lower(), path, query, ''))
+
+
+def _normalize_token_pluginfile_path(path: str) -> str:
+    token_match = re.match(r'(?P<prefix>.*/?)tokenpluginfile\.php/[^/]+(?P<rest>/.*)', path)
+    if not token_match:
+        return path
+    return f'{token_match.group("prefix")}pluginfile.php{token_match.group("rest")}'
+
+
+def _stable_query(query: str) -> str:
+    if not query:
+        return ''
+
+    volatile_keys = {'token', 'offline'}
+    pairs = [
+        (key, value)
+        for key, value in urllib.parse.parse_qsl(query, keep_blank_values=True)
+        if key.lower() not in volatile_keys
+    ]
+    return urllib.parse.urlencode(pairs)
+
+
+def build_local_resource_map(files: Iterable[File]) -> Dict[str, str]:
+    """Map downloaded remote resource URLs to local filesystem paths."""
+    local_resources: Dict[str, str] = {}
+    for file in files:
+        saved_to = getattr(file, 'saved_to', '') or ''
+        if not saved_to or not os.path.isfile(saved_to):
+            continue
+        if saved_to.lower().endswith(('.webloc', '.url', '.desktop')):
+            continue
+
+        key = canonical_resource_url(getattr(file, 'content_fileurl', '') or '')
+        if key:
+            local_resources[key] = saved_to
+
+    return local_resources
+
+
+def rewrite_html_links_to_local_paths(
+    html_content: str,
+    html_file_path: str,
+    local_resources: Dict[str, str],
+) -> Tuple[str, int]:
+    """Rewrite HTML resource attributes to local relative paths when available."""
+    if not html_content or not local_resources:
+        return html_content, 0
+
+    html_dir = os.path.dirname(os.path.abspath(html_file_path))
+    replacements = 0
+
+    def replace_attribute(match: re.Match) -> str:
+        nonlocal replacements
+
+        url = match.group('url')
+        key = canonical_resource_url(url)
+        local_path = local_resources.get(key)
+        if not local_path:
+            return match.group(0)
+
+        local_path = os.path.abspath(local_path)
+        if local_path == os.path.abspath(html_file_path):
+            return match.group(0)
+
+        relative_path = os.path.relpath(local_path, html_dir).replace(os.sep, '/')
+        replacements += 1
+        return f'{match.group("prefix")}{match.group("quote")}{html.escape(relative_path, quote=True)}{match.group("quote")}'
+
+    return HTML_RESOURCE_ATTR_PATTERN.sub(replace_attribute, html_content), replacements

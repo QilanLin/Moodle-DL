@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import logging
+import os
 import random
 import sys
 import threading
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
+from moodle_dl.downloader.html_localizer import build_local_resource_map, rewrite_html_links_to_local_paths
 from moodle_dl.downloader.progress_tracker import ProgressTracker
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
@@ -461,10 +463,91 @@ class DownloadService:
             status_logger_task.cancel()
             with suppress(asyncio.CancelledError):
                 await status_logger_task
-        
+
+        self._rewrite_downloaded_html_resource_links()
+
         # 🆕 显示下载总结
         if self.status.files_to_download > 0:
             self._display_download_summary()
+
+    def _iter_known_files(self):
+        seen = set()
+        for course in self.courses:
+            for file in getattr(course, 'files', []) or []:
+                file_identity = id(file)
+                if file_identity not in seen:
+                    seen.add(file_identity)
+                    yield file
+
+        for task in self.all_tasks:
+            file = getattr(task, 'file', None)
+            if file is None:
+                continue
+            file_identity = id(file)
+            if file_identity not in seen:
+                seen.add(file_identity)
+                yield file
+
+    @staticmethod
+    def _is_saved_html_file(file: File) -> bool:
+        saved_to = getattr(file, 'saved_to', '') or ''
+        content_type = (getattr(file, 'content_type', '') or '').lower()
+        return content_type == 'html' or saved_to.lower().endswith(('.html', '.htm'))
+
+    def _rewrite_downloaded_html_resource_links(self) -> int:
+        """Make saved HTML files reference downloaded embedded resources locally."""
+        files = list(self._iter_known_files())
+        local_resources = build_local_resource_map(files)
+        if not local_resources:
+            return 0
+
+        replacement_count = 0
+        html_file_count = 0
+        for file in files:
+            if not self._is_saved_html_file(file):
+                continue
+
+            saved_to = getattr(file, 'saved_to', '') or ''
+            if not saved_to or not os.path.isfile(saved_to):
+                continue
+
+            try:
+                with open(saved_to, 'r', encoding='utf-8') as html_file:
+                    html_content = html_file.read()
+
+                rewritten_html, file_replacements = rewrite_html_links_to_local_paths(
+                    html_content,
+                    saved_to,
+                    local_resources,
+                )
+
+                if file_replacements <= 0:
+                    continue
+
+                with open(saved_to, 'w', encoding='utf-8') as html_file:
+                    html_file.write(rewritten_html)
+
+                html_file_count += 1
+                replacement_count += file_replacements
+                logging.debug(
+                    '已将 %d 个 HTML 内嵌资源链接改为本地路径: %s',
+                    file_replacements,
+                    saved_to,
+                )
+            except OSError as error:
+                logging.debug('重写 HTML 本地资源链接失败: %s (%s)', saved_to, error)
+
+        if replacement_count:
+            logging.info(
+                '已将 %d 个 HTML 内嵌资源链接改为本地路径（%d 个 HTML 文件）。 / '
+                'Rewrote %d embedded HTML resource link(s) to local paths across %d HTML file(s).',
+                replacement_count,
+                html_file_count,
+                replacement_count,
+                html_file_count,
+            )
+
+        return replacement_count
 
     async def log_download_status(self):
         """
