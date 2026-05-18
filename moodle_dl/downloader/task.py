@@ -1,10 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
-import base64
-import binascii
 import functools
 import html
-import json
 import logging
 import os
 import posixpath
@@ -32,6 +29,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
+from moodle_dl.downloader.leganto_download import (
+    build_leganto_download_plan,
+    leganto_course_url,
+    leganto_lti_launch_token_expiry,
+    leganto_moodle_launch_url,
+)
 from moodle_dl.downloader.leganto_print import LegantoPdfPrinter, is_leganto_reading_list_url
 from moodle_dl.file_classifier import is_optional_metadata_filename
 from moodle_dl.types import (
@@ -1918,30 +1921,24 @@ class Task:
 
     async def _download_leganto_reading_list_pdf(self):
         """Save a Leganto reading list through the page's Print list action."""
-        launch_parameters = None
-        endpoint = self.file.content_fileurl
-        course_url = self._leganto_course_url()
-        moodle_launch_url = self._leganto_moodle_launch_url()
+        plan = build_leganto_download_plan(
+            content_type=self.file.content_type,
+            file_url=self.file.content_fileurl,
+            file_content=self.file.content,
+            moodle_url=self.opts.moodle_url,
+            course_id=getattr(self.course, 'id', None),
+            module_id=getattr(self.file, 'module_id', None),
+        )
+        if plan.parse_error:
+            logging.debug('[%d] Could not parse Leganto launch payload: %s', self.task_id, plan.parse_error)
 
-        if self.file.content:
-            try:
-                payload = json.loads(self.file.content)
-                endpoint = payload.get('endpoint') or endpoint
-                launch_parameters = payload.get('parameters')
-                course_url = payload.get('course_url') or course_url
-            except (TypeError, ValueError) as exc:
-                logging.debug('[%d] Could not parse Leganto launch payload: %s', self.task_id, exc)
-
-        token_expiry = self._leganto_lti_launch_token_expiry(launch_parameters)
-        if token_expiry is not None and token_expiry <= time.time() + 30:
+        if plan.token_expired:
             logging.info(
                 '[%d] Leganto LTI launch token has expired; refreshing from Moodle module',
                 self.task_id,
             )
-            launch_parameters = None
-            endpoint = moodle_launch_url or endpoint
 
-        if not endpoint and not launch_parameters and not moodle_launch_url and not course_url:
+        if not plan.has_launch_data():
             raise RuntimeError('Leganto launch data is unavailable')
 
         self._prepare_leganto_pdf_target()
@@ -1952,14 +1949,12 @@ class Task:
         )
         try:
             await printer.print_to_pdf(
-                endpoint or moodle_launch_url or course_url,
+                plan.target_url(),
                 self.file.saved_to,
-                launch_parameters=launch_parameters,
-                moodle_launch_url=None if launch_parameters is not None else moodle_launch_url,
-                course_url=None if launch_parameters is not None or moodle_launch_url else course_url,
+                **plan.print_kwargs(),
             )
         except RuntimeError as exc:
-            if launch_parameters is None or not moodle_launch_url:
+            if plan.launch_parameters is None or not plan.moodle_launch_url:
                 raise
             logging.warning(
                 '[%d] Stored Leganto LTI launch failed (%s); retrying from Moodle module',
@@ -1967,61 +1962,32 @@ class Task:
                 exc,
             )
             await printer.print_to_pdf(
-                moodle_launch_url,
+                plan.moodle_launch_url,
                 self.file.saved_to,
-                moodle_launch_url=moodle_launch_url,
+                moodle_launch_url=plan.moodle_launch_url,
                 course_url=None,
             )
 
     def _leganto_lti_launch_token_expiry(self, launch_parameters) -> Optional[int]:
         """Return the expiry timestamp of a Leganto LTI id_token, if readable."""
-        if not launch_parameters:
-            return None
-
-        for parameter in launch_parameters:
-            if not isinstance(parameter, dict) or parameter.get('name') != 'id_token':
-                continue
-
-            token = parameter.get('value')
-            if not isinstance(token, str):
-                return None
-
-            parts = token.split('.')
-            if len(parts) < 2:
-                return None
-
-            payload = parts[1]
-            payload += '=' * (-len(payload) % 4)
-            try:
-                decoded_payload = base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8')
-                expiry = json.loads(decoded_payload).get('exp')
-                return int(expiry) if expiry is not None else None
-            except (binascii.Error, UnicodeDecodeError, ValueError, TypeError, json.JSONDecodeError):
-                return None
-
-        return None
+        return leganto_lti_launch_token_expiry(launch_parameters)
 
     def _leganto_course_url(self) -> Optional[str]:
         """Return the Moodle course page used to launch Leganto with course context."""
-        if self.file.content_type != 'leganto_pdf' and not is_leganto_reading_list_url(self.file.content_fileurl):
-            return None
-
-        moodle_url = (self.opts.moodle_url or '').rstrip('/')
-        course_id = getattr(self.course, 'id', None)
-        if not moodle_url or not course_id:
-            return None
-        return f'{moodle_url}/course/view.php?id={course_id}'
+        return leganto_course_url(
+            self.file.content_type,
+            self.file.content_fileurl,
+            self.opts.moodle_url,
+            getattr(self.course, 'id', None),
+        )
 
     def _leganto_moodle_launch_url(self) -> Optional[str]:
         """Return the Moodle LTI module URL used to refresh a Leganto launch."""
-        if self.file.content_type != 'leganto_pdf':
-            return None
-
-        moodle_url = (self.opts.moodle_url or '').rstrip('/')
-        module_id = getattr(self.file, 'module_id', None)
-        if not moodle_url or not module_id:
-            return None
-        return f'{moodle_url}/mod/lti/view.php?id={module_id}'
+        return leganto_moodle_launch_url(
+            self.file.content_type,
+            self.opts.moodle_url,
+            getattr(self.file, 'module_id', None),
+        )
 
     def _prepare_leganto_pdf_target(self):
         """Ensure the current task writes to a PDF file instead of a shortcut-like filename."""

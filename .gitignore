@@ -7,10 +7,17 @@ __pycache__
 /dist
 config.json
 MoodleDownloader.log
+MoodleDownloader.log.*
 MoodleDL.log
+MoodleDL.log.*
 /moodle_dl.egg-info
 /.vscode/launch.json
 .DS_Store
 .coverage
 .pytest_cache/
 htmlcov/
+
+# Local runtime state
+moodle_state.db
+moodle_state.db-*
+.playwright-mcp/

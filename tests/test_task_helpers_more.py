@@ -765,6 +765,22 @@ async def test_leganto_pdf_retry_with_empty_url_uses_course_launch_fallback(task
 
 
 @pytest.mark.asyncio
+async def test_leganto_pdf_download_raises_when_no_launch_data_available(task_factory):
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='',
+        content_filename='Reading List.pdf',
+    )
+    task.file.module_id = None
+    task.opts.moodle_url = ''
+    task.course.id = None
+    await task._prepare_download()
+
+    with pytest.raises(RuntimeError, match='Leganto launch data is unavailable'):
+        await task._download_leganto_reading_list_pdf()
+
+
+@pytest.mark.asyncio
 async def test_leganto_pdf_process_raises_when_export_fails(task_factory):
     task = task_factory(
         content_type='leganto_pdf',
@@ -804,6 +820,54 @@ def test_leganto_course_url_is_only_built_for_direct_reading_list(task_factory):
     )
     assert retry_leganto_pdf._leganto_course_url() == 'https://moodle.example.com/course/view.php?id=7'
     assert retry_leganto_pdf._leganto_moodle_launch_url() == 'https://moodle.example.com/mod/lti/view.php?id=10'
+
+
+def test_leganto_url_helpers_return_none_without_required_context(task_factory):
+    no_moodle_url = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML',
+    )
+    no_moodle_url.opts.moodle_url = ''
+    assert no_moodle_url._leganto_course_url() is None
+    assert no_moodle_url._leganto_moodle_launch_url() is None
+
+    no_course_id = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML',
+    )
+    no_course_id.course.id = None
+    assert no_course_id._leganto_course_url() is None
+
+    no_module_id = task_factory(content_type='leganto_pdf')
+    no_module_id.file.module_id = None
+    assert no_module_id._leganto_moodle_launch_url() is None
+
+
+def test_leganto_lti_launch_token_expiry_handles_malformed_parameters(task_factory):
+    task = task_factory(content_type='leganto_pdf')
+
+    assert task._leganto_lti_launch_token_expiry([{'name': 'other', 'value': make_jwt({'exp': 123})}]) is None
+    assert task._leganto_lti_launch_token_expiry(['not-a-dict', {'name': 'other'}]) is None
+    assert task._leganto_lti_launch_token_expiry([{'name': 'id_token', 'value': 123}]) is None
+    assert task._leganto_lti_launch_token_expiry([{'name': 'id_token', 'value': 'not.jwt'}]) is None
+    assert task._leganto_lti_launch_token_expiry([{'name': 'id_token', 'value': make_jwt({'exp': 123})}]) == 123
+
+
+def test_remove_leganto_shortcut_fallbacks_ignores_empty_target(task_factory):
+    task = task_factory(content_type='leganto_pdf')
+    task.file.saved_to = ''
+
+    with patch.object(task, '_remove_path_and_appledouble') as remove_path:
+        task._remove_leganto_shortcut_fallbacks()
+
+    remove_path.assert_not_called()
+
+
+def test_remove_path_and_appledouble_ignores_invalid_appledouble_target():
+    with patch('moodle_dl.downloader.task.PT.remove_file') as remove_file:
+        Task._remove_path_and_appledouble('/')
+
+    remove_file.assert_called_once_with('/')
 
 
 @pytest.mark.asyncio
