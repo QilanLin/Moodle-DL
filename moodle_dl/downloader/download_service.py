@@ -2,9 +2,12 @@
 import asyncio
 import logging
 import random
+import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Tuple
+from contextlib import suppress
+from typing import Any, Dict, List, Optional, Tuple
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
@@ -12,6 +15,119 @@ from moodle_dl.downloader.progress_tracker import ProgressTracker
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
 from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
+
+
+class DownloadPauseController:
+    """Handle pause/resume hotkeys without interrupting the active file."""
+
+    PAUSE_KEYS = {'p', 'P'}
+    RESUME_KEYS = {'r', 'R'}
+
+    def __init__(self, *, enabled: Optional[bool] = None, read_key=None, poll_interval: float = 0.2):
+        self.enabled = sys.stdin.isatty() if enabled is None else enabled
+        self.read_key = read_key
+        self.poll_interval = poll_interval
+        self._pause_requested = False
+        self._paused = False
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._thread = None
+
+    def start(self) -> None:
+        if not self.enabled:
+            return
+        if self._thread and self._thread.is_alive():
+            return
+
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._listen_for_hotkeys,
+            name='moodle-dl-pause-hotkeys',
+            daemon=True,
+        )
+        self._thread.start()
+        logging.info(
+            '快捷键 / Hotkeys: 按 p 在当前文件完成后暂停；暂停后按 p 或 r 继续。'
+            ' / Press p to pause after the current file finishes; press p or r to resume.'
+        )
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        with self._lock:
+            self._pause_requested = False
+            self._paused = False
+
+    def handle_key(self, key: str) -> str:
+        if key in self.PAUSE_KEYS:
+            with self._lock:
+                if self._paused:
+                    self._paused = False
+                    return 'resume'
+                if self._pause_requested:
+                    self._pause_requested = False
+                    return 'pause_cancelled'
+                self._pause_requested = True
+                return 'pause_requested'
+
+        if key in self.RESUME_KEYS:
+            with self._lock:
+                if self._pause_requested or self._paused:
+                    self._pause_requested = False
+                    self._paused = False
+                    return 'resume'
+
+        return ''
+
+    def _listen_for_hotkeys(self) -> None:
+        read_key = self.read_key
+        if read_key is None:
+            try:
+                import readchar
+            except ImportError:
+                logging.debug('readchar is not available; pause hotkeys are disabled')
+                return
+            read_key = readchar.readkey
+
+        while not self._stop_event.is_set():
+            try:
+                action = self.handle_key(read_key())
+            except (EOFError, KeyboardInterrupt):
+                return
+            except Exception as exc:
+                logging.debug('Pause hotkey listener stopped: %s', exc)
+                return
+
+            if action == 'pause_requested':
+                logging.info(
+                    '已请求暂停：当前文件下载完成后会暂停。'
+                    ' / Pause requested: download will pause after the current file finishes.'
+                )
+            elif action == 'pause_cancelled':
+                logging.info(
+                    '已取消暂停请求。 / Pending pause request cancelled.'
+                )
+            elif action == 'resume':
+                logging.info('继续下载。 / Resuming download.')
+
+    def consume_pause_request(self) -> bool:
+        with self._lock:
+            if not self._pause_requested:
+                return False
+            self._paused = True
+            return True
+
+    def is_paused(self) -> bool:
+        with self._lock:
+            return self._paused
+
+    async def wait_if_requested(self) -> None:
+        if not self.consume_pause_request():
+            return
+
+        logging.info('下载已暂停。按 p 或 r 继续。 / Download paused. Press p or r to resume.')
+        while self.is_paused():
+            await asyncio.sleep(self.poll_interval)
+        logging.info('下载已恢复。 / Download resumed.')
 
 
 class DownloadService:
@@ -32,6 +148,7 @@ class DownloadService:
         
         # 🆕 增强的进度追踪器
         self.progress_tracker = ProgressTracker()
+        self.pause_controller = DownloadPauseController()
 
     def _configure_task_settings(self) -> tuple:
         """Configure task settings and create thread pool.
@@ -264,6 +381,7 @@ class DownloadService:
 
         # run all other tasks
         status_logger_task = asyncio.create_task(self.log_download_status())
+        self.pause_controller.start()
 
         # ========== 并发下载（已禁用） ==========
         # dl_tasks = set()
@@ -276,19 +394,25 @@ class DownloadService:
         # # Wait for the remaining downloads to finish
         # await asyncio.wait(dl_tasks)
 
-        # ========== 单线程顺序下载（已启用） ==========
-        # 按顺序逐个下载，不使用并发
-        for i, task in enumerate(self.all_tasks):
-            await task.run()
+        try:
+            # ========== 单线程顺序下载（已启用） ==========
+            # 按顺序逐个下载，不使用并发
+            for i, task in enumerate(self.all_tasks):
+                await task.run()
+                await self.pause_controller.wait_if_requested()
 
-            # 在每个任务之间添加随机延迟（3 到 6 秒）
-            # 避免对服务器造成过大压力，模拟自然的下载行为
-            if i < len(self.all_tasks) - 1:  # 最后一个任务后不需要等待
-                delay = 3 + random.uniform(0, 3)
-                logging.debug(f'等待 {delay:.2f} 秒后继续下一个任务...')
-                await asyncio.sleep(delay)
-
-        status_logger_task.cancel()
+                # 在每个任务之间添加随机延迟（2 到 5 秒）
+                # 避免对服务器造成过大压力，模拟自然的下载行为
+                if i < len(self.all_tasks) - 1:  # 最后一个任务后不需要等待
+                    delay = 2 + random.uniform(0, 3)
+                    logging.debug(f'等待 {delay:.2f} 秒后继续下一个任务...')
+                    await asyncio.sleep(delay)
+                    await self.pause_controller.wait_if_requested()
+        finally:
+            self.pause_controller.stop()
+            status_logger_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await status_logger_task
         
         # 🆕 显示下载总结
         if self.status.files_to_download > 0:

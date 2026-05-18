@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-from moodle_dl.downloader.download_service import DownloadService
+from moodle_dl.downloader.download_service import DownloadPauseController, DownloadService
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.types import Course, DlEvent, DownloadStatus, File, MoodleURL, TaskState
 
@@ -44,6 +44,11 @@ def make_download_service():
     service.database = MagicMock()
     service.status = DownloadStatus()
     service.progress_tracker = MagicMock()
+    service.pause_controller = SimpleNamespace(
+        start=MagicMock(),
+        stop=MagicMock(),
+        wait_if_requested=AsyncMock(),
+    )
     return service
 
 
@@ -154,9 +159,34 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         service.database.batch_delete_files.assert_called_once_with(service.courses)
         first.run.assert_awaited_once()
         second.run.assert_awaited_once()
+        service.pause_controller.start.assert_called_once()
+        service.pause_controller.stop.assert_called_once()
+        self.assertEqual(service.pause_controller.wait_if_requested.await_count, 3)
         mock_uniform.assert_called_once_with(0, 3)
-        mock_sleep.assert_awaited_once_with(3.2)
+        mock_sleep.assert_awaited_once_with(2.2)
         service._display_download_summary.assert_called_once()
+
+    def test_real_run_checks_pause_after_current_task_before_next_task(self):
+        service = make_download_service()
+        first = SimpleNamespace(run=AsyncMock())
+        second = SimpleNamespace(run=AsyncMock())
+        service.all_tasks = [first, second]
+        service.status.files_to_download = 2
+        service.log_download_status = AsyncMock()
+        service._display_download_summary = MagicMock()
+        pause_checks = []
+
+        async def wait_if_requested():
+            pause_checks.append((first.run.await_count, second.run.await_count))
+
+        service.pause_controller.wait_if_requested = AsyncMock(side_effect=wait_if_requested)
+
+        with patch('moodle_dl.downloader.download_service.random.uniform', return_value=0):
+            with patch('moodle_dl.downloader.download_service.asyncio.sleep', new_callable=AsyncMock):
+                asyncio.run(service.real_run())
+
+        self.assertEqual(pause_checks[0], (1, 0))
+        self.assertEqual(pause_checks[-1], (1, 1))
 
     def test_real_run_returns_when_queue_is_empty(self):
         service = make_download_service()
@@ -167,6 +197,50 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
 
         service.database.batch_delete_files.assert_called_once_with(service.courses)
         service.log_download_status.assert_not_called()
+        service.pause_controller.start.assert_not_called()
+        service.pause_controller.stop.assert_not_called()
+
+    def test_pause_controller_hotkeys_request_cancel_and_resume_pause(self):
+        controller = DownloadPauseController(enabled=False)
+
+        self.assertEqual(controller.handle_key('x'), '')
+        self.assertEqual(controller.handle_key('p'), 'pause_requested')
+        self.assertTrue(controller.consume_pause_request())
+        self.assertTrue(controller.is_paused())
+        self.assertEqual(controller.handle_key('r'), 'resume')
+        self.assertFalse(controller.is_paused())
+
+        self.assertEqual(controller.handle_key('P'), 'pause_requested')
+        self.assertEqual(controller.handle_key('p'), 'pause_cancelled')
+        self.assertFalse(controller.consume_pause_request())
+        self.assertFalse(controller.is_paused())
+
+    def test_pause_controller_waits_until_resumed(self):
+        controller = DownloadPauseController(enabled=False, poll_interval=0.01)
+        controller.handle_key('p')
+
+        async def fake_sleep(seconds):
+            self.assertEqual(seconds, 0.01)
+            controller.handle_key('r')
+
+        async def run_wait():
+            with patch('moodle_dl.downloader.download_service.asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
+                mock_sleep.side_effect = fake_sleep
+                await controller.wait_if_requested()
+                return mock_sleep
+
+        mock_sleep = asyncio.run(run_wait())
+        mock_sleep.assert_awaited_once_with(0.01)
+        self.assertFalse(controller.is_paused())
+
+    def test_pause_controller_stop_clears_pending_pause(self):
+        controller = DownloadPauseController(enabled=False)
+        controller.handle_key('p')
+
+        controller.stop()
+
+        self.assertFalse(controller.consume_pause_request())
+        self.assertFalse(controller.is_paused())
 
     def test_log_download_status_updates_progress_tracker_once(self):
         service = make_download_service()
