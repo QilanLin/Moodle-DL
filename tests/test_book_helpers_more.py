@@ -194,6 +194,27 @@ def test_toc_ordering_metadata_names_and_empty_chapter_placeholder():
         '10',
         '30',
     ]
+    numbered_toc = [
+        {'title': 'Introduction', 'href': '10/index.html'},
+        {
+            'title': 'Parent',
+            'href': '20/index.html',
+            'subitems': [
+                {'title': 'Option 1', 'href': '21/index.html'},
+                {'title': 'Hidden option', 'href': '22/index.html', 'hidden': '1'},
+                {'title': 'Option 2', 'href': '23/index.html'},
+            ],
+        },
+    ]
+    assert book._get_toc_chapter_numbers(numbered_toc) == {
+        '10': '1.',
+        '20': '2.',
+        '21': '2.1.',
+        '22': '2.x.',
+        '23': '2.2.',
+    }
+    assert book._format_chapter_folder_name('Option 1', '2.1.', 3) == '2.1. Option 1'
+    assert book._format_chapter_folder_name('Missing', '', 3) == '03 - Missing'
 
     with patch('moodle_dl.moodle.mods.book.time.time', return_value=123.9):
         placeholder = book._create_empty_chapter_placeholder('42', '01 - Missing', 'Missing')
@@ -545,6 +566,7 @@ async def test_real_fetch_mod_entries_processes_mobile_book_contents():
                 'course': 1,
                 'coursemodule': 20,
                 'name': 'Clinical Skills',
+                'numbering': 1,
                 'timemodified': 99,
             }
         ]
@@ -604,21 +626,21 @@ async def test_real_fetch_mod_entries_processes_mobile_book_contents():
     assert toc_file['filename'] == 'Table of Contents'
     assert 'Intro' in toc_file['html']
     assert print_book_file['filename'] == 'Clinical Skills.html'
-    assert '01 - Intro/Intro - Video (1_video).mp4' in print_book_file['html']
+    assert '1. Intro/Intro - Video (1_video).mp4' in print_book_file['html']
 
     assert intro_chapter['type'] == 'html'
-    assert intro_chapter['filepath'].replace('_', ' ') == '/01 - Intro/'
+    assert intro_chapter['filepath'].replace('_', ' ') == '/1. Intro/'
     assert intro_chapter['html'].startswith('<p>Chapter html</p>')
     assert [content['filename'] for content in intro_chapter['contents']] == [
         '101/slides.pdf',
         'Intro - Video (1_video).mp4',
     ]
-    assert intro_chapter['contents'][0]['filepath'].replace('_', ' ') == '/01 - Intro/'
+    assert intro_chapter['contents'][0]['filepath'].replace('_', ' ') == '/1. Intro/'
     assert intro_chapter['contents'][1]['type'] == 'kalvidres_embedded'
     assert intro_chapter['contents'][1]['timemodified'] == 1800
 
     assert empty_chapter['type'] == 'directory_placeholder'
-    assert empty_chapter['filepath'].replace('_', ' ') == '/02 - Empty chapter/'
+    assert empty_chapter['filepath'].replace('_', ' ') == '/2. Empty chapter/'
     assert empty_chapter['contents'][0]['filename'] == '102/handout.pdf'
 
     book.client.async_post.assert_awaited_once_with(

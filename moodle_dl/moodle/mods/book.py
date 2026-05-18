@@ -29,7 +29,7 @@ class BookMod(MoodleMod):
     - ✅ Handles all official API endpoints: mod_book_get_books_by_courses, core_course_get_contents
 
     Key Features:
-    - Chapters organized by title (e.g., "01 - Chapter 1 - Introduction") instead of IDs
+    - Chapters organized by TOC number and title (e.g., "2.1. Setup") instead of IDs
     - Unified Kaltura video handling with result_builder consistency
     - Print Book HTML with relative path links to local chapter videos
     - Full compatibility with official pluginfile.php URL format
@@ -161,6 +161,7 @@ class BookMod(MoodleMod):
                 # 🆕 Step 1.2: Process each chapter (follow TOC order, fallback to content order)
                 ordered_chapter_ids = self._get_ordered_chapter_ids(book_toc, contents_by_chapter)
                 chapter_count = 0
+                chapter_numbers = self._get_toc_chapter_numbers(book_toc) if book.get('numbering') == 1 else {}
                 for chapter_id in ordered_chapter_ids:
                     chapter_contents_list = contents_by_chapter.get(chapter_id, [])
                     chapter_count += 1
@@ -182,8 +183,14 @@ class BookMod(MoodleMod):
 
                     # 🆕 从TOC获取章节标题，用于创建文件夹名
                     chapter_title = self._get_chapter_title_from_toc(chapter_id, book_toc)
-                    # 格式化文件夹名：添加序号并清理路径 (is_file=False 表示这是文件夹)
-                    chapter_folder_name = PT.to_valid_name(f'{chapter_count:02d} - {chapter_title}', is_file=False)
+                    chapter_number = chapter_numbers.get(chapter_id, '')
+                    # 格式化文件夹名：优先使用 Moodle Book 目录自身的编号
+                    # （例如 2.1.），没有编号时回退到本地顺序编号。
+                    chapter_folder_name = self._format_chapter_folder_name(
+                        chapter_title,
+                        chapter_number,
+                        chapter_count,
+                    )
                     logging.info(f'   📁 Chapter {chapter_count}: {chapter_folder_name} ({len(chapter_attachments)} attachment(s))')
 
                     if chapter_html_content:
@@ -273,6 +280,7 @@ class BookMod(MoodleMod):
                     # Save chapter reference with metadata
                     chapters_by_id[chapter_id] = {
                         'title': chapter_title,
+                        'number': chapter_number,
                         'folder_name': chapter_folder_name,
                         'index': chapter_count,
                         'content': chapter_content,
@@ -420,6 +428,44 @@ class BookMod(MoodleMod):
                 chapters.extend(self._get_flat_toc_list(subitems))
         return chapters
 
+    def _get_toc_chapter_numbers(self, toc: List[Dict]) -> Dict[str, str]:
+        """Build Moodle Book display numbers from the nested TOC."""
+        chapter_numbers: Dict[str, str] = {}
+
+        def walk(items: List[Dict], prefix: str = '') -> None:
+            visible_counter = 1
+            for item in items:
+                hidden = str(item.get('hidden', '0')) == '1'
+                current_number = 'x' if hidden else str(visible_counter)
+                full_number = f'{prefix}{current_number}.'
+
+                chapter_id = self._chapter_id_from_toc_entry(item)
+                if chapter_id:
+                    chapter_numbers[chapter_id] = full_number
+
+                subitems = item.get('subitems', [])
+                if subitems:
+                    walk(subitems, full_number)
+
+                if not hidden:
+                    visible_counter += 1
+
+        walk(toc or [])
+        return chapter_numbers
+
+    @staticmethod
+    def _chapter_id_from_toc_entry(entry: Dict) -> str:
+        href = (entry.get('href') or '').lstrip('/')
+        if not href:
+            return ''
+        return href.split('/', 1)[0]
+
+    @staticmethod
+    def _format_chapter_folder_name(chapter_title: str, chapter_number: str, fallback_index: int) -> str:
+        if chapter_number:
+            return PT.to_valid_name(f'{chapter_number} {chapter_title}', is_file=False)
+        return PT.to_valid_name(f'{fallback_index:02d} - {chapter_title}', is_file=False)
+
     def _get_ordered_chapter_ids(self, toc: List[Dict], contents_by_chapter: Dict[str, List[Dict]]) -> List[str]:
         """
         根据目录顺序返回章节 ID 列表，若 TOC 缺失则回退到内容中的章节顺序。
@@ -429,9 +475,7 @@ class BookMod(MoodleMod):
 
         flat_toc = self._get_flat_toc_list(toc) if toc else []
         for entry in flat_toc:
-            href = entry.get('href', '') or ''
-            href = href.lstrip('/')
-            chapter_id = href.split('/', 1)[0]
+            chapter_id = self._chapter_id_from_toc_entry(entry)
             if chapter_id and chapter_id not in seen:
                 ordered_ids.append(chapter_id)
                 seen.add(chapter_id)

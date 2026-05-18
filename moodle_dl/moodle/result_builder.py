@@ -15,6 +15,18 @@ class ResultBuilder:
     """
     Combines all fetched mod files and core course files to one result based on File objects
     """
+    MODULE_DIRECTORY_SUFFIXES = (
+        'assign',
+        'book',
+        'data',
+        'folder',
+        'forum',
+        'lesson',
+        'page',
+        'quiz',
+        'workshop',
+    )
+    MODULE_DIRECTORY_MODNAMES = ('cookie_mod-kalvidres', 'cookie_mod-helixmedia')
 
     def __init__(self, moodle_url: MoodleURL, version: int, mod_plurals: Dict, token: str = ''):
         self.version = version
@@ -74,7 +86,7 @@ class ResultBuilder:
 
         @param files: 文件列表（会被原地修改）
         """
-        position = 0
+        positions_by_scope = {}
         for file in files:
             filename = file.content_filename.lower()
 
@@ -83,9 +95,27 @@ class ResultBuilder:
                 file.position_in_section = None
                 continue
 
-            # 为普通文件分配位置
+            # 为普通文件按最终逻辑目录分配位置。一个 Moodle section
+            # 可能会展开成多个本地目录（例如 book 的每个 chapter），
+            # 编号不能在这些目录之间互相串号。
+            scope_key = self._position_scope_key(file)
+            position = positions_by_scope.get(scope_key, 0)
             file.position_in_section = position
-            position += 1
+            positions_by_scope[scope_key] = position + 1
+
+    @classmethod
+    def _position_scope_key(cls, file: File) -> tuple:
+        module_modname = getattr(file, 'module_modname', '')
+        module_scope = getattr(file, 'module_id', None) if cls._uses_module_directory(module_modname) else None
+        content_filepath = getattr(file, 'content_filepath', '/') or '/'
+        content_filepath = '/' + content_filepath.strip('/')
+        if content_filepath != '/':
+            content_filepath = content_filepath.rstrip('/')
+        return getattr(file, 'section_id', None), module_scope, content_filepath
+
+    @classmethod
+    def _uses_module_directory(cls, module_modname: str) -> bool:
+        return module_modname.endswith(cls.MODULE_DIRECTORY_SUFFIXES) or module_modname in cls.MODULE_DIRECTORY_MODNAMES
 
     @staticmethod
     def _is_system_file(filename: str) -> bool:
@@ -118,7 +148,7 @@ class ResultBuilder:
             return True
 
         # 目录和导航文件
-        if filename_lower == 'table of contents.html':
+        if filename_lower in ('table of contents', 'table of contents.html'):
             return True
         
         # 信息文件（来自各种模块）

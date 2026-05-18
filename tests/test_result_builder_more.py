@@ -78,8 +78,8 @@ def test_get_files_in_sections_adds_summary_positions_and_kaltura_total():
 
     assert summary.content_filename == 'Section summary'
     assert video.position_in_section == 0
-    assert summary.position_in_section == 1
-    assert summary_url.position_in_section == 2
+    assert summary.position_in_section == 0
+    assert summary_url.position_in_section == 1
     assert video.content_filename == 'Lecture Video'
 
 

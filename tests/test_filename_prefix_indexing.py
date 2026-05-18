@@ -42,6 +42,7 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
 
         # 基础元数据文件应返回 True
         self.assertTrue(ResultBuilder._is_system_file("metadata.json"))
+        self.assertTrue(ResultBuilder._is_system_file("table of contents"))
         self.assertTrue(ResultBuilder._is_system_file("table of contents.html"))
 
         # 所有 .json 文件应返回 True（Resource 模块元数据）
@@ -110,6 +111,43 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         self.assertIsNone(files[3].position_in_section)  # Table of Contents.html
         self.assertEqual(files[4].position_in_section, 2)  # file3.pdf
         self.assertIsNone(files[5].position_in_section)  # .hidden
+
+    def test_assign_positions_are_scoped_to_logical_output_folder(self):
+        """不同输出目录的文件应各自从 0 开始编号"""
+        section_file_1 = self._create_file("section-a.pdf", module_id=1, module_modname="resource")
+        book_root = self._create_file(
+            "Book overview.html",
+            module_id=2,
+            module_modname="book",
+            content_filepath="/",
+        )
+        chapter_index = self._create_file(
+            "index.html",
+            module_id=2,
+            module_modname="book",
+            content_filepath="/01 - Introduction/",
+        )
+        chapter_attachment = self._create_file(
+            "attachment.pdf",
+            module_id=2,
+            module_modname="book",
+            content_filepath="/01 - Introduction/",
+        )
+        section_file_2 = self._create_file("section-b.pdf", module_id=3, module_modname="resource")
+
+        self.result_builder._assign_positions_to_files([
+            section_file_1,
+            book_root,
+            chapter_index,
+            chapter_attachment,
+            section_file_2,
+        ])
+
+        self.assertEqual(section_file_1.position_in_section, 0)
+        self.assertEqual(section_file_2.position_in_section, 1)
+        self.assertEqual(book_root.position_in_section, 0)
+        self.assertEqual(chapter_index.position_in_section, 0)
+        self.assertEqual(chapter_attachment.position_in_section, 1)
 
     def test_filename_generation_with_position(self):
         """测试带位置索引的文件名生成"""
@@ -193,19 +231,26 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         for file in files:
             self.assertIsNone(file.position_in_section)
 
-    def _create_file(self, filename: str) -> File:
+    def _create_file(
+        self,
+        filename: str,
+        *,
+        module_id: int = 12345,
+        module_modname: str = "resource",
+        content_filepath: str = "/",
+    ) -> File:
         """创建测试用的 File 对象"""
         return File(
-            module_id=12345,
+            module_id=module_id,
             section_name="第1周",
             section_id=1,
             module_name="测试模块",
-            content_filepath="/",
+            content_filepath=content_filepath,
             content_filename=filename,
             content_fileurl=f"https://example.com/{filename}",
             content_filesize=1024,
             content_timemodified=int(time.time()),
-            module_modname="resource",
+            module_modname=module_modname,
             content_type="pdf",
             content_isexternalfile=False,
             saved_to=f"/path/to/{filename}",
