@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -29,6 +30,19 @@ class OtherDummyMod:
 
     async def fetch_mod_entries(self, courses_to_load, core_contents):
         return {"other": True}
+
+
+class RecordingFetchMod:
+    def __init__(self, mod_name, events, client=None):
+        self.MOD_NAME = mod_name
+        self.events = events
+        self.client = client
+
+    async def fetch_mod_entries(self, courses_to_load, core_contents):
+        self.events.append(f'start:{self.MOD_NAME}')
+        await asyncio.sleep(0)
+        self.events.append(f'end:{self.MOD_NAME}')
+        return {self.MOD_NAME: True}
 
 
 def test_mod_registry_returns_classes_instances_and_plurals(monkeypatch):
@@ -62,3 +76,16 @@ async def test_fetch_mods_files_indexes_results_by_mod_name():
         },
         "other": {"other": True},
     }
+
+
+@pytest.mark.asyncio
+async def test_fetch_mods_files_runs_sequentially_when_network_throttled():
+    events = []
+    throttled_client = SimpleNamespace(network_throttle=object())
+    first = RecordingFetchMod('first', events, throttled_client)
+    second = RecordingFetchMod('second', events, throttled_client)
+
+    result = await mods.fetch_mods_files([first, second], [SimpleNamespace(id=1)], {1: []})
+
+    assert events == ['start:first', 'end:first', 'start:second', 'end:second']
+    assert result == {'first': {'first': True}, 'second': {'second': True}}

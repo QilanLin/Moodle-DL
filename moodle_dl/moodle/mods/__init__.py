@@ -58,13 +58,27 @@ async def fetch_mods_files(
     mods_to_fetch: List[MoodleMod], courses_to_load: List[Course], core_contents: Dict[int, List[Dict]]
 ) -> Dict[str, Dict]:
     "@return: Dictionary of all fetched files, indexed by mod name, then by courses, then module id"
-    mods_results = await asyncio.gather(
-        *[mod.fetch_mod_entries(courses_to_load, core_contents) for mod in mods_to_fetch]
-    )
+    if _uses_network_throttle(mods_to_fetch):
+        # With a global user-facing throttle, starting every module fetch at
+        # once just queues many requests before any of them can run. Fetching
+        # modules in registry order keeps the queue short and lets multi-step
+        # modules such as books finish their required page fetches before the
+        # rest of the API endpoints reserve throttle slots.
+        mods_results = []
+        for mod in mods_to_fetch:
+            mods_results.append(await mod.fetch_mod_entries(courses_to_load, core_contents))
+    else:
+        mods_results = await asyncio.gather(
+            *[mod.fetch_mod_entries(courses_to_load, core_contents) for mod in mods_to_fetch]
+        )
     result = {}
     for idx, mod in enumerate(mods_to_fetch):
         result[mod.MOD_NAME] = mods_results[idx]
     return result
+
+
+def _uses_network_throttle(mods_to_fetch: List[MoodleMod]) -> bool:
+    return any(getattr(getattr(mod, 'client', None), 'network_throttle', None) is not None for mod in mods_to_fetch)
 
 
 def get_mod_plurals():

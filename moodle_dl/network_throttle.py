@@ -12,8 +12,8 @@ class NetworkThrottle:
 
     def __init__(
         self,
-        base_delay: float = 2.0,
-        jitter: float = 3.0,
+        base_delay: float = 1.0,
+        jitter: float = 1.0,
         *,
         delay_first: bool = True,
         sleep: Callable[[float], None] = time.sleep,
@@ -31,6 +31,8 @@ class NetworkThrottle:
         self._lock = threading.Lock()
         self._next_available_at = 0.0
         self._has_reserved = False
+        self._async_lock: Optional[asyncio.Lock] = None
+        self._async_lock_loop = None
 
     def _sample_delay(self) -> float:
         return self.base_delay + (self.jitter * self._random())
@@ -49,6 +51,13 @@ class NetworkThrottle:
     def _log_delay(delay: float, reason: str) -> None:
         logging.debug('等待 %.2f 秒后继续下一个网络请求：%s', delay, reason)
 
+    def _get_async_lock(self) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        if self._async_lock is None or self._async_lock_loop is not loop:
+            self._async_lock = asyncio.Lock()
+            self._async_lock_loop = loop
+        return self._async_lock
+
     def wait(self, reason: str = 'network request') -> None:
         delay = self._reserve_delay()
         if delay <= 0:
@@ -57,8 +66,9 @@ class NetworkThrottle:
         self._sleep(delay)
 
     async def async_wait(self, reason: str = 'network request') -> None:
-        delay = self._reserve_delay()
-        if delay <= 0:
-            return
-        self._log_delay(delay, reason)
-        await self._async_sleep(delay)
+        async with self._get_async_lock():
+            delay = self._reserve_delay()
+            if delay <= 0:
+                return
+            self._log_delay(delay, reason)
+            await self._async_sleep(delay)
