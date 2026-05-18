@@ -976,6 +976,12 @@ async def test_metadata_prepare_directory_and_error_handlers(task_factory, tmp_p
     assert metadata.status.state == TaskState.FINISHED
     assert metadata.events[-1][0] == DlEvent.FINISHED
 
+    metadata_enabled = task_factory(content_filename='metadata.json', download_metadata_files=True)
+    assert await metadata_enabled._handle_metadata_file() is False
+
+    regular_file = task_factory(content_filename='lecture.pdf', download_metadata_files=False)
+    assert await regular_file._handle_metadata_file() is False
+
     directory = task_factory(content_type='directory_placeholder')
     await directory._handle_directory_placeholder()
     assert directory.file.saved_to == directory.destination
@@ -2054,6 +2060,7 @@ def test_is_metadata_file_recognizes_optional_sidecars(task_factory):
     assert task_factory(content_filename='resource.JSON')._is_metadata_file() is True
     assert task_factory(content_filename='lecture_info')._is_metadata_file() is True
     assert task_factory(content_filename='lecture_notes.md')._is_metadata_file() is True
+    assert task_factory(content_filename='Launch Form.html')._is_metadata_file() is True
     assert task_factory(content_filename='lecture.pdf')._is_metadata_file() is False
 
 

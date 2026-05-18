@@ -33,6 +33,7 @@ from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
 from moodle_dl.downloader.leganto_print import LegantoPdfPrinter, is_leganto_reading_list_url
+from moodle_dl.file_classifier import is_optional_metadata_filename
 from moodle_dl.types import (
     Course,
     DlEvent,
@@ -1670,21 +1671,7 @@ class Task:
         - _info files
         - _notes.md files
         """
-        filename_lower = self.file.content_filename.lower()
-        
-        # JSON files (Resource module metadata)
-        if filename_lower.endswith('.json'):
-            return True
-        
-        # Metadata info files
-        if filename_lower.endswith('_info'):
-            return True
-        
-        # Notes files
-        if filename_lower.endswith('_notes.md'):
-            return True
-        
-        return False
+        return is_optional_metadata_filename(self.file.content_filename)
 
     async def real_run(self) -> bool:
         """

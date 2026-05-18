@@ -352,6 +352,26 @@ class TestCheckFileFilterConditions(unittest.TestCase):
         
         self.assertFalse(result)
 
+    def test_optional_metadata_file_classifier_examples(self):
+        """Test the generated metadata/sidecar classifier directly."""
+        cases = [
+            ('metadata.json', True),
+            ('Launch Parameters.JSON', True),
+            ('homework_info', True),
+            ('lecture_notes.md', True),
+            ('Launch Form.html', True),
+            ('LAUNCH FORM.HTML', True),
+            ('lecture.pdf', False),
+            ('notes.md', False),
+            ('launch form backup.html', False),
+        ]
+
+        for filename, expected in cases:
+            with self.subTest(filename=filename):
+                file = MagicMock(spec=File)
+                file.content_filename = filename
+                self.assertEqual(MoodleService._is_optional_metadata_file(file), expected)
+
     def test_optional_metadata_filtered_when_disabled(self):
         """Test generated JSON/launch sidecars are filtered when metadata files are disabled."""
         metadata_file = MagicMock(spec=File)
@@ -386,6 +406,31 @@ class TestCheckFileFilterConditions(unittest.TestCase):
                 self.assertFalse(
                     MoodleService._check_file_filter_conditions(launch_form, filter_config, True, course)
                 )
+
+    def test_optional_metadata_kept_when_enabled(self):
+        """Test generated metadata sidecars are kept when metadata files are enabled."""
+        metadata_file = MagicMock(spec=File)
+        metadata_file.content_type = 'content'
+        metadata_file.module_modname = 'lti'
+        metadata_file.content_filename = 'metadata.json'
+        metadata_file.section_id = 1
+        metadata_file.content_filesize = 100
+
+        course = MagicMock(spec=Course)
+        course.excluded_sections = []
+
+        filter_config = {
+            'download_descriptions': True,
+            'download_metadata_files': True,
+            'exclude_file_extensions': [],
+            'max_file_size': 0,
+        }
+
+        with patch('moodle_dl.moodle.moodle_service.determine_ext', return_value='json'):
+            with patch('moodle_dl.moodle.moodle_service.MoodleService.should_download_section', return_value=True):
+                result = MoodleService._check_file_filter_conditions(metadata_file, filter_config, True, course)
+
+        self.assertTrue(result)
 
 
 class TestFilterFiles(unittest.TestCase):

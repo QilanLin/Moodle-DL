@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
+from moodle_dl.file_classifier import is_optional_metadata_file
 from moodle_dl.moodle.cookie_handler import CookieHandler
 from moodle_dl.moodle.core_handler import CoreHandler
 from moodle_dl.moodle.mods import (
@@ -386,14 +387,7 @@ class MoodleService:
 
     @staticmethod
     def _is_optional_metadata_file(file) -> bool:
-        filename_lower = file.content_filename.lower()
-
-        return (
-            filename_lower.endswith('.json')
-            or filename_lower.endswith('_info')
-            or filename_lower.endswith('_notes.md')
-            or filename_lower == 'launch form.html'
-        )
+        return is_optional_metadata_file(file)
 
     @staticmethod
     def _check_file_filter_conditions(
