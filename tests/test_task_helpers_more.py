@@ -1364,6 +1364,61 @@ async def test_save_and_extract_kalvidres_text(task_factory, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_extract_kalvidres_text_handles_cookie_fallback_and_empty_pages(task_factory, tmp_path):
+    cookie_task = task_factory(cookies_text='cookie text')
+    failed_session = MagicMock()
+    failed_session.get.return_value = SimpleNamespace(
+        status_code=500,
+        url='https://moodle.example.com/mod/kalvidres/view.php?id=1',
+        text='',
+    )
+
+    with patch('moodle_dl.downloader.task.requests.Session', return_value=failed_session), patch(
+        'moodle_dl.downloader.task.MoodleDLCookieJar'
+    ) as cookie_jar_cls:
+        cookie_jar = MagicMock()
+        cookie_jar_cls.return_value = cookie_jar
+
+        assert await cookie_task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'failed.md'),
+        ) is False
+
+    cookie_jar_cls.assert_called_once()
+    cookie_jar.load.assert_called_once_with(ignore_discard=True, ignore_expires=True)
+    assert failed_session.cookies is cookie_jar
+
+    login_task = task_factory()
+    login_session = MagicMock()
+    login_session.get.return_value = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/login/index.php',
+        text='<html></html>',
+    )
+    with patch('moodle_dl.downloader.task.requests.Session', return_value=login_session):
+        assert await login_task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'login.md'),
+        ) is False
+
+    empty_task = task_factory()
+    empty_task._save_kalvidres_text = AsyncMock()
+    empty_session = MagicMock()
+    empty_session.get.return_value = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/mod/kalvidres/view.php?id=1',
+        text='<html><body></body></html>',
+    )
+    with patch('moodle_dl.downloader.task.requests.Session', return_value=empty_session):
+        assert await empty_task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'empty.md'),
+        ) is False
+
+    empty_task._save_kalvidres_text.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory):
     task = task_factory()
     kalvidres_html = (
@@ -1630,6 +1685,31 @@ async def test_extract_kalvidres_video_url_handles_bad_browse_url_and_unknown_er
     unknown = task_factory()
     unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('ssl certificate failed'))
     assert await unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+    auth_unknown = task_factory()
+    auth_unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('auth cookie rejected'))
+    assert await auth_unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+    timeout_unknown = task_factory()
+    timeout_unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('timeout while preparing session'))
+    assert await timeout_unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_video_url_handles_generic_request_exception(task_factory):
+    task = task_factory()
+    session = MagicMock()
+    session.get.side_effect = requests.RequestException('broken request')
+    task._create_session_with_retry = MagicMock(return_value=session)
+
+    assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
+
+
+def test_kalvidres_html_cleaners_handle_empty_input(task_factory):
+    task = task_factory()
+
+    assert task._clean_html_simple('') == ''
+    assert task._clean_html_preserve_structure('') == ''
 
 
 class FakeYoutubeDL:

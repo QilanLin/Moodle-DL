@@ -29,6 +29,12 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
+from moodle_dl.downloader.kaltura_url import (
+    KalturaAuthenticationError,
+    KalturaCDNError,
+    KalturaExtractionError,
+    KalturaUrlBuilder,
+)
 from moodle_dl.downloader.leganto_download import (
     build_leganto_download_plan,
     leganto_course_url,
@@ -56,22 +62,6 @@ from moodle_dl.utils import (
     format_seconds,
     timeconvert,
 )
-
-
-# ======================== 自定义异常类 ========================
-class KalturaExtractionError(Exception):
-    """Kaltura 视频 URL 提取失败"""
-    pass
-
-
-class KalturaCDNError(Exception):
-    """Kaltura CDN 不可用或无法连接"""
-    pass
-
-
-class KalturaAuthenticationError(Exception):
-    """Kaltura 认证失败（Cookie 过期或权限不足）"""
-    pass
 
 
 class Task:
@@ -129,37 +119,16 @@ class Task:
     REQUEST_BACKOFF_FACTOR = 1
 
     # Kaltura CDN 列表（按优先级排序）
-    KALTURA_CDN_FALLBACKS = [
-        'cdnapisec.kaltura.com',  # 主 CDN
-        'cdnbakmi.kaltura.com',   # 备用 CDN
-        'cdnakmi.kaltura.com',    # 亚洲 CDN
-        'cdnapi.kaltura.com',     # 备用
-    ]
-    KALTURA_PARTNER_FALLBACKS_BY_HOST = {
-        # King's Kaltura KAF pages sometimes omit partnerId in the returned
-        # browseandembed HTML while the entry id and player skin are still valid.
-        'kaf.kcl.ac.uk': '2368101',
-        'kaf.keats.kcl.ac.uk': '2368101',
-        'keats.kcl.ac.uk': '2368101',
-        'media.kcl.ac.uk': '2368101',
-    }
-    KALTURA_UICONF_FALLBACKS_BY_HOST = {
-        # Some KCL description links only contain an entry id. The same public
-        # player config is used by the direct media.kcl.ac.uk embeds.
-        'keats.kcl.ac.uk': '50622292',
-        'media.kcl.ac.uk': '50622292',
-    }
+    KALTURA_CDN_FALLBACKS = KalturaUrlBuilder.CDN_FALLBACKS
+    KALTURA_PARTNER_FALLBACKS_BY_HOST = KalturaUrlBuilder.PARTNER_FALLBACKS_BY_HOST
+    KALTURA_UICONF_FALLBACKS_BY_HOST = KalturaUrlBuilder.UICONF_FALLBACKS_BY_HOST
 
     # 正则表达式模式（预编译）
-    REGEX_ENTRY_ID = re.compile(r'/entryid/([^/?#]+)(?:[/?#]|$)', re.I)
-    REGEX_UICONF_ID = re.compile(r'/(?:playerSkin|uiConfId|uiconf_id)/(\d+)', re.I)
-    REGEX_KALTURA_PLAYLIST = re.compile(r'/isPlaylist/true(?:[/?#]|$)', re.I)
-    REGEX_PARTNER_ID = re.compile(
-        r'(?:partnerId|partner_id)["\']?\s*[:=]\s*["\']?(\d+)'
-        r'|/p/(\d+)(?:/|$)'
-        r'|/partner_id/(\d+)(?:[/?#]|$)'
-    )
-    REGEX_KALTURA_CDN = re.compile(r'https?://([^/]*kaltura\.com)/p/\d+/embed')
+    REGEX_ENTRY_ID = KalturaUrlBuilder.REGEX_ENTRY_ID
+    REGEX_UICONF_ID = KalturaUrlBuilder.REGEX_UICONF_ID
+    REGEX_KALTURA_PLAYLIST = KalturaUrlBuilder.REGEX_KALTURA_PLAYLIST
+    REGEX_PARTNER_ID = KalturaUrlBuilder.REGEX_PARTNER_ID
+    REGEX_KALTURA_CDN = KalturaUrlBuilder.REGEX_KALTURA_CDN
     REGEX_LTI_IFRAME = re.compile(r'<iframe[^>]+src="([^"]*lti_launch\.php[^"]*)"')
     REGEX_TARGET_LINK_URI = re.compile(r'name="target_link_uri"\s+value="([^"]+)"')
 
@@ -180,6 +149,9 @@ class Task:
         ),
         'Content-Type': 'application/x-www-form-urlencoded',
     }
+
+    def _kaltura_urls(self) -> KalturaUrlBuilder:
+        return KalturaUrlBuilder(self.task_id)
 
     def __init__(
         self,
@@ -260,12 +232,7 @@ class Task:
         @return: entry ID
         @raise: KalturaExtractionError 如果提取失败
         """
-        match = self.REGEX_ENTRY_ID.search(url)
-        if not match:
-            raise KalturaExtractionError('无法从 URL 中提取 entry ID')
-        entry_id = match.group(1)
-        logging.debug('[%d] ✓ Entry ID: %s', self.task_id, entry_id)
-        return entry_id
+        return self._kaltura_urls().extract_entry_id(url)
 
     def _extract_uiconf_id(self, url: str) -> str:
         """
@@ -275,12 +242,7 @@ class Task:
         @return: uiconf_id
         @raise: KalturaExtractionError 如果提取失败
         """
-        match = self.REGEX_UICONF_ID.search(url)
-        if not match:
-            raise KalturaExtractionError('无法从 URL 中提取 uiconf_id')
-        uiconf_id = match.group(1)
-        logging.debug('[%d] ✓ UI 配置 ID: %s', self.task_id, uiconf_id)
-        return uiconf_id
+        return self._kaltura_urls().extract_uiconf_id(url)
 
     def _extract_partner_id(self, html_content: str) -> str:
         """
@@ -290,12 +252,7 @@ class Task:
         @return: partner ID
         @raise: KalturaExtractionError 如果提取失败
         """
-        match = self.REGEX_PARTNER_ID.search(html_content)
-        if not match:
-            raise KalturaExtractionError('无法从页面中提取 partner ID')
-        partner_id = next(group for group in match.groups() if group)
-        logging.debug('[%d] ✓ Partner ID: %s', self.task_id, partner_id)
-        return partner_id
+        return self._kaltura_urls().extract_partner_id(html_content)
 
     def _infer_partner_id_from_browse_url(self, browseandembed_url: str) -> Optional[str]:
         """
@@ -304,46 +261,16 @@ class Task:
         This is only used after parsing the browseandembed HTML failed. The
         entry ID and uiconf ID still come from the signed LTI launch response.
         """
-        host = urlparse.urlparse(browseandembed_url).hostname or ''
-        partner_id = self.KALTURA_PARTNER_FALLBACKS_BY_HOST.get(host.lower())
-        if partner_id:
-            logging.info(
-                '[%d] ℹ️  Using partner ID fallback for Kaltura host %s',
-                self.task_id,
-                host,
-            )
-        else:
-            logging.debug(
-                '[%d] No Kaltura partner ID fallback configured for host %s',
-                self.task_id,
-                host,
-            )
-        return partner_id
+        return self._kaltura_urls().infer_partner_id_from_browse_url(browseandembed_url)
 
     def _infer_uiconf_id_from_browse_url(self, browseandembed_url: str) -> Optional[str]:
         """Infer a Kaltura uiconf ID for known KCL hosts when the URL omits it."""
-        host = urlparse.urlparse(browseandembed_url).hostname or ''
-        uiconf_id = self.KALTURA_UICONF_FALLBACKS_BY_HOST.get(host.lower())
-        if uiconf_id:
-            logging.info(
-                '[%d] ℹ️  Using uiconf_id fallback for Kaltura host %s',
-                self.task_id,
-                host,
-            )
-        return uiconf_id
+        return self._kaltura_urls().infer_uiconf_id_from_browse_url(browseandembed_url)
 
     @staticmethod
     def _source_url_from_kaltura_lti_launch(url: str) -> Optional[str]:
         """Return the Kaltura source URL embedded in Moodle's lti_launch.php URL."""
-        parsed = urlparse.urlparse(url or '')
-        if not (parsed.path or '').endswith('/filter/kaltura/lti_launch.php'):
-            return None
-
-        source_values = urlparse.parse_qs(parsed.query).get('source')
-        if not source_values:
-            return None
-
-        return html.unescape(source_values[0])
+        return KalturaUrlBuilder.source_url_from_lti_launch(url)
 
     def _build_kaltura_url_from_known_embed_url(self, url: str) -> Optional[str]:
         """
@@ -355,48 +282,11 @@ class Task:
         query parameter. Fetching those pages is unnecessary and can fail on
         local certificate stores, so derive the stable player URL directly.
         """
-        source_url = self._source_url_from_kaltura_lti_launch(url) or url
-        partner_id = self._infer_partner_id_from_browse_url(source_url)
-        if not partner_id:
-            return None
-
-        try:
-            entry_id = self._extract_entry_id(source_url)
-        except KalturaExtractionError:
-            return None
-
-        try:
-            uiconf_id = self._extract_uiconf_id(source_url)
-        except KalturaExtractionError:
-            uiconf_id = self._infer_uiconf_id_from_browse_url(source_url)
-            if not uiconf_id:
-                return None
-
-        if self.REGEX_KALTURA_PLAYLIST.search(source_url):
-            return self._build_kaltura_playlist_url(
-                partner_id,
-                uiconf_id,
-                entry_id,
-                self.KALTURA_CDN_FALLBACKS[0],
-                source_url,
-            )
-
-        return self._build_kaltura_url(
-            partner_id,
-            uiconf_id,
-            entry_id,
-            self.KALTURA_CDN_FALLBACKS[0],
-        )
+        return self._kaltura_urls().build_from_known_embed_url(url)
 
     def _log_browseandembed_url(self, browseandembed_url: str) -> None:
         """Log the non-sensitive parts of a Kaltura browseandembed URL."""
-        parsed = urlparse.urlparse(browseandembed_url)
-        logging.debug(
-            '[%d] Kaltura browseandembed target: host=%s path=%s',
-            self.task_id,
-            parsed.hostname or '',
-            parsed.path or '',
-        )
+        self._kaltura_urls().log_browseandembed_url(browseandembed_url)
 
     def _detect_kaltura_cdn(self, html_content: str) -> Optional[str]:
         """
@@ -405,13 +295,7 @@ class Task:
         @param html_content: 页面 HTML 内容
         @return: CDN 地址或 None
         """
-        match = self.REGEX_KALTURA_CDN.search(html_content)
-        if match:
-            cdn = match.group(1)
-            logging.debug('[%d] ✓ 从页面检测到 Kaltura CDN: %s', self.task_id, cdn)
-            return cdn
-        logging.debug('[%d] ℹ️  无法从页面检测到 CDN，将使用备用 CDN 列表', self.task_id)
-        return None
+        return self._kaltura_urls().detect_cdn(html_content)
 
     def _build_kaltura_url(self, partner_id: str, uiconf_id: str, entry_id: str, cdn: str) -> str:
         """
@@ -423,12 +307,7 @@ class Task:
         @param cdn: CDN 地址
         @return: 完整的 Kaltura URL
         """
-        url = (
-            f'https://{cdn}/p/{partner_id}/sp/{partner_id}00/embedIframeJs/'
-            f'uiconf_id/{uiconf_id}/partner_id/{partner_id}?iframeembed=true&entry_id={entry_id}'
-        )
-        logging.debug('[%d] 🔗 构建 Kaltura URL (CDN: %s)', self.task_id, cdn)
-        return url
+        return self._kaltura_urls().build_url(partner_id, uiconf_id, entry_id, cdn)
 
     def _build_kaltura_playlist_url(
         self,
@@ -439,23 +318,13 @@ class Task:
         source_url: str,
     ) -> str:
         """Build a yt-dlp-friendly Kaltura URL for KAF playlist embeds."""
-        source_host = urlparse.urlparse(source_url).hostname or ''
-        params = {
-            'wid': f'_{partner_id}',
-            'iframeembed': 'true',
-            'playerId': 'kaltura_player_',
-            'flashvars[playlistAPI.kpl0Id]': playlist_id,
-        }
-        if source_host:
-            params['flashvars[playlistAPI.playlistUrl]'] = (
-                f'https://{source_host}/playlist/details/{{playlistAPI.kpl0Id}}'
-            )
-        url = (
-            f'https://{cdn}/html5/html5lib/v2.101/mwEmbedFrame.php/'
-            f'p/{partner_id}/uiconf_id/{uiconf_id}?{urlparse.urlencode(params)}'
+        return self._kaltura_urls().build_playlist_url(
+            partner_id,
+            uiconf_id,
+            playlist_id,
+            cdn,
+            source_url,
         )
-        logging.debug('[%d] 🔗 构建 Kaltura playlist URL (CDN: %s)', self.task_id, cdn)
-        return url
 
     @staticmethod
     def _generate_filename_with_index(file: File) -> str:

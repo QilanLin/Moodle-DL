@@ -314,6 +314,27 @@ class TestKalturaExtraction(unittest.TestCase):
             )
         )
 
+    def test_source_url_from_kaltura_lti_launch_without_source(self):
+        """测试没有 source 参数的 Moodle Kaltura wrapper"""
+        self.assertIsNone(
+            self.task._source_url_from_kaltura_lti_launch(
+                "https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=1"
+            )
+        )
+
+    def test_known_embed_url_requires_entry_id_and_uiconf(self):
+        """测试已知 Kaltura embed URL 缺少必要参数时不构建 URL"""
+        self.assertIsNone(
+            self.task._build_kaltura_url_from_known_embed_url(
+                "https://keats.kcl.ac.uk/browseandembed/index/media/playerSkin/42864872/"
+            )
+        )
+        self.assertIsNone(
+            self.task._build_kaltura_url_from_known_embed_url(
+                "https://kaf.kcl.ac.uk/browseandembed/index/media/entryid/1_abcd/"
+            )
+        )
+
     def test_extract_partner_id_invalid(self):
         """测试无效 HTML 提取 partner ID"""
         html = "<html><body>No partner ID here</body></html>"
