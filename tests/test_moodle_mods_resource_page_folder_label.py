@@ -7,6 +7,7 @@ import pytest
 from moodle_dl.moodle.mods.folder import FolderMod
 from moodle_dl.moodle.mods.label import LabelMod
 from moodle_dl.moodle.mods.page import PageMod
+from moodle_dl.moodle.mods.page_content_filter import PageContentFilter
 from moodle_dl.moodle.mods.resource import ResourceMod
 from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course
@@ -303,6 +304,33 @@ async def test_page_parse_real_fetch_and_web_fallback():
 
 
 @pytest.mark.asyncio
+async def test_page_real_fetch_uses_web_fallback_when_mobile_api_fails():
+    mod = make_mod(PageMod)
+    courses = [Course(10, "Course")]
+    mod.client.async_post.side_effect = RequestRejectedError("mobile disabled")
+    mod._fetch_pages_web_api = AsyncMock(
+        return_value=[
+            {
+                "id": 100,
+                "coursemodule": 45,
+                "course": 10,
+                "name": "Fallback Page",
+                "content": "<p>Fallback content</p>",
+            }
+        ]
+    )
+
+    result = await mod.real_fetch_mod_entries(courses, {})
+
+    mod._fetch_pages_web_api.assert_awaited_once_with(courses, {})
+    assert result[10][45]["name"] == "Fallback Page"
+    assert [file["filename"] for file in result[10][45]["files"]] == [
+        "Fallback Page",
+        "metadata.json",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_page_filters_adjacent_small_kaltura_helper_icons_when_video_present():
     mod = make_mod(PageMod)
     mod.client.async_post.return_value = {
@@ -449,6 +477,34 @@ async def test_page_keeps_kaltura_helper_icons_without_video_or_when_too_large()
     assert "Settings icon.png" not in large_icon_filenames
 
 
+def test_page_kaltura_helper_icon_classification_edges():
+    regular_file = {
+        "filename": "lecture.png",
+        "filesize": 1024,
+        "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/lecture.png",
+    }
+    wrong_context_icon = {
+        "filename": "Kaltura icon.png",
+        "filesize": 2048,
+        "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_resource/content/41/Kaltura%20icon.png",
+    }
+    missing_size_icon = {
+        "filename": "Kaltura icon.png",
+        "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/Kaltura%20icon.png",
+    }
+    invalid_size_icon = {
+        "filename": "Kaltura icon.png",
+        "filesize": "unknown",
+        "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/Kaltura%20icon.png",
+    }
+
+    assert PageContentFilter.is_kaltura_helper_icon_from_page_content(regular_file) is False
+    assert PageContentFilter.is_small_kaltura_helper_icon(regular_file) is False
+    assert PageContentFilter.is_kaltura_helper_icon_from_page_content(wrong_context_icon) is False
+    assert PageContentFilter.is_small_kaltura_helper_icon(missing_size_icon) is False
+    assert PageContentFilter.is_small_kaltura_helper_icon(invalid_size_icon) is False
+
+
 def test_page_keeps_kaltura_helper_icons_when_not_adjacent():
     files = [
         {
@@ -472,7 +528,7 @@ def test_page_keeps_kaltura_helper_icons_when_not_adjacent():
         },
     ]
 
-    filtered = PageMod._filter_adjacent_kaltura_helper_icons(
+    filtered = PageContentFilter.filter_adjacent_kaltura_helper_icons(
         files,
         '<iframe src="https://keats.kcl.ac.uk/browseandembed/index/media/entryid/1_video"></iframe>',
         "",
