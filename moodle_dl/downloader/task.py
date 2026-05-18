@@ -749,7 +749,7 @@ class Task:
                 ydl_result = await loop.run_in_executor(self.thread_pool, functools.partial(ydl.download, dl_url))
                 # We set the saved_to path in yt_hook_after_move
                 if ydl_result == 0:
-                    if self.file.module_name == 'index_mod-page':
+                    if self.file.module_modname.startswith('index_mod') or self.file.module_name == 'index_mod-page':
                         # We want to download legacy moodle pages
                         return False
                     # yt-dlp has an extractor for this URL so we do not want to download the URL extra
@@ -1090,6 +1090,51 @@ class Task:
 
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as content_file:
             await content_file.write(content)
+
+    async def _download_index_mod_page(self):
+        """Download a legacy Moodle page as Markdown instead of a browser shortcut."""
+        url_to_download = self.file.content_fileurl
+        if not url_to_download:
+            logging.warning('[%d] 没有可用的 Moodle 页面 URL，跳过文件: %s', self.task_id, self.file.content_filename)
+            return
+
+        url_to_download = self.add_token_to_url(url_to_download)
+
+        PT.remove_file(self.file.saved_to)
+        PT.make_dirs(self.destination)
+        if self.filename.lower().endswith(('.html', '.htm')):
+            self.filename = os.path.splitext(self.filename)[0]
+        self.set_path(ignore_attributes=True, force_file_extension='md')
+
+        ssl_context = SslHelper.get_ssl_context(
+            self.opts.global_opts.skip_cert_verify,
+            self.opts.global_opts.allow_insecure_ssl,
+            self.opts.global_opts.use_all_ciphers,
+        )
+
+        async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
+            async with session.request(
+                "GET",
+                url_to_download,
+                headers=self.RQ_HEADER,
+                ssl=ssl_context,
+                timeout=20,
+            ) as resp:
+                html_content = await resp.text()
+
+        h2t_handler = html2text.HTML2Text()
+        h2t_handler.ignore_links = False
+        h2t_handler.ignore_images = False
+        h2t_handler.body_width = 0
+        md_content = h2t_handler.handle(html_content).strip()
+
+        if md_content == '':
+            logging.debug('[%d] Remove target file because Moodle page would be empty', self.task_id)
+            PT.remove_file(self.file.saved_to)
+            return
+
+        async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as md_file:
+            await md_file.write(md_content)
 
     def move_old_file(self) -> bool:
         """
@@ -1680,7 +1725,7 @@ class Task:
             await self._download_leganto_reading_list_pdf()
         
         elif self.file.module_modname.startswith('index_mod'):
-            await self.external_download_url(add_token=True, delete_if_successful=True, needs_moodle_cookies=False)
+            await self._download_index_mod_page()
         
         elif self.file.module_modname.startswith('cookie_mod'):
             await self._download_cookie_mod_file()

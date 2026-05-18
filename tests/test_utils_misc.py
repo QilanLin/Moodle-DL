@@ -278,6 +278,11 @@ def test_path_tools_valid_name_and_sanitize_filename():
     assert PathTools.to_valid_name(' Lecture&nbsp;/ Notes?.pdf\n', is_file=True) == (
         'Lecture \u29f8 Notes\uff1f.pdf'
     )
+    assert PathTools.to_valid_name(
+        '1.1 — Instructions <span class="label label-success">Start here</span> '
+        '<span class="badge bg-success">Core!</span>',
+        is_file=False,
+    ) == '1.1 — Instructions Start here Core!'
     assert PathTools.sanitize_filename('a/b:c?d', restricted=False) == 'a\u29f8b\uff1ac\uff1fd'
     assert PathTools.sanitize_filename('\u00e9 test!', restricted=True) == 'e_test'
     assert PathTools.to_valid_name(None, is_file=True) is None

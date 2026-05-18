@@ -626,6 +626,21 @@ class PathTools:
         # Moodle and other websites often use full width characters and other weird UTF-8 codes, we normalize this
         name = unicodedata.normalize('NFKC', name)
 
+        # Moodle activity titles may include Bootstrap badges such as
+        # <span class="badge bg-success">Core!</span>. Keep the visible
+        # text, but never let known HTML markup become part of a path. Do
+        # not strip arbitrary angle-bracket text because Moodle titles can
+        # legitimately contain characters like "<bad>".
+        html_title_tags = (
+            'a|abbr|b|br|code|div|em|i|label|li|mark|p|small|span|strong|sub|sup|ul'
+        )
+        name = re.sub(
+            rf'</?\s*(?:{html_title_tags})(?:\s+[^<>]*)?/?>',
+            ' ',
+            name,
+            flags=re.IGNORECASE,
+        )
+
         name = name.replace('\n', ' ')
         name = name.replace('\r', ' ')
         name = name.replace('\t', ' ')

@@ -347,6 +347,55 @@ async def test_create_description_html_and_content_files(task_factory, tmp_path)
     assert (tmp_path / 'metadata.json').read_text(encoding='utf-8') == '{"ok": true}'
 
 
+@pytest.mark.asyncio
+async def test_download_index_mod_page_saves_markdown_without_html_badges(task_factory):
+    task = task_factory(
+        module_modname='index_mod-page',
+        content_filename=(
+            '1.1 — Instructions <span class="label label-success">Start here</span> '
+            '<span class="badge bg-success">Core!</span>'
+        ),
+        content_fileurl='https://moodle.example.com/webservice/pluginfile.php/1/mod_page/content/index.html',
+    )
+
+    class FakeResponse:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def text(self):
+            return '<h1>Instructions Start here</h1><p><strong>Core!</strong> Use Git.</p>'
+
+    class FakeClientSession:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def request(self, method, url, headers, ssl, timeout):
+            assert method == 'GET'
+            assert 'token=token-abc' in url
+            return FakeResponse()
+
+    with patch('moodle_dl.downloader.task.aiohttp.ClientSession', FakeClientSession):
+        await task._download_index_mod_page()
+
+    saved_path = Path(task.file.saved_to)
+    saved_text = saved_path.read_text(encoding='utf-8')
+    assert saved_path.suffix == '.md'
+    assert '<span' not in saved_path.name
+    assert 'Start here' in saved_path.name
+    assert 'Core!' in saved_path.name
+    assert 'Instructions Start here' in saved_text
+    assert 'Use Git.' in saved_text
+
+
 def test_set_path_avoids_duplicate_generated_extensions_and_supports_forced_extensions(
     task_factory,
     tmp_path,
@@ -437,13 +486,9 @@ async def test_execute_download_dispatches_to_type_specific_handlers(task_factor
     leganto_task._download_leganto_reading_list_pdf.assert_awaited_once()
 
     index_task = task_factory(module_modname='index_mod-page')
-    index_task.external_download_url = AsyncMock()
+    index_task._download_index_mod_page = AsyncMock()
     await index_task._execute_download()
-    index_task.external_download_url.assert_awaited_once_with(
-        add_token=True,
-        delete_if_successful=True,
-        needs_moodle_cookies=False,
-    )
+    index_task._download_index_mod_page.assert_awaited_once()
 
     cookie_task = task_factory(module_modname='cookie_mod-helixmedia')
     cookie_task._download_cookie_mod_file = AsyncMock()
@@ -2266,13 +2311,9 @@ async def test_execute_download_dispatches_by_content_and_module_type(task_facto
     content.create_content_file.assert_awaited_once()
 
     index_mod = task_factory(module_modname='index_mod-page')
-    index_mod.external_download_url = AsyncMock()
+    index_mod._download_index_mod_page = AsyncMock()
     await index_mod._execute_download()
-    index_mod.external_download_url.assert_awaited_once_with(
-        add_token=True,
-        delete_if_successful=True,
-        needs_moodle_cookies=False,
-    )
+    index_mod._download_index_mod_page.assert_awaited_once()
 
     cookie_mod = task_factory(module_modname='cookie_mod-helixmedia')
     cookie_mod._download_cookie_mod_file = AsyncMock()
