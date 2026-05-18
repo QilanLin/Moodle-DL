@@ -101,6 +101,17 @@ def make_cookie_manager(cookies=None, refresh_result=False):
     return cookie_manager
 
 
+def make_print_book_personal_metadata():
+    return (
+        '<div class="w-50 float-start">'
+        '<table class="float-end"><tbody>'
+        '<tr><td>Printed by:</td><td class="ps-3">Egor Kuzmichev</td></tr>'
+        '<tr><td>Date:</td><td class="ps-3">Monday, 18 May 2026, 4:21 PM</td></tr>'
+        '</tbody></table>'
+        '</div>'
+    )
+
+
 class FakeChapterResponse:
     def __init__(self, status, text=''):
         self.status = status
@@ -466,6 +477,32 @@ def test_create_linked_print_book_html_rewrites_mapped_kaltura_iframes_only():
     assert no_entry_src in modified
 
 
+def test_remove_print_book_personal_metadata_removes_only_print_header():
+    book = make_book()
+    course_metadata = (
+        '<div class="w-50 float-start">'
+        '<table class="float-start"><tbody><tr><td>Book:</td><td>Software installation</td></tr></tbody></table>'
+        '</div>'
+    )
+    html = (
+        '<header>'
+        f'{course_metadata}'
+        f'{make_print_book_personal_metadata()}'
+        '</header>'
+        '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
+    )
+
+    cleaned = book._remove_print_book_personal_metadata(html)
+
+    assert 'Printed by:' not in cleaned
+    assert 'Egor Kuzmichev' not in cleaned
+    assert 'Monday, 18 May 2026' not in cleaned
+    assert 'Book:' in cleaned
+    assert 'Software installation' in cleaned
+    assert '<div class="book_chapter">Chapter</div>' in cleaned
+    assert book._remove_print_book_personal_metadata(cleaned) == cleaned
+
+
 @pytest.mark.asyncio
 async def test_fetch_chapter_html_adds_token_and_handles_statuses_and_errors():
     book = make_book()
@@ -572,6 +609,7 @@ async def test_real_fetch_mod_entries_processes_mobile_book_contents():
         ]
     }
     book._fetch_print_book_html = AsyncMock(return_value=(
+        make_print_book_personal_metadata() +
         f'<div class="book_chapter" id="ch101">'
         f'<iframe class="kaltura-player-iframe" src="{make_lti_src("1_video")}"></iframe>'
         '</div>',
@@ -627,6 +665,8 @@ async def test_real_fetch_mod_entries_processes_mobile_book_contents():
     assert 'Intro' in toc_file['html']
     assert print_book_file['filename'] == 'Clinical Skills.html'
     assert '1. Intro/Intro - Video (1_video).mp4' in print_book_file['html']
+    assert 'Printed by:' not in print_book_file['html']
+    assert 'Egor Kuzmichev' not in print_book_file['html']
 
     assert intro_chapter['type'] == 'html'
     assert intro_chapter['filepath'].replace('_', ' ') == '/1. Intro/'
@@ -660,7 +700,9 @@ async def test_real_fetch_mod_entries_uses_web_api_fallback_and_print_book_witho
     book._fetch_books_web_api = AsyncMock(return_value=[
         {'id': 9, 'course': 1, 'coursemodule': 30, 'name': 'Fallback Book', 'timemodified': 66}
     ])
-    book._fetch_print_book_html = AsyncMock(return_value=('<div class="book_chapter">Only print</div>', 'url'))
+    print_book_html = make_print_book_personal_metadata() + '<div class="book_chapter">Only print</div>'
+    expected_html = '<div class="book_chapter">Only print</div>'
+    book._fetch_print_book_html = AsyncMock(return_value=(print_book_html, 'url'))
 
     result = await book.real_fetch_mod_entries([Course(1, 'Course One')], {1: []})
 
@@ -669,10 +711,10 @@ async def test_real_fetch_mod_entries_uses_web_api_fallback_and_print_book_witho
             'filename': 'Fallback Book.html',
             'filepath': '/',
             'timemodified': 66,
-            'html': '<div class="book_chapter">Only print</div>',
+            'html': expected_html,
             'type': 'html',
             'no_search_for_urls': True,
-            'filesize': len('<div class="book_chapter">Only print</div>'),
+            'filesize': len(expected_html),
         }
     ]
     book._fetch_books_web_api.assert_awaited_once()
@@ -702,7 +744,11 @@ async def test_fetch_print_book_html_returns_empty_when_cookie_database_is_empty
 @pytest.mark.asyncio
 async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monkeypatch):
     book = make_book()
-    html = '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
+    html = (
+        make_print_book_personal_metadata() +
+        '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
+    )
+    expected_html = '<main class="book p-4"><div class="book_chapter">Chapter</div></main>'
     playwright, browser, context, page = make_fake_print_book_playwright(html=html)
     request_callbacks = []
     page.on = MagicMock(side_effect=lambda event, callback: request_callbacks.append((event, callback)))
@@ -714,7 +760,7 @@ async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monke
             result = await book._fetch_print_book_html(20, 1)
 
     assert result == (
-        html,
+        expected_html,
         'https://keats.kcl.ac.uk/mod/book/tool/print/index.php?id=20',
     )
     playwright.firefox.launch.assert_awaited_once_with(headless=True)

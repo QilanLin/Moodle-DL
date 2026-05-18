@@ -295,6 +295,9 @@ class BookMod(MoodleMod):
                 chapters_by_id = {}
 
             # Step 3: 组合结果 - 章节内容已在 Step 1 中处理，Print Book 已在 Step 2 中获取
+            if print_book_html:
+                print_book_html = self._remove_print_book_personal_metadata(print_book_html)
+
             # 🆕 改进：使用章节映射链接Print Book中的视频到本地文件
             if print_book_html and chapters_by_id:
                 logging.info('📖 Step 3: Combining results - Processing Print Book with chapter mappings')
@@ -904,6 +907,8 @@ class BookMod(MoodleMod):
                         await browser.close()
                         return '', ''
 
+                    html_content = self._remove_print_book_personal_metadata(html_content)
+
                     logging.info(f'✅ Successfully fetched print book HTML ({len(html_content)} bytes)')
                     await browser.close()
                     return html_content, print_book_url
@@ -1034,6 +1039,30 @@ class BookMod(MoodleMod):
             logging.debug(f'   Video {idx}: {video_name} (entry_id: {entry_id})')
 
         return video_list
+
+    @staticmethod
+    def _remove_print_book_personal_metadata(html_content: str) -> str:
+        """
+        Remove Moodle Print Book's personal header metadata.
+
+        Moodle's print view adds a right-side table with "Printed by" and
+        "Date". Those values are tied to the current user/session and should
+        not be saved into offline course material.
+        """
+        metadata_div_pattern = re.compile(
+            r'<div\b(?=[^>]*class=["\'][^"\']*\bw-50\b)(?=[^>]*class=["\'][^"\']*\bfloat-start\b)[^>]*>\s*'
+            r'<table\b(?=[^>]*class=["\'][^"\']*\bfloat-end\b)[^>]*>.*?</table>\s*</div>',
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        def remove_if_personal_metadata(match: re.Match) -> str:
+            block = match.group(0)
+            normalized = re.sub(r'\s+', ' ', block).lower()
+            if 'printed by:' in normalized and 'date:' in normalized:
+                return ''
+            return block
+
+        return metadata_div_pattern.sub(remove_if_personal_metadata, html_content)
 
     def _replace_kaltura_iframes_with_video_tags(self, html_content: str, video_list: List[Dict]) -> str:
         """
