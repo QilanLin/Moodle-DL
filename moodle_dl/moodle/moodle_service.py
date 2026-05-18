@@ -309,6 +309,7 @@ class MoodleService:
             'download_public_course_ids': config.get_download_public_course_ids(),
             'download_descriptions': config.get_download_descriptions(),
             'download_links_in_descriptions': config.get_download_links_in_descriptions(),
+            'download_metadata_files': config.get_download_metadata_files(),
             'exclude_file_extensions': config.get_exclude_file_extensions(),
             'max_file_size': config.get_max_file_size(),
             'use_whitelist': (
@@ -384,6 +385,17 @@ class MoodleService:
         return True, None
 
     @staticmethod
+    def _is_optional_metadata_file(file) -> bool:
+        filename_lower = file.content_filename.lower()
+
+        return (
+            filename_lower.endswith('.json')
+            or filename_lower.endswith('_info')
+            or filename_lower.endswith('_notes.md')
+            or filename_lower == 'launch form.html'
+        )
+
+    @staticmethod
     def _check_file_filter_conditions(
         file, 
         filter_config: dict,
@@ -410,6 +422,11 @@ class MoodleService:
             )
             # Filter Files that require a Cookie
             and (download_with_cookie or (not file.module_modname.startswith('cookie_mod-')))
+            # Filter optional generated metadata/launch sidecars
+            and (
+                filter_config.get('download_metadata_files', True)
+                or not MoodleService._is_optional_metadata_file(file)
+            )
             # Exclude files whose file extension is blacklisted
             and (determine_ext(file.content_filename) not in filter_config['exclude_file_extensions'])
             # Exclude files that are in excluded sections

@@ -14,6 +14,7 @@ def make_config(**values):
     config = Mock()
     config.get_download_ltis.return_value = values.get("download_ltis", True)
     config.get_download_workshops.return_value = values.get("download_workshops", True)
+    config.get_download_metadata_files.return_value = values.get("download_metadata_files", True)
     return config
 
 
@@ -182,6 +183,37 @@ async def test_lti_real_fetch_builds_launch_files_metadata_and_shortcut():
     fallback_mod._fetch_ltis_web_api = AsyncMock(return_value=[])
     assert await fallback_mod.real_fetch_mod_entries([Course(10, "Course")], {}) == {}
     fallback_mod._fetch_ltis_web_api.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lti_real_fetch_skips_launch_sidecars_when_metadata_files_disabled():
+    mod = make_mod(LtiMod, make_config(download_metadata_files=False))
+    mod.client.async_post.side_effect = [
+        {
+            "ltis": [
+                {
+                    "id": 99,
+                    "coursemodule": 44,
+                    "course": 10,
+                    "name": "External Tool",
+                    "securetoolurl": "https://tool.example/launch",
+                    "timemodified": 123,
+                }
+            ]
+        },
+        {
+            "endpoint": "https://tool.example/launch",
+            "parameters": [{"name": "lti_message_type", "value": "basic-lti-launch-request"}],
+        },
+    ]
+
+    result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    filenames = [file["filename"] for file in result[10][44]["files"]]
+    assert "Launch Parameters.json" not in filenames
+    assert "Launch Form.html" not in filenames
+    assert "metadata.json" in filenames
+    assert "External Tool" in filenames
 
 
 @pytest.mark.asyncio

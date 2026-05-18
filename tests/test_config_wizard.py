@@ -334,7 +334,9 @@ def test_select_modules_to_download_saves_new_and_legacy_options():
     with patch('moodle_dl.cli.config_wizard.Cutie.select_multiple', return_value=selected) as select_multiple:
         wizard._select_modules_to_download()
 
-    assert len(select_multiple.call_args.kwargs['ticked_indices']) == 30
+    ticked_indices = select_multiple.call_args.kwargs['ticked_indices']
+    assert len(ticked_indices) == 29
+    assert 29 not in ticked_indices
     download_options_call = wizard.config.set_property.call_args_list[0]
     assert download_options_call.args[0] == 'download_options'
     download_options = download_options_call.args[1]

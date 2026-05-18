@@ -122,40 +122,38 @@ class LtiMod(MoodleMod):
             except Exception as e:
                 logging.debug("Error getting LTI launch data for tool %s: %s", lti_id, str(e))
 
-            # Create launch parameters file if available
             if launch_data:
                 endpoint = launch_data.get('endpoint', '')
                 parameters = launch_data.get('parameters', [])
 
-                # Save launch parameters as JSON
-                params_content = {
-                    'endpoint': endpoint,
-                    'parameters': parameters,
-                    'parameter_count': len(parameters),
-                }
-
-                lti_files.append(
-                    {
-                        'filename': PT.to_valid_name('Launch Parameters', is_file=True) + '.json',
-                        'filepath': '/',
-                        'content': json.dumps(params_content, indent=2, ensure_ascii=False),
-                        'type': 'content',
-                        'timemodified': lti.get('timemodified', 0),
+                if self.config.get_download_metadata_files():
+                    params_content = {
+                        'endpoint': endpoint,
+                        'parameters': parameters,
+                        'parameter_count': len(parameters),
                     }
-                )
 
-                # Generate launch form HTML
-                launch_form_html = self._generate_launch_form(endpoint, parameters, lti_name)
-                lti_files.append(
-                    {
-                        'filename': PT.to_valid_name('Launch Form', is_file=True) + '.html',
-                        'filepath': '/',
-                        'html': launch_form_html,
-                        'type': 'html',
-                        'timemodified': lti.get('timemodified', 0),
-                        'filesize': len(launch_form_html),
-                    }
-                )
+                    lti_files.append(
+                        {
+                            'filename': PT.to_valid_name('Launch Parameters', is_file=True) + '.json',
+                            'filepath': '/',
+                            'content': json.dumps(params_content, indent=2, ensure_ascii=False),
+                            'type': 'content',
+                            'timemodified': lti.get('timemodified', 0),
+                        }
+                    )
+
+                    launch_form_html = self._generate_launch_form(endpoint, parameters, lti_name)
+                    lti_files.append(
+                        {
+                            'filename': PT.to_valid_name('Launch Form', is_file=True) + '.html',
+                            'filepath': '/',
+                            'html': launch_form_html,
+                            'type': 'html',
+                            'timemodified': lti.get('timemodified', 0),
+                            'filesize': len(launch_form_html),
+                        }
+                    )
 
                 if self._should_create_leganto_pdf_file(endpoint, lti_name):
                     lti_files.append(

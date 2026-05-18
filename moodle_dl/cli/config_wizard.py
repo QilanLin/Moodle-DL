@@ -870,8 +870,9 @@ class ConfigWizard:
         current_selections = []
         for i, (config_key, name, desc) in enumerate(modules):
             if is_initial_setup:
-                # 初始化时默认全选
-                current_selections.append(i)
+                # 初始化时默认下载学习材料，但不默认下载自动生成的元数据 sidecar。
+                if config_key != 'download_metadata_files':
+                    current_selections.append(i)
             else:
                 # 重新配置时使用现有配置值
                 getter_method = getattr(self.config, f'get_{config_key}', None)

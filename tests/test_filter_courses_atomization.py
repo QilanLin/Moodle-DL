@@ -38,6 +38,7 @@ class TestLoadFilterConfig(unittest.TestCase):
         self.config.get_download_public_course_ids.return_value = [6]
         self.config.get_download_descriptions.return_value = True
         self.config.get_download_links_in_descriptions.return_value = False
+        self.config.get_download_metadata_files.return_value = False
         self.config.get_exclude_file_extensions.return_value = ['exe', 'dll']
         self.config.get_max_file_size.return_value = 1000000
         self.config.has_property.side_effect = lambda prop: prop == 'download_course_ids'
@@ -51,6 +52,7 @@ class TestLoadFilterConfig(unittest.TestCase):
         self.assertEqual(result['download_public_course_ids'], [6])
         self.assertTrue(result['download_descriptions'])
         self.assertFalse(result['download_links_in_descriptions'])
+        self.assertFalse(result['download_metadata_files'])
         self.assertEqual(result['exclude_file_extensions'], ['exe', 'dll'])
         self.assertEqual(result['max_file_size'], 1000000)
         self.assertTrue(result['use_whitelist'])
@@ -350,6 +352,41 @@ class TestCheckFileFilterConditions(unittest.TestCase):
         
         self.assertFalse(result)
 
+    def test_optional_metadata_filtered_when_disabled(self):
+        """Test generated JSON/launch sidecars are filtered when metadata files are disabled."""
+        metadata_file = MagicMock(spec=File)
+        metadata_file.content_type = 'content'
+        metadata_file.module_modname = 'lti'
+        metadata_file.content_filename = 'Launch Parameters.json'
+        metadata_file.section_id = 1
+        metadata_file.content_filesize = 100
+
+        launch_form = MagicMock(spec=File)
+        launch_form.content_type = 'html'
+        launch_form.module_modname = 'lti'
+        launch_form.content_filename = 'Launch Form.html'
+        launch_form.section_id = 1
+        launch_form.content_filesize = 100
+
+        course = MagicMock(spec=Course)
+        course.excluded_sections = []
+
+        filter_config = {
+            'download_descriptions': True,
+            'download_metadata_files': False,
+            'exclude_file_extensions': [],
+            'max_file_size': 0,
+        }
+
+        with patch('moodle_dl.moodle.moodle_service.determine_ext', return_value='json'):
+            with patch('moodle_dl.moodle.moodle_service.MoodleService.should_download_section', return_value=True):
+                self.assertFalse(
+                    MoodleService._check_file_filter_conditions(metadata_file, filter_config, True, course)
+                )
+                self.assertFalse(
+                    MoodleService._check_file_filter_conditions(launch_form, filter_config, True, course)
+                )
+
 
 class TestFilterFiles(unittest.TestCase):
     """Tests for _filter_course_files() function."""
@@ -548,4 +585,3 @@ class TestFilterCoursesIntegration(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
