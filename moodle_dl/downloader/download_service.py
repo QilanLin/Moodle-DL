@@ -425,6 +425,7 @@ class DownloadService:
         self.database.batch_delete_files(self.courses)
 
         if len(self.all_tasks) <= 0:
+            self._rewrite_downloaded_html_resource_links()
             return
 
         # run all other tasks
@@ -472,7 +473,7 @@ class DownloadService:
         seen = set()
         for course in self.courses:
             for file in getattr(course, 'files', []) or []:
-                file_identity = id(file)
+                file_identity = self._file_identity(file)
                 if file_identity not in seen:
                     seen.add(file_identity)
                     yield file
@@ -481,10 +482,51 @@ class DownloadService:
             file = getattr(task, 'file', None)
             if file is None:
                 continue
-            file_identity = id(file)
+            file_identity = self._file_identity(file)
             if file_identity not in seen:
                 seen.add(file_identity)
                 yield file
+
+        for file in self._iter_stored_database_files():
+            file_identity = self._file_identity(file)
+            if file_identity not in seen:
+                seen.add(file_identity)
+                yield file
+
+    def _iter_stored_database_files(self):
+        database = getattr(self, 'database', None)
+        get_stored_files = getattr(database, 'get_stored_files', None)
+        if not callable(get_stored_files):
+            return
+
+        try:
+            stored_courses = get_stored_files()
+        except Exception as error:
+            logging.debug('无法从数据库读取已保存文件用于 HTML 本地链接修复: %s', error)
+            return
+
+        if not isinstance(stored_courses, (list, tuple)):
+            return
+
+        for course in stored_courses:
+            for file in getattr(course, 'files', []) or []:
+                yield file
+
+    @staticmethod
+    def _file_identity(file: File):
+        saved_to = getattr(file, 'saved_to', '') or ''
+        if saved_to:
+            return ('saved_to', os.path.abspath(saved_to))
+
+        file_id = getattr(file, 'file_id', None)
+        if isinstance(file_id, (int, str)) and file_id != '':
+            return ('file_id', file_id)
+
+        content_fileurl = getattr(file, 'content_fileurl', '') or ''
+        if content_fileurl:
+            return ('content_fileurl', content_fileurl)
+
+        return ('object', id(file))
 
     @staticmethod
     def _is_saved_html_file(file: File) -> bool:

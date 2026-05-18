@@ -6,6 +6,7 @@ Testing that each function in gen_all_tasks has a single responsibility
 and can be tested independently.
 """
 
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 from concurrent.futures import ThreadPoolExecutor
@@ -590,3 +591,74 @@ def test_rewrite_downloaded_html_resource_links_after_tasks_finish(tmp_path):
 
     assert service._rewrite_downloaded_html_resource_links() == 1
     assert 'src="02 - Faculty student VM/*39* student-vms-01.png"' in html_path.read_text(encoding='utf-8')
+
+
+def test_rewrite_downloaded_html_resource_links_uses_database_stored_files(tmp_path):
+    chapter_dir = tmp_path / '3.1. What name email configuration does git require'
+    chapter_dir.mkdir()
+    html_path = chapter_dir / '*01* index.html'
+    image_path = chapter_dir / '*02* Screenshot 2021-07-18 at 12.19.08.png'
+    html_path.write_text(
+        '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" '
+        'alt="GitHub primary email address"></p>',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    html_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='index.html',
+        content_fileurl='',
+        content_filesize=0,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='html',
+        content_isexternalfile=False,
+        saved_to=str(html_path),
+        file_id=29,
+    )
+    image_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='Screenshot 2021-07-18 at 12.19.08.png',
+        content_fileurl=(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/11761256/mod_book/chapter/827835/'
+            'Screenshot%202021-07-18%20at%2012.19.08.png?token=secret&offline=1'
+        ),
+        content_filesize=1,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='file',
+        content_isexternalfile=False,
+        saved_to=str(image_path),
+        file_id=30,
+    )
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = []
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = [Course(1, 'Course', [html_file, image_file])]
+
+    assert service._rewrite_downloaded_html_resource_links() == 1
+    assert 'src="*02* Screenshot 2021-07-18 at 12.19.08.png"' in html_path.read_text(encoding='utf-8')
+
+
+def test_real_run_rewrites_html_resource_links_without_download_tasks():
+    service = DownloadService.__new__(DownloadService)
+    service.courses = []
+    service.all_tasks = []
+    service.database = MagicMock()
+    service._rewrite_downloaded_html_resource_links = MagicMock(return_value=0)
+
+    asyncio.run(service.real_run())
+
+    service.database.batch_delete_files.assert_called_once_with([])
+    service._rewrite_downloaded_html_resource_links.assert_called_once_with()
