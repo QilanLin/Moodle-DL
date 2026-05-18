@@ -8,13 +8,23 @@ from typing import Dict, Iterable, Tuple
 from moodle_dl.types import File
 
 
+HTML_TAG_PATTERN = re.compile(
+    r'<(?P<tag>[a-zA-Z][\w:-]*)(?P<attrs>[^<>]*)>',
+    flags=re.IGNORECASE | re.DOTALL,
+)
 HTML_RESOURCE_ATTR_PATTERN = re.compile(
-    r'(?P<prefix>\b(?:src|href|poster|data)\s*=\s*)'
+    r'(?P<prefix>\b(?P<attr>src|href|poster|data)\s*=\s*)'
     r'(?P<quote>["\'])'
     r'(?P<url>.*?)'
     r'(?P=quote)',
     flags=re.IGNORECASE | re.DOTALL,
 )
+EMBEDDED_RESOURCE_ATTRS = {
+    'src': {'audio', 'embed', 'iframe', 'img', 'input', 'script', 'source', 'track', 'video'},
+    'href': {'link'},
+    'poster': {'video'},
+    'data': {'object'},
+}
 
 
 def canonical_resource_url(url: str) -> str:
@@ -96,21 +106,37 @@ def rewrite_html_links_to_local_paths(
     html_dir = os.path.dirname(os.path.abspath(html_file_path))
     replacements = 0
 
-    def replace_attribute(match: re.Match) -> str:
+    def replace_tag(tag_match: re.Match) -> str:
         nonlocal replacements
 
-        url = match.group('url')
-        key = canonical_resource_url(url)
-        local_path = local_resources.get(key)
-        if not local_path:
-            return match.group(0)
+        tag = tag_match.group('tag').lower()
+        attrs = tag_match.group('attrs')
 
-        local_path = os.path.abspath(local_path)
-        if local_path == os.path.abspath(html_file_path):
-            return match.group(0)
+        def replace_attribute(attr_match: re.Match) -> str:
+            nonlocal replacements
 
-        relative_path = os.path.relpath(local_path, html_dir).replace(os.sep, '/')
-        replacements += 1
-        return f'{match.group("prefix")}{match.group("quote")}{html.escape(relative_path, quote=True)}{match.group("quote")}'
+            attr = attr_match.group('attr').lower()
+            if tag not in EMBEDDED_RESOURCE_ATTRS.get(attr, set()):
+                return attr_match.group(0)
 
-    return HTML_RESOURCE_ATTR_PATTERN.sub(replace_attribute, html_content), replacements
+            url = attr_match.group('url')
+            key = canonical_resource_url(url)
+            local_path = local_resources.get(key)
+            if not local_path:
+                return attr_match.group(0)
+
+            local_path = os.path.abspath(local_path)
+            if local_path == os.path.abspath(html_file_path):
+                return attr_match.group(0)
+
+            relative_path = os.path.relpath(local_path, html_dir).replace(os.sep, '/')
+            replacements += 1
+            return (
+                f'{attr_match.group("prefix")}{attr_match.group("quote")}'
+                f'{html.escape(relative_path, quote=True)}{attr_match.group("quote")}'
+            )
+
+        rewritten_attrs = HTML_RESOURCE_ATTR_PATTERN.sub(replace_attribute, attrs)
+        return f'<{tag_match.group("tag")}{rewritten_attrs}>'
+
+    return HTML_TAG_PATTERN.sub(replace_tag, html_content), replacements

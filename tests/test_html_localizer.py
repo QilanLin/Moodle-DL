@@ -68,16 +68,20 @@ def test_rewrite_html_links_to_local_paths_rewrites_only_downloaded_resources(tm
     html_path = tmp_path / 'book' / 'Print Book.html'
     image_path = tmp_path / 'book' / '02 - Faculty student VM' / '*39* student-vms-01.png'
     pdf_path = tmp_path / 'book' / '03 - Linux' / 'guide.pdf'
+    css_path = tmp_path / 'book' / 'print.css'
     image_path.parent.mkdir(parents=True)
     pdf_path.parent.mkdir(parents=True)
     html_path.parent.mkdir(parents=True, exist_ok=True)
     image_path.write_bytes(b'image')
     pdf_path.write_bytes(b'pdf')
+    css_path.write_text('body{}', encoding='utf-8')
 
     image_url = 'https://keats.kcl.ac.uk/pluginfile.php/112/mod_book/chapter/785/student-vms-01.png'
     pdf_url = 'https://keats.kcl.ac.uk/pluginfile.php/112/mod_book/chapter/786/guide.pdf'
+    css_url = 'https://keats.kcl.ac.uk/theme/print.css?rev=1'
     html_content = (
         f'<img src="{image_url}" alt="VM Control panel">'
+        f'<link rel="stylesheet" href="{css_url}">'
         f'<a href="{pdf_url}?forcedownload=1">Guide</a>'
         '<img src="https://external.example/missing.png">'
         '<a href="#toc">TOC</a>'
@@ -89,11 +93,13 @@ def test_rewrite_html_links_to_local_paths_rewrites_only_downloaded_resources(tm
         {
             canonical_resource_url(image_url): str(image_path),
             canonical_resource_url(pdf_url): str(pdf_path),
+            canonical_resource_url(css_url): str(css_path),
         },
     )
 
     assert count == 2
     assert 'src="02 - Faculty student VM/*39* student-vms-01.png"' in rewritten
-    assert 'href="03 - Linux/guide.pdf"' in rewritten
+    assert 'href="print.css"' in rewritten
+    assert f'href="{pdf_url}?forcedownload=1"' in rewritten
     assert 'https://external.example/missing.png' in rewritten
     assert 'href="#toc"' in rewritten
