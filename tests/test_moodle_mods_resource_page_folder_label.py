@@ -303,6 +303,185 @@ async def test_page_parse_real_fetch_and_web_fallback():
 
 
 @pytest.mark.asyncio
+async def test_page_filters_adjacent_small_kaltura_helper_icons_when_video_present():
+    mod = make_mod(PageMod)
+    mod.client.async_post.return_value = {
+        "pages": [
+            {
+                "id": 99,
+                "coursemodule": 44,
+                "course": 10,
+                "name": "Video Page",
+                "content": (
+                    '<iframe src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source='
+                    'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2F'
+                    'entryid%2F1_video%2F"></iframe>'
+                ),
+                "contentfiles": [
+                    {"filename": "notes.pdf", "filepath": "/", "filesize": 12000},
+                    {
+                        "filename": "Kaltura icon.png",
+                        "filepath": "/",
+                        "filesize": 2048,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/"
+                            "Kaltura%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Edit settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/"
+                            "Edit%20settings%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/"
+                            "Settings%20icon.png"
+                        ),
+                    },
+                    {"filename": "diagram.png", "filepath": "/", "filesize": 2048},
+                ],
+            }
+        ]
+    }
+
+    result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    filenames = [file["filename"] for file in result[10][44]["files"]]
+    assert filenames == ["notes.pdf", "diagram.png", "Video Page", "metadata.json"]
+
+
+@pytest.mark.asyncio
+async def test_page_keeps_kaltura_helper_icons_without_video_or_when_too_large():
+    mod = make_mod(PageMod)
+    mod.client.async_post.return_value = {
+        "pages": [
+            {
+                "id": 100,
+                "coursemodule": 45,
+                "course": 10,
+                "name": "Instructions",
+                "content": "<p>These are instructions mentioning Kaltura but not an embedded video.</p>",
+                "contentfiles": [
+                    {
+                        "filename": "Kaltura icon.png",
+                        "filepath": "/",
+                        "filesize": 2048,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/42/"
+                            "Kaltura%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Edit settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/42/"
+                            "Edit%20settings%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/42/"
+                            "Settings%20icon.png"
+                        ),
+                    },
+                ],
+            },
+            {
+                "id": 101,
+                "coursemodule": 46,
+                "course": 10,
+                "name": "Large Icon Video",
+                "content": '<iframe src="https://keats.kcl.ac.uk/browseandembed/index/media/entryid/1_video"></iframe>',
+                "contentfiles": [
+                    {
+                        "filename": "Kaltura icon.png",
+                        "filepath": "/",
+                        "filesize": 10241,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/43/"
+                            "Kaltura%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Edit settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/43/"
+                            "Edit%20settings%20icon.png"
+                        ),
+                    },
+                    {
+                        "filename": "Settings icon.png",
+                        "filepath": "/",
+                        "filesize": 4096,
+                        "fileurl": (
+                            "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/43/"
+                            "Settings%20icon.png"
+                        ),
+                    },
+                ],
+            },
+        ]
+    }
+
+    result = await mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    no_video_filenames = [file["filename"] for file in result[10][45]["files"]]
+    assert no_video_filenames[:3] == ["Kaltura icon.png", "Edit settings icon.png", "Settings icon.png"]
+
+    large_icon_filenames = [file["filename"] for file in result[10][46]["files"]]
+    assert "Kaltura icon.png" in large_icon_filenames
+    assert "Edit settings icon.png" not in large_icon_filenames
+    assert "Settings icon.png" not in large_icon_filenames
+
+
+def test_page_keeps_kaltura_helper_icons_when_not_adjacent():
+    files = [
+        {
+            "filename": "Kaltura icon.png",
+            "filesize": 2048,
+            "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/Kaltura%20icon.png",
+        },
+        {"filename": "lecture-diagram.png", "filesize": 2048},
+        {
+            "filename": "Edit settings icon.png",
+            "filesize": 4096,
+            "fileurl": (
+                "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/"
+                "Edit%20settings%20icon.png"
+            ),
+        },
+        {
+            "filename": "Settings icon.png",
+            "filesize": 4096,
+            "fileurl": "https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_page/content/41/Settings%20icon.png",
+        },
+    ]
+
+    filtered = PageMod._filter_adjacent_kaltura_helper_icons(
+        files,
+        '<iframe src="https://keats.kcl.ac.uk/browseandembed/index/media/entryid/1_video"></iframe>',
+        "",
+    )
+
+    assert filtered == files
+
+
+@pytest.mark.asyncio
 async def test_label_real_fetch_and_web_fallback():
     mod = make_mod(LabelMod)
     mod.client.async_post.return_value = {
