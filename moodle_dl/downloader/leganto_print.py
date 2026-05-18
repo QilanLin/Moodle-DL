@@ -2,7 +2,9 @@
 import asyncio
 import html
 import logging
+import os
 import re
+import time
 import urllib.parse as urlparse
 from http.cookiejar import MozillaCookieJar
 from io import StringIO
@@ -13,6 +15,7 @@ from moodle_dl.utils import MoodleDLCookieJar
 
 
 LEGANTO_LIST_PATH_RE = re.compile(r'^/leganto/nui/lists/[^/?#]+')
+LEGANTO_PRINT_PATH_RE = re.compile(r'^/leganto/rl/files/[^/]+/print/list/[^/?#]+/studentView/?$')
 LEGANTO_ERROR_PATH_RE = re.compile(r'^/leganto/nui/error/')
 LEGANTO_ERROR_MARKERS = (
     'Failed LTI',
@@ -40,6 +43,37 @@ def is_leganto_reading_list_url(url: str) -> bool:
     if not host:
         return False
     return host == 'rl.kcl.ac.uk' and bool(LEGANTO_LIST_PATH_RE.match(parsed.path or ''))
+
+
+def is_leganto_print_url(url: str) -> bool:
+    """Return True when the URL points at Leganto's printable list view."""
+    parsed = urlparse.urlparse(url or '')
+    host = (parsed.hostname or '').lower()
+    return host == 'rl.kcl.ac.uk' and bool(LEGANTO_PRINT_PATH_RE.match(parsed.path or ''))
+
+
+def build_leganto_print_url(url: str, language: str = 'en') -> Optional[str]:
+    """Build Leganto's printable-list URL from a normal reading-list URL."""
+    parsed = urlparse.urlparse(url or '')
+    host = (parsed.hostname or '').lower()
+    if host != 'rl.kcl.ac.uk':
+        return None
+
+    path = parsed.path or ''
+    if LEGANTO_PRINT_PATH_RE.match(path):
+        return urlparse.urlunparse((parsed.scheme or 'https', parsed.netloc, path, '', '', ''))
+
+    if not LEGANTO_LIST_PATH_RE.match(path):
+        return None
+
+    list_id = path.rstrip('/').split('/')[-1]
+    if not list_id:
+        return None
+
+    safe_list_id = urlparse.quote(list_id, safe='')
+    safe_language = urlparse.quote(language or 'en', safe='')
+    print_path = f'/leganto/rl/files/{safe_language}/print/list/{safe_list_id}/studentView'
+    return urlparse.urlunparse((parsed.scheme or 'https', parsed.netloc, print_path, '', '', ''))
 
 
 def is_leganto_lti_launch_url(url: str) -> bool:
@@ -186,7 +220,12 @@ class LegantoPdfPrinter:
 
                 await self._wait_for_leganto_ready(page)
                 await self._dismiss_cookie_banner(page)
-                print_page = await self._trigger_print_list(context, page)
+                if await self._download_direct_print_pdf(page, getattr(page, 'url', ''), output_path):
+                    return
+                print_page = await self._open_direct_print_url(page, getattr(page, 'url', ''))
+                if print_page is None:
+                    print_page = await self._trigger_print_list(context, page)
+                await self._prepare_print_media(print_page)
                 await self._stabilize_page(print_page)
                 await print_page.pdf(path=output_path, format='A4', print_background=True)
             finally:
@@ -444,60 +483,298 @@ class LegantoPdfPrinter:
         if not await self._is_print_item_visible(page):
             await self._open_list_menu(page)
 
-        print_item = await self._wait_for_visible_print_item(page, timeout=10_000)
-        if print_item is None:
-            raise RuntimeError('Could not find the Leganto "Print list" menu item')
-
         original_url = page.url
         await self._install_print_invocation_marker(page)
-        popup_task = asyncio.create_task(context.wait_for_event('page', timeout=5_000))
-        await print_item.click()
 
-        try:
-            popup = await popup_task
-            await popup.wait_for_load_state('domcontentloaded', timeout=15_000)
-            return popup
-        except Exception:
-            if not popup_task.done():
-                popup_task.cancel()
+        activations = ('click', 'press_enter', 'press_space', 'force_click', 'parent_click')
+        for activation in activations:
+            if not await self._is_print_item_visible(page):
+                await self._open_list_menu(page)
 
+            print_item = await self._wait_for_visible_print_item(page, timeout=10_000)
+            if print_item is None:
+                raise RuntimeError('Could not find the Leganto "Print list" menu item')
+            print_item_description = await self._describe_print_item(print_item)
+            if os.environ.get('MOODLE_DL_LEGANTO_DEBUG'):
+                logging.debug(
+                    'Leganto Print list target for %s: %s',
+                    activation,
+                    print_item_description,
+                )
+
+            popup_task = asyncio.create_task(context.wait_for_event('page', timeout=3_000))
+            try:
+                await self._activate_print_item(print_item, activation)
+                print_page = await self._wait_for_print_activation_result(
+                    popup_task,
+                    page,
+                    original_url,
+                )
+                if print_page is not None:
+                    return print_page
+                if activation == activations[-1] and self._is_verified_print_menu_item(print_item_description):
+                    logging.debug(
+                        'Leganto Print list did not emit an automation-visible signal; '
+                        'opening the printable Leganto endpoint directly'
+                    )
+                    direct_print_page = await self._open_direct_print_url(page, original_url)
+                    if direct_print_page is not None:
+                        return direct_print_page
+            finally:
+                if not popup_task.done():
+                    popup_task.cancel()
+
+            logging.debug('Leganto Print list activation via %s did not produce a printable view', activation)
+            await self._dismiss_open_menu(page)
+
+        await self._dump_debug_artifacts(page, 'print-list-not-triggered')
+        raise RuntimeError(
+            'Leganto "Print list" did not open a printable view; '
+            'refusing to save the regular reading-list page as PDF'
+        )
+
+    async def _open_direct_print_url(self, page, source_url: str):
+        print_url = build_leganto_print_url(source_url)
+        if not print_url:
+            return None
+
+        if is_leganto_print_url(getattr(page, 'url', '')):
+            return page
+
+        logging.debug('Opening Leganto printable list URL: %s', print_url)
+        await page.goto(print_url, wait_until='domcontentloaded', timeout=self.PRINT_TIMEOUT_MS)
         try:
             await page.wait_for_load_state('domcontentloaded', timeout=15_000)
         except Exception:
             pass
+        return page
+
+    async def _download_direct_print_pdf(self, page, source_url: str, output_path: str) -> bool:
+        print_url = build_leganto_print_url(source_url)
+        if not print_url:
+            return False
+
+        request_context = getattr(getattr(page, 'context', None), 'request', None)
+        if request_context is None:
+            return False
+
+        headers = {'Accept': 'application/pdf,*/*'}
+        referer = getattr(page, 'url', '')
+        if referer:
+            headers['Referer'] = referer
+
+        try:
+            response = await request_context.get(
+                print_url,
+                headers=headers,
+                timeout=self.PRINT_TIMEOUT_MS,
+                fail_on_status_code=False,
+            )
+            body = await response.body()
+        except Exception as exc:
+            logging.debug('Leganto direct printable PDF request failed: %s', exc)
+            return False
+
+        status = getattr(response, 'status', 0)
+        headers_map = getattr(response, 'headers', {}) or {}
+        content_type = str(headers_map.get('content-type') or headers_map.get('Content-Type') or '').lower()
+
+        if 200 <= status < 300 and body and (body.startswith(b'%PDF') or 'pdf' in content_type):
+            Path(output_path).write_bytes(body)
+            logging.debug('Saved Leganto printable PDF from direct endpoint: %s', print_url)
+            return True
+
+        preview = ''
+        if body:
+            preview = body[:2000].decode('utf-8', errors='ignore')
+        load_error = summarize_leganto_load_error(print_url, preview)
+        if status in (401, 403) or load_error:
+            reason = load_error or f'HTTP {status}'
+            raise RuntimeError(f'Leganto printable PDF request failed: {reason}')
+
+        logging.debug(
+            'Leganto direct print URL did not return a PDF (status=%s, content-type=%s); falling back to page PDF',
+            status,
+            content_type,
+        )
+        return False
+
+    async def _activate_print_item(self, print_item, activation: str) -> None:
+        if activation == 'click':
+            await print_item.click()
+            return
+        if activation == 'force_click':
+            await print_item.click(timeout=3_000, force=True)
+            return
+        if activation == 'press_enter':
+            try:
+                await print_item.focus()
+            except Exception:
+                pass
+            await print_item.press('Enter')
+            return
+        if activation == 'press_space':
+            try:
+                await print_item.focus()
+            except Exception:
+                pass
+            await print_item.press('Space')
+            return
+
+        await print_item.evaluate(
+            """element => {
+                const target = element.closest(
+                    'button, [role="menuitem"], .mat-mdc-menu-item, .mat-menu-item, a'
+                ) || element;
+                target.dispatchEvent(new MouseEvent('click', {
+                    bubbles: true,
+                    cancelable: true,
+                    view: window,
+                }));
+            }"""
+        )
+
+    async def _describe_print_item(self, print_item) -> str:
+        try:
+            return await print_item.evaluate(
+                """element => {
+                    const target = element.closest(
+                        'button, [role="menuitem"], .mat-mdc-menu-item, .mat-menu-item, a'
+                    ) || element;
+                    const describe = (node) => ({
+                        tag: node.tagName,
+                        id: node.id || '',
+                        role: node.getAttribute('role') || '',
+                        ariaLabel: node.getAttribute('aria-label') || '',
+                        ariaDisabled: node.getAttribute('aria-disabled') || '',
+                        disabled: Boolean(node.disabled),
+                        classes: typeof node.className === 'string' ? node.className : '',
+                        text: (node.innerText || node.textContent || '').trim().replace(/\\s+/g, ' '),
+                    });
+                    return JSON.stringify({
+                        element: describe(element),
+                        target: describe(target),
+                        targetHtml: target.outerHTML.slice(0, 1000),
+                    });
+                }"""
+            )
+        except Exception as exc:
+            return f'<unavailable: {exc}>'
+
+    async def _wait_for_print_activation_result(self, popup_task, page, original_url: str):
+        try:
+            popup = await asyncio.wait_for(asyncio.shield(popup_task), timeout=3)
+            await popup.wait_for_load_state('domcontentloaded', timeout=15_000)
+            logging.debug('Leganto Print list opened a printable popup: %s', getattr(popup, 'url', ''))
+            return popup
+        except Exception:
+            pass
+
+        try:
+            await page.wait_for_load_state('domcontentloaded', timeout=1_000)
+        except Exception:
+            pass
 
         if await self._was_print_invoked(page):
+            logging.debug('Leganto Print list triggered browser print on the current page')
+            direct_print_page = await self._open_direct_print_url(page, original_url)
+            if direct_print_page is not None:
+                return direct_print_page
             return page
 
-        if self._is_same_leganto_list_url(original_url, page.url):
-            raise RuntimeError(
-                'Leganto "Print list" did not open a printable view; '
-                'refusing to save the regular reading-list page as PDF'
-            )
+        if not self._is_same_leganto_list_url(original_url, page.url):
+            logging.debug('Leganto Print list changed page URL from %s to %s', original_url, page.url)
+            return page
 
-        return page
+        return None
+
+    @staticmethod
+    def _is_verified_print_menu_item(description: str) -> bool:
+        normalized = description or ''
+        return 'lg-menu-action-print' in normalized and 'Print list' in normalized
+
+    async def _dispatch_before_print(self, page) -> None:
+        try:
+            await page.evaluate(
+                """() => {
+                    window.__moodleDlPrintInvoked = true;
+                    try {
+                        window.dispatchEvent(new Event('beforeprint'));
+                    } catch (_error) {
+                        // Best effort: Playwright PDF generation will still use print media.
+                    }
+                }"""
+            )
+        except Exception:
+            logging.debug('Could not dispatch Leganto beforeprint event', exc_info=True)
 
     async def _install_print_invocation_marker(self, page) -> None:
         try:
             await page.evaluate(
                 """() => {
                     window.__moodleDlPrintInvoked = false;
+                    const markPrintInvoked = () => {
+                        window.__moodleDlPrintInvoked = true;
+                    };
+                    window.addEventListener('beforeprint', markPrintInvoked, true);
+                    window.addEventListener('afterprint', markPrintInvoked, true);
                     if (!window.__moodleDlOriginalPrint) {
                         window.__moodleDlOriginalPrint = window.print;
                     }
                     window.print = () => {
-                        window.__moodleDlPrintInvoked = true;
+                        markPrintInvoked();
+                        try {
+                            window.dispatchEvent(new Event('beforeprint'));
+                        } catch (_error) {
+                            // The marker above is sufficient; synthetic events are best effort.
+                        }
+                    };
+                    if (document.execCommand && !document.__moodleDlOriginalExecCommand) {
+                        document.__moodleDlOriginalExecCommand = document.execCommand.bind(document);
+                    }
+                    if (document.__moodleDlOriginalExecCommand) {
+                        document.execCommand = (command, ...args) => {
+                            if (String(command || '').toLowerCase() === 'print') {
+                                markPrintInvoked();
+                                return true;
+                            }
+                            return document.__moodleDlOriginalExecCommand(command, ...args);
+                        };
                     };
                 }"""
             )
         except Exception:
             logging.debug('Could not install Leganto print invocation marker', exc_info=True)
 
+    async def _prepare_print_media(self, page) -> None:
+        try:
+            await page.emulate_media(media='print')
+        except Exception:
+            logging.debug('Could not force print media before Leganto PDF export', exc_info=True)
+
     async def _was_print_invoked(self, page) -> bool:
         try:
             return bool(await page.evaluate('() => Boolean(window.__moodleDlPrintInvoked)'))
         except Exception:
             return False
+
+    async def _dump_debug_artifacts(self, page, label: str) -> None:
+        if not os.environ.get('MOODLE_DL_LEGANTO_DEBUG'):
+            return
+
+        timestamp = int(time.time())
+        safe_label = re.sub(r'[^a-zA-Z0-9_-]+', '-', label).strip('-') or 'debug'
+        base_path = Path('/tmp') / f'moodle_dl_leganto_{safe_label}_{timestamp}'
+        try:
+            await page.screenshot(path=str(base_path.with_suffix('.png')), full_page=True)
+        except Exception:
+            logging.debug('Could not save Leganto debug screenshot', exc_info=True)
+        try:
+            html_text = await page.content()
+            base_path.with_suffix('.html').write_text(html_text, encoding='utf-8')
+        except Exception:
+            logging.debug('Could not save Leganto debug HTML', exc_info=True)
+        logging.debug('Leganto debug artifacts saved with prefix: %s (url=%s)', base_path, page.url)
 
     @staticmethod
     def _is_same_leganto_list_url(left: str, right: str) -> bool:
@@ -648,6 +925,7 @@ class LegantoPdfPrinter:
                     logging.debug('Leganto menu candidate failed: %s', exc)
                     await self._dismiss_open_menu(page)
 
+        await self._dump_debug_artifacts(page, 'print-menu-not-found')
         raise RuntimeError('Could not open the Leganto list menu to find "Print list"')
 
     async def _describe_button(self, button) -> str:

@@ -6,9 +6,11 @@ import pytest
 
 from moodle_dl.downloader.leganto_print import (
     LegantoPdfPrinter,
+    build_leganto_print_url,
     build_lti_launch_form,
     cookies_text_to_playwright,
     is_leganto_lti_launch_url,
+    is_leganto_print_url,
     is_leganto_reading_list_url,
     summarize_leganto_load_error,
 )
@@ -48,7 +50,10 @@ class FakeElement:
         self.text = text
         self.html = html
         self.clicks = []
+        self.evaluations = []
+        self.presses = []
         self.scrolled = False
+        self.focused = False
 
     async def is_visible(self, **_kwargs):
         return self.visible
@@ -62,11 +67,18 @@ class FakeElement:
     async def click(self, **kwargs):
         self.clicks.append(kwargs)
 
+    async def focus(self):
+        self.focused = True
+
+    async def press(self, key):
+        self.presses.append(key)
+
     async def wait_for(self, **_kwargs):
         if not self.visible:
             raise TimeoutError('not visible')
 
     async def evaluate(self, _script):
+        self.evaluations.append(_script)
         return self.html or self.description
 
     async def inner_text(self, **_kwargs):
@@ -79,6 +91,8 @@ class FakeLegantoPage:
         self.keyboard = SimpleNamespace(press=AsyncMock())
         self.menu_open = False
         self.waited = []
+        self.goto_calls = []
+        self.load_states = []
         self.menu_button = FakeElement(
             description=(
                 'lg-menu-button-list-menu-15085102330006881-more-info|'
@@ -114,14 +128,33 @@ class FakeLegantoPage:
     async def wait_for_timeout(self, timeout):
         self.waited.append(timeout)
 
+    async def wait_for_load_state(self, state, **kwargs):
+        self.load_states.append((state, kwargs))
+
+    async def goto(self, url, **kwargs):
+        self.goto_calls.append((url, kwargs))
+        self.url = url
+
 
 def test_leganto_url_detection_is_specific_to_kcl_reading_lists():
     assert is_leganto_reading_list_url('https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML')
     assert is_leganto_lti_launch_url('https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1')
+    assert is_leganto_print_url('https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView')
 
     assert not is_leganto_reading_list_url('https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1')
     assert not is_leganto_lti_launch_url('https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881')
     assert not is_leganto_reading_list_url('https://example.com/leganto/nui/lists/15085102330006881')
+    assert not is_leganto_print_url('https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881')
+
+
+def test_build_leganto_print_url_uses_official_print_endpoint():
+    assert build_leganto_print_url(
+        'https://rl.kcl.ac.uk/leganto/nui/lists/12447222440006881?auth=SAML'
+    ) == 'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/12447222440006881/studentView'
+    assert build_leganto_print_url(
+        'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/12447222440006881/studentView'
+    ) == 'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/12447222440006881/studentView'
+    assert build_leganto_print_url('https://example.com/leganto/nui/lists/12447222440006881') is None
 
 
 def test_leganto_load_error_summary_detects_auth_and_lti_errors():
@@ -331,6 +364,79 @@ async def test_open_list_menu_force_clicks_after_cookie_overlay_intercepts():
 
 
 @pytest.mark.asyncio
+async def test_open_direct_print_url_navigates_from_list_to_print_endpoint():
+    page = FakeLegantoPage()
+
+    result = await LegantoPdfPrinter()._open_direct_print_url(page, page.url)
+
+    assert result is page
+    assert page.url == 'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView'
+    assert page.goto_calls == [(
+        'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView',
+        {'wait_until': 'domcontentloaded', 'timeout': LegantoPdfPrinter.PRINT_TIMEOUT_MS},
+    )]
+    assert page.load_states == [('domcontentloaded', {'timeout': 15_000})]
+
+
+@pytest.mark.asyncio
+async def test_download_direct_print_pdf_saves_pdf_response(tmp_path):
+    class FakeResponse:
+        status = 200
+        headers = {'content-type': 'application/pdf'}
+
+        async def body(self):
+            return b'%PDF-1.4\nprint-list'
+
+    class FakeRequestContext:
+        def __init__(self):
+            self.calls = []
+
+        async def get(self, url, **kwargs):
+            self.calls.append((url, kwargs))
+            return FakeResponse()
+
+    page = FakeLegantoPage()
+    page.context = SimpleNamespace(request=FakeRequestContext())
+    output = tmp_path / 'Reading List.pdf'
+
+    result = await LegantoPdfPrinter()._download_direct_print_pdf(page, page.url, str(output))
+
+    assert result is True
+    assert output.read_bytes() == b'%PDF-1.4\nprint-list'
+    assert page.context.request.calls == [(
+        'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView',
+        {
+            'headers': {
+                'Accept': 'application/pdf,*/*',
+                'Referer': 'https://rl.kcl.ac.uk/leganto/nui/lists/15085102330006881?auth=SAML',
+            },
+            'timeout': LegantoPdfPrinter.PRINT_TIMEOUT_MS,
+            'fail_on_status_code': False,
+        },
+    )]
+
+
+@pytest.mark.asyncio
+async def test_download_direct_print_pdf_rejects_auth_error(tmp_path):
+    class FakeResponse:
+        status = 401
+        headers = {'content-type': 'text/html'}
+
+        async def body(self):
+            return b'HTTP Status 401 - Unauthorized'
+
+    class FakeRequestContext:
+        async def get(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    page = FakeLegantoPage()
+    page.context = SimpleNamespace(request=FakeRequestContext())
+
+    with pytest.raises(RuntimeError, match='HTTP 401'):
+        await LegantoPdfPrinter()._download_direct_print_pdf(page, page.url, str(tmp_path / 'Reading List.pdf'))
+
+
+@pytest.mark.asyncio
 async def test_trigger_print_list_returns_popup_when_print_opens_new_page():
     page = FakeLegantoPage()
     page.print_item.visible = True
@@ -340,7 +446,7 @@ async def test_trigger_print_list_returns_popup_when_print_opens_new_page():
     class FakeContext:
         async def wait_for_event(self, event, timeout):
             assert event == 'page'
-            assert timeout == 5_000
+            assert timeout == 3_000
             return popup
 
     result = await LegantoPdfPrinter()._trigger_print_list(FakeContext(), page)
@@ -362,11 +468,12 @@ async def test_trigger_print_list_refuses_regular_page_when_no_print_action_open
     with pytest.raises(RuntimeError, match='refusing to save the regular reading-list page'):
         await LegantoPdfPrinter()._trigger_print_list(FakeContext(), page)
 
-    assert page.print_item.clicks == [{}]
+    assert page.print_item.clicks == [{}, {'timeout': 3_000, 'force': True}]
+    assert any('closest' in script for script in page.print_item.evaluations)
 
 
 @pytest.mark.asyncio
-async def test_trigger_print_list_accepts_current_page_when_window_print_runs():
+async def test_trigger_print_list_opens_print_endpoint_when_window_print_runs():
     page = FakeLegantoPage()
     page.print_item.visible = True
     printer = LegantoPdfPrinter()
@@ -379,8 +486,70 @@ async def test_trigger_print_list_accepts_current_page_when_window_print_runs():
     result = await printer._trigger_print_list(FakeContext(), page)
 
     assert result is page
+    assert page.url == 'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView'
+    assert page.goto_calls == [(
+        'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView',
+        {'wait_until': 'domcontentloaded', 'timeout': LegantoPdfPrinter.PRINT_TIMEOUT_MS},
+    )]
     assert page.print_item.clicks == [{}]
     printer._was_print_invoked.assert_awaited_once_with(page)
+
+
+@pytest.mark.asyncio
+async def test_trigger_print_list_accepts_verified_print_menu_item_without_popup_signal():
+    page = FakeLegantoPage()
+    page.print_item.visible = True
+    page.print_item.description = 'id=lg-menu-action-print text=Print list'
+
+    class FakeContext:
+        async def wait_for_event(self, *_args, **_kwargs):
+            raise TimeoutError('no popup')
+
+    result = await LegantoPdfPrinter()._trigger_print_list(FakeContext(), page)
+
+    assert result is page
+    assert page.url == 'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView'
+    assert page.goto_calls == [(
+        'https://rl.kcl.ac.uk/leganto/rl/files/en/print/list/15085102330006881/studentView',
+        {'wait_until': 'domcontentloaded', 'timeout': LegantoPdfPrinter.PRINT_TIMEOUT_MS},
+    )]
+    assert page.print_item.clicks == [{}, {'timeout': 3_000, 'force': True}]
+    assert page.print_item.presses == ['Enter', 'Space']
+
+
+@pytest.mark.asyncio
+async def test_install_print_invocation_marker_covers_browser_print_paths():
+    class FakePage:
+        def __init__(self):
+            self.script = ''
+
+        async def evaluate(self, script):
+            self.script = script
+
+    page = FakePage()
+
+    await LegantoPdfPrinter()._install_print_invocation_marker(page)
+
+    assert 'beforeprint' in page.script
+    assert 'afterprint' in page.script
+    assert 'window.print' in page.script
+    assert 'execCommand' in page.script
+
+
+@pytest.mark.asyncio
+async def test_prepare_print_media_forces_print_css():
+    class FakePage:
+        def __init__(self):
+            self.media_kwargs = None
+
+        async def emulate_media(self, **kwargs):
+            self.media_kwargs = kwargs
+
+    page = FakePage()
+
+    await LegantoPdfPrinter()._prepare_print_media(page)
+
+    assert page.media_kwargs == {'media': 'print'}
 
 
 @pytest.mark.asyncio
@@ -411,6 +580,10 @@ async def test_print_to_pdf_closes_browser_context_and_filters_launch_cookies(tm
     class FakePdfPage:
         def __init__(self):
             self.pdf_kwargs = None
+            self.media_kwargs = None
+
+        async def emulate_media(self, **kwargs):
+            self.media_kwargs = kwargs
 
         async def pdf(self, **kwargs):
             self.pdf_kwargs = kwargs
@@ -474,6 +647,7 @@ async def test_print_to_pdf_closes_browser_context_and_filters_launch_cookies(tm
     printer._launch_lti_form = AsyncMock()
     printer._wait_for_leganto_ready = AsyncMock()
     printer._dismiss_cookie_banner = AsyncMock()
+    printer._download_direct_print_pdf = AsyncMock(return_value=False)
     printer._trigger_print_list = AsyncMock(return_value=manager.chromium.browser.context.page)
     printer._stabilize_page = AsyncMock()
 
@@ -489,7 +663,9 @@ async def test_print_to_pdf_closes_browser_context_and_filters_launch_cookies(tm
     assert browser.new_context_kwargs == {'ignore_https_errors': True}
     printer._add_cookies.assert_awaited_once_with(context, skip_leganto_launch_cookies=True)
     printer._launch_lti_form.assert_awaited_once()
+    printer._download_direct_print_pdf.assert_awaited_once_with(context.page, '', str(output))
     printer._trigger_print_list.assert_awaited_once_with(context, context.page)
+    assert context.page.media_kwargs == {'media': 'print'}
     assert context.page.pdf_kwargs == {
         'path': str(output),
         'format': 'A4',
