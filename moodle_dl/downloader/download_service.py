@@ -2,7 +2,6 @@
 import asyncio
 import logging
 import os
-import random
 import sys
 import threading
 import time
@@ -15,6 +14,7 @@ from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.html_localizer import build_local_resource_map, rewrite_html_links_to_local_paths
 from moodle_dl.downloader.progress_tracker import ProgressTracker
 from moodle_dl.downloader.task import Task
+from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
 from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
 
@@ -129,11 +129,19 @@ class DownloadService:
 
     PROGRESS_LOG_MIN_BYTES = 16 * 1024 * 1024
 
-    def __init__(self, courses: List[Course], config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder):
+    def __init__(
+        self,
+        courses: List[Course],
+        config: ConfigHelper,
+        opts: MoodleDlOpts,
+        database: StateRecorder,
+        network_throttle: Optional[NetworkThrottle] = None,
+    ):
         self.courses = courses
         self.config = config
         self.opts = opts
         self.database = database
+        self.network_throttle = network_throttle or NetworkThrottle()
 
         # 设置文件名限制（解决全局状态问题）
         # 注意：这仍然使用类变量，但至少集中在一个地方设置
@@ -396,14 +404,8 @@ class DownloadService:
         except RuntimeError:
             pass
 
-    @staticmethod
-    def _download_delay_seconds() -> float:
-        return 2 + random.uniform(0, 3)
-
     async def _wait_before_network_task(self) -> None:
-        delay = self._download_delay_seconds()
-        logging.debug(f'等待 {delay:.2f} 秒后继续下一个网络任务...')
-        await asyncio.sleep(delay)
+        await self.network_throttle.async_wait('download task')
         await self.pause_controller.wait_if_requested()
 
     @staticmethod
@@ -447,17 +449,13 @@ class DownloadService:
         try:
             # ========== 单线程顺序下载（已启用） ==========
             # 按顺序逐个下载，不使用并发
-            has_seen_network_task = False
             for task in self.all_tasks:
                 task_may_use_network = self._task_may_perform_network_io(task)
-                if task_may_use_network and has_seen_network_task:
+                if task_may_use_network:
                     await self._wait_before_network_task()
 
                 await task.run()
                 await self.pause_controller.wait_if_requested()
-
-                if task_may_use_network:
-                    has_seen_network_task = True
         finally:
             self.pause_controller.stop()
             status_logger_task.cancel()

@@ -22,6 +22,7 @@ def make_book(download_books=True):
     client = MagicMock()
     client.token = 'token-abc'
     client.async_post = AsyncMock()
+    client.async_wait_for_network_slot = AsyncMock()
     client.moodle_url = MagicMock()
     client.moodle_url.domain = 'keats.kcl.ac.uk'
     client.moodle_url.url_base = 'https://keats.kcl.ac.uk'
@@ -529,7 +530,28 @@ async def test_fetch_chapter_html_adds_token_and_handles_statuses_and_errors():
 
     FakeChapterClientSession.error = RuntimeError('network failed')
     with patch('aiohttp.ClientSession', FakeChapterClientSession):
-        assert await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/index.html') == ''
+        assert await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/broken.html') == ''
+
+
+@pytest.mark.asyncio
+async def test_fetch_chapter_html_uses_network_throttle_and_cache():
+    book = make_book()
+    FakeChapterClientSession.requested = []
+    FakeChapterClientSession.error = None
+    FakeChapterClientSession.response = FakeChapterResponse(200, '<h1>Cached</h1>')
+
+    with patch('aiohttp.ClientSession', FakeChapterClientSession):
+        first = await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/cached.html')
+        second = await book._fetch_chapter_html('https://keats.kcl.ac.uk/chapter/cached.html')
+
+    assert first == '<h1>Cached</h1>'
+    assert second == '<h1>Cached</h1>'
+    assert FakeChapterClientSession.requested == [
+        ('https://keats.kcl.ac.uk/chapter/cached.html?token=token-abc', 30)
+    ]
+    book.client.async_wait_for_network_slot.assert_awaited_once_with(
+        'book chapter HTML https://keats.kcl.ac.uk/chapter/cached.html'
+    )
 
 
 @pytest.mark.asyncio

@@ -14,6 +14,7 @@ from requests.exceptions import RequestException
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.exceptions import MoodleAPIError, MoodleAuthError, MoodleNetworkError, RequestRejectedError
+from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.types import MoodleDlOpts, MoodleURL
 from moodle_dl.utils import MoodleDLCookieJar
 from moodle_dl.utils import PathTools as PT
@@ -42,6 +43,7 @@ class RequestHelper:
         self.opts = opts
 
         self.url_base = moodle_url.url_base
+        self.network_throttle: Optional[NetworkThrottle] = None
 
         # Semaphore for async requests
         # Keep in mind Semaphore needs to be initialized in the same async loop as it is used
@@ -52,6 +54,17 @@ class RequestHelper:
             self.log_responses_to = PT.make_path(config.get_misc_files_path(), 'responses.log')
             with open(self.log_responses_to, 'w', encoding='utf-8') as response_log_file:
                 response_log_file.write('JSON Log:\n\n')
+
+    def set_network_throttle(self, throttle: Optional[NetworkThrottle]) -> None:
+        self.network_throttle = throttle
+
+    def wait_for_network_slot(self, reason: str) -> None:
+        if self.network_throttle is not None:
+            self.network_throttle.wait(reason)
+
+    async def async_wait_for_network_slot(self, reason: str) -> None:
+        if self.network_throttle is not None:
+            await self.network_throttle.async_wait(reason)
 
     def post_URL(self, url: str, data: Dict[str, str] = None, cookie_jar_path: str = None):
         """
@@ -75,6 +88,7 @@ class RequestHelper:
             if os.path.exists(cookie_jar_path):
                 session.cookies.load(ignore_discard=True, ignore_expires=True)
         try:
+            self.wait_for_network_slot(f'POST {url}')
             response = session.post(url, data=data_urlencoded, headers=self.RQ_HEADER, timeout=60)
         except RequestException as error:
             self.log_failed_request(url, data)
@@ -107,6 +121,7 @@ class RequestHelper:
                 session.cookies.load(ignore_discard=True, ignore_expires=True)
             session.cookies = session.cookies
         try:
+            self.wait_for_network_slot(f'GET {url}')
             response = session.get(url, headers=self.RQ_HEADER, timeout=60)
         except RequestException as error:
             self.log_failed_request(url, None)
@@ -145,6 +160,7 @@ class RequestHelper:
         async with self.semaphore, aiohttp.ClientSession() as session:
             while attempt < self.MAX_RETRIES:
                 try:
+                    await self.async_wait_for_network_slot(f'Moodle API {function}')
                     async with session.post(
                         url,
                         data=data_urlencoded,
@@ -274,6 +290,7 @@ class RequestHelper:
 
         while attempt < self.MAX_RETRIES:
             try:
+                self.wait_for_network_slot(f'Moodle API {function}')
                 response = session.post(url, data=data_urlencoded, headers=self.RQ_HEADER, timeout=timeout)
                 break
 
@@ -354,6 +371,7 @@ class RequestHelper:
             self.opts.skip_cert_verify, self.opts.allow_insecure_ssl, self.opts.use_all_ciphers
         )
         try:
+            self.wait_for_network_slot(f'login token {self.url_base}login/token.php')
             response = session.post(
                 f'{self.url_base}login/token.php',
                 data=urllib.parse.urlencode(data),

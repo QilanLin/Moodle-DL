@@ -408,7 +408,7 @@ class TestDownloadServiceAtomization(unittest.TestCase):
 
 
 @pytest.mark.asyncio
-async def test_real_run_rate_limits_only_before_following_network_tasks():
+async def test_real_run_rate_limits_each_network_task_only():
     """Local generated tasks should not be delayed by the network throttle."""
     config = MagicMock()
     config.get_download_options.return_value = MagicMock()
@@ -453,8 +453,8 @@ async def test_real_run_rate_limits_only_before_following_network_tasks():
 
     await service.real_run()
 
-    assert events == ['local-1', 'network-1', 'local-2', 'wait', 'network-2']
-    service._wait_before_network_task.assert_awaited_once()
+    assert events == ['local-1', 'wait', 'network-1', 'local-2', 'wait', 'network-2']
+    assert service._wait_before_network_task.await_count == 2
 
 
 class TestGenAllTasksFlow(unittest.TestCase):

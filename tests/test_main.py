@@ -9,7 +9,7 @@ import os
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 from moodle_dl.main import (
     choose_task,
@@ -471,7 +471,7 @@ class TestCreateDownloader(unittest.TestCase):
         result = _create_downloader(courses, config, opts, mock_db)
 
         # 应该创建 DownloadService 而不是 FakeDownloadService
-        mock_ds_class.assert_called_once_with(courses, config, opts, mock_db)
+        mock_ds_class.assert_called_once_with(courses, config, opts, mock_db, network_throttle=None)
 
     @patch('moodle_dl.main.FakeDownloadService')
     def test_create_downloader_without_downloading(self, mock_fds_class):
@@ -554,7 +554,7 @@ class TestRunMain(unittest.TestCase):
 
         mock_connect_sentry.assert_called_once_with(self.config)
         mock_get_services.assert_called_once_with(self.config)
-        mock_moodle_class.assert_called_once_with(self.config, self.opts)
+        mock_moodle_class.assert_called_once_with(self.config, self.opts, network_throttle=ANY)
         mock_db_class.assert_called_once_with(self.config, self.opts)
         mock_download_class.assert_not_called()
 
@@ -617,7 +617,9 @@ class TestRunMain(unittest.TestCase):
         run_main(self.config, self.opts)
 
         mock_connect_sentry.assert_called_once_with(self.config)
-        mock_download_class.assert_called_once_with([], self.config, self.opts, mock_db_class.return_value)
+        mock_download_class.assert_called_once_with(
+            [], self.config, self.opts, mock_db_class.return_value, network_throttle=ANY
+        )
         notify_service.notify_about_changes_in_moodle.assert_not_called()
         notify_service.notify_about_failed_downloads.assert_not_called()
 

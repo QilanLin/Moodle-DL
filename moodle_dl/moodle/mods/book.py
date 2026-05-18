@@ -46,6 +46,10 @@ class BookMod(MoodleMod):
     MOD_PLURAL_NAME = 'books'
     MOD_MIN_VERSION = 2015111600  # 3.0 (Moodle 3.8+ recommended)
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._chapter_html_cache = {}
+
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
         return config.get_download_books() or (not (file.module_modname.endswith(cls.MOD_NAME) and file.deleted))
@@ -518,6 +522,10 @@ class BookMod(MoodleMod):
         @param fileurl: The webservice URL to the chapter HTML file
         @return: The HTML content as a string, or empty string if fetch fails
         """
+        if fileurl in self._chapter_html_cache:
+            logging.debug('      ♻️ Reusing cached chapter HTML for: %s', fileurl[:80])
+            return self._chapter_html_cache[fileurl]
+
         try:
             # The fileurl already contains the full URL to the file
             # We need to add the token parameter for authentication
@@ -527,16 +535,29 @@ class BookMod(MoodleMod):
             separator = '&' if '?' in fileurl else '?'
             authenticated_url = f"{fileurl}{separator}token={self.client.token}"
 
+            await self._wait_for_network_slot(f'book chapter HTML {fileurl}')
             async with aiohttp.ClientSession() as session:
                 async with session.get(authenticated_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
                     if response.status == 200:
                         # Read as text with proper encoding
                         html_content = await response.text(encoding='utf-8')
+                        self._chapter_html_cache[fileurl] = html_content
                         return html_content
                     else:
+                        self._chapter_html_cache[fileurl] = ''
                         return ''
         except Exception:
+            self._chapter_html_cache[fileurl] = ''
             return ''
+
+    async def _wait_for_network_slot(self, reason: str) -> None:
+        waiter = getattr(self.client, 'async_wait_for_network_slot', None)
+        if waiter is None:
+            return
+
+        result = waiter(reason)
+        if hasattr(result, '__await__'):
+            await result
 
     def _extract_kaltura_videos_from_html(
         self, chapter_html: str, chapter_name: str, course_id: int, module_id: int
@@ -775,6 +796,7 @@ class BookMod(MoodleMod):
                     logging.debug(f'🔧 首先访问课程主页来初始化session: {course_url}')
                     # 使用 domcontentloaded 而不是 load - 只等DOM加载，不等所有资源
                     # 这样可以避免被第三方tracking scripts阻塞
+                    await self._wait_for_network_slot(f'book course page {course_url}')
                     init_response = await page.goto(course_url, wait_until='domcontentloaded', timeout=60000)
                     if init_response:
                         logging.debug(f'✅ 课程主页访问成功: {page.url}')
@@ -793,6 +815,7 @@ class BookMod(MoodleMod):
                     # Navigate to print book page
                     logging.debug(f'🔧 现在访问Print Book页面: {print_book_url}')
                     # 使用 domcontentloaded - 只等DOM加载，避免第三方资源阻塞
+                    await self._wait_for_network_slot(f'print book {print_book_url}')
                     response = await page.goto(print_book_url, wait_until='domcontentloaded', timeout=60000)
 
                     if not response:

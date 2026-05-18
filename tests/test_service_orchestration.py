@@ -55,6 +55,7 @@ def make_download_service():
     service._status_log_loop = None
     service._last_logged_status_snapshot = None
     service._bytes_downloaded_at_last_status_log_signal = 0
+    service.network_throttle = SimpleNamespace(async_wait=AsyncMock())
     return service
 
 
@@ -158,18 +159,15 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         service.log_download_status = AsyncMock()
         service._display_download_summary = MagicMock()
 
-        with patch('moodle_dl.downloader.download_service.random.uniform', return_value=0.2) as mock_uniform:
-            with patch('moodle_dl.downloader.download_service.asyncio.sleep', new_callable=AsyncMock) as mock_sleep:
-                asyncio.run(service.real_run())
+        asyncio.run(service.real_run())
 
         service.database.batch_delete_files.assert_called_once_with(service.courses)
         first.run.assert_awaited_once()
         second.run.assert_awaited_once()
         service.pause_controller.start.assert_called_once()
         service.pause_controller.stop.assert_called_once()
-        self.assertEqual(service.pause_controller.wait_if_requested.await_count, 3)
-        mock_uniform.assert_called_once_with(0, 3)
-        mock_sleep.assert_awaited_once_with(2.2)
+        self.assertEqual(service.network_throttle.async_wait.await_count, 2)
+        self.assertEqual(service.pause_controller.wait_if_requested.await_count, 4)
         service._display_download_summary.assert_called_once()
 
     def test_real_run_checks_pause_after_current_task_before_next_task(self):
@@ -187,11 +185,10 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
 
         service.pause_controller.wait_if_requested = AsyncMock(side_effect=wait_if_requested)
 
-        with patch('moodle_dl.downloader.download_service.random.uniform', return_value=0):
-            with patch('moodle_dl.downloader.download_service.asyncio.sleep', new_callable=AsyncMock):
-                asyncio.run(service.real_run())
+        asyncio.run(service.real_run())
 
-        self.assertEqual(pause_checks[0], (1, 0))
+        self.assertEqual(pause_checks[0], (0, 0))
+        self.assertIn((1, 0), pause_checks)
         self.assertEqual(pause_checks[-1], (1, 1))
 
     def test_real_run_returns_when_queue_is_empty(self):

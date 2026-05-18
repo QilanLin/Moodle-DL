@@ -35,6 +35,7 @@ from moodle_dl.downloader.download_service import DownloadService
 from moodle_dl.downloader.fake_download_service import FakeDownloadService
 from moodle_dl.downloader.task import Task
 from moodle_dl.moodle.moodle_service import MoodleService
+from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.notifications import get_all_notify_services
 from moodle_dl.types import Course, File, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
@@ -254,7 +255,11 @@ def _reset_failed_files_for_retry(database: StateRecorder, courses: List[Course]
 
 
 def _create_downloader(
-    courses: List[Course], config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder
+    courses: List[Course],
+    config: ConfigHelper,
+    opts: MoodleDlOpts,
+    database: StateRecorder,
+    network_throttle: Optional[NetworkThrottle] = None,
 ) -> Union[DownloadService, FakeDownloadService]:
     """Create appropriate downloader instance based on options.
     
@@ -270,7 +275,7 @@ def _create_downloader(
     if opts.without_downloading_files:
         return FakeDownloadService(courses, config, opts, database)
     else:
-        return DownloadService(courses, config, opts, database)
+        return DownloadService(courses, config, opts, database, network_throttle=network_throttle)
 
 
 def _print_retry_results(new_failed_downloads: List[Task]) -> None:
@@ -331,7 +336,7 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     logging.info('开始重载失败的文件...')
 
     # Step 6: Create downloader and run
-    downloader = _create_downloader(courses, config, opts, database)
+    downloader = _create_downloader(courses, config, opts, database, NetworkThrottle())
     downloader.run()
 
     new_failed_downloads = downloader.get_failed_tasks()
@@ -507,7 +512,8 @@ def run_main(config: ConfigHelper, opts: MoodleDlOpts):
     notify_services = get_all_notify_services(config)
 
     try:
-        moodle = MoodleService(config, opts)
+        network_throttle = NetworkThrottle()
+        moodle = MoodleService(config, opts, network_throttle=network_throttle)
 
         logging.debug('Checking for changes for the configured Moodle-Account....')
         database = StateRecorder(config, opts)
@@ -535,7 +541,7 @@ def run_main(config: ConfigHelper, opts: MoodleDlOpts):
         if opts.without_downloading_files:
             downloader = FakeDownloadService(changed_courses, config, opts, database)
         else:
-            downloader = DownloadService(changed_courses, config, opts, database)
+            downloader = DownloadService(changed_courses, config, opts, database, network_throttle=network_throttle)
         downloader.run()
         failed_downloads = downloader.get_failed_tasks()
 

@@ -195,6 +195,49 @@ async def test_async_post_success_parses_text_json_and_logs_response(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_async_post_uses_configured_network_throttle():
+    helper = make_helper()
+    throttle = SimpleNamespace(async_wait=AsyncMock())
+    helper.set_network_throttle(throttle)
+    session = AsyncSession([AsyncResponse(text='{"ok": true}')])
+
+    with (
+        patch("moodle_dl.moodle.request_helper.aiohttp.ClientSession", return_value=session),
+        patch("moodle_dl.moodle.request_helper.SslHelper.get_ssl_context", return_value=None),
+    ):
+        assert await helper.async_post("core_test", {}) == {"ok": True}
+
+    throttle.async_wait.assert_awaited_once_with("Moodle API core_test")
+
+
+def test_get_url_and_post_use_configured_network_throttle(tmp_path):
+    helper = make_helper()
+    throttle = SimpleNamespace(wait=Mock())
+    helper.set_network_throttle(throttle)
+
+    get_session = Mock()
+    get_session.get.return_value = Mock()
+    post_session = Mock()
+    post_session.post.return_value = Mock(status_code=200)
+    post_session.post.return_value.json.return_value = {"ok": True}
+    cookie_path = tmp_path / "cookies.txt"
+    cookie_path.write_text("# cookies", encoding="utf-8")
+
+    with (
+        patch(
+            "moodle_dl.moodle.request_helper.SslHelper.custom_requests_session",
+            side_effect=[get_session, post_session],
+        ),
+        patch("moodle_dl.moodle.request_helper.MoodleDLCookieJar", FakeCookieJar),
+    ):
+        helper.get_URL("https://moodle.example.test/page", str(cookie_path))
+        assert helper.post("core_test", {}) == {"ok": True}
+
+    assert throttle.wait.call_args_list[0].args == ("GET https://moodle.example.test/page",)
+    assert throttle.wait.call_args_list[1].args == ("Moodle API core_test",)
+
+
+@pytest.mark.asyncio
 async def test_async_post_status_and_json_errors():
     helper = make_helper()
 

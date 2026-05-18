@@ -18,14 +18,21 @@ from moodle_dl.moodle.mods import (
 )
 from moodle_dl.moodle.request_helper import RequestHelper
 from moodle_dl.moodle.result_builder import ResultBuilder
+from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.types import Course, MoodleDlOpts, MoodleURL
 from moodle_dl.utils import determine_ext, is_base_64
 
 
 class MoodleService:
-    def __init__(self, config: ConfigHelper, opts: MoodleDlOpts):
+    def __init__(
+        self,
+        config: ConfigHelper,
+        opts: MoodleDlOpts,
+        network_throttle: Optional[NetworkThrottle] = None,
+    ):
         self.config = config
         self.opts = opts
+        self.network_throttle = network_throttle
 
     def obtain_login_token(self, username: str, password: str, moodle_url: MoodleURL) -> Tuple[str, Optional[str]]:
         "Send the login credentials to the Moodle-System and extracts the resulting Login-Token"
@@ -162,6 +169,7 @@ class MoodleService:
         moodle_url = self.config.get_moodle_URL()
 
         request_helper = RequestHelper(self.config, self.opts, moodle_url, token)
+        request_helper.set_network_throttle(self.network_throttle)
         core_handler = CoreHandler(request_helper)
         user_id, version = self.get_user_id_and_version(core_handler)
         
