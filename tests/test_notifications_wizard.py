@@ -44,6 +44,23 @@ def test_configure_all_services_configures_selected_and_removes_unselected():
     config.remove_property.assert_any_call('sentry_dsn')
 
 
+def test_configure_all_services_removes_everything_when_nothing_selected():
+    wizard, config = make_wizard()
+    config.has_property.side_effect = lambda key: key in {'mail', 'telegram', 'ntfy'}
+
+    with patch('moodle_dl.cli.notifications_wizard.Log') as log:
+        with patch('moodle_dl.cli.notifications_wizard.Cutie.select_multiple', return_value=[]):
+            wizard.interactively_configure_all_services()
+
+    assert config.remove_property.call_count == 6
+    for config_key in ['mail', 'telegram', 'discord', 'ntfy', 'xmpp', 'sentry_dsn']:
+        config.remove_property.assert_any_call(config_key)
+    assert any(
+        'No notification services configured' in call.args[0] or '未配置任何通知服务' in call.args[0]
+        for call in log.info.call_args_list
+    )
+
+
 @pytest.mark.parametrize(
     ('method_name', 'config_key'),
     [
@@ -101,6 +118,47 @@ def test_configure_mail_uses_default_port_and_stores_error_flag():
     )
 
 
+def test_configure_mail_retries_send_failure_then_stores_config():
+    wizard, config = make_wizard()
+    inputs = iter(
+        [
+            'bad-from@example.com',
+            'bad-smtp.example.com',
+            '587',
+            'bad-user',
+            'bad-to@example.com',
+            'good-from@example.com',
+            'good-smtp.example.com',
+            '465',
+            'good-user',
+            'good-to@example.com',
+            '',
+            'n',
+        ]
+    )
+
+    with patch('builtins.input', side_effect=lambda _: next(inputs)):
+        with patch('moodle_dl.cli.notifications_wizard.getpass', side_effect=['bad-secret', 'good-secret']):
+            with patch('moodle_dl.cli.notifications_wizard.create_full_welcome_mail', return_value=('html', {})):
+                with patch('moodle_dl.cli.notifications_wizard.MailShooter') as shooter_cls:
+                    shooter_cls.return_value.send.side_effect = [OSError('smtp down'), None]
+                    wizard.interactively_configure_mail(skip_prompt=True)
+
+    assert shooter_cls.call_count == 2
+    config.set_property.assert_called_once_with(
+        'mail',
+        {
+            'sender': 'good-from@example.com',
+            'server_host': 'good-smtp.example.com',
+            'server_port': '465',
+            'username': 'good-user',
+            'password': 'good-secret',
+            'target': 'good-to@example.com',
+            'send_error_msg': False,
+        },
+    )
+
+
 def test_configure_telegram_retries_failed_test_message_then_stores_config():
     wizard, config = make_wizard()
     inputs = iter(
@@ -140,6 +198,19 @@ def test_configure_discord_splits_and_strips_webhook_urls():
     config.set_property.assert_called_once_with('discord', {'webhook_urls': webhook_urls})
 
 
+def test_configure_discord_retries_failed_test_message_then_stores_config():
+    wizard, config = make_wizard()
+    inputs = iter(['https://bad.example/hook', 'https://good.example/hook', ''])
+
+    with patch('builtins.input', side_effect=lambda _: next(inputs)):
+        with patch('moodle_dl.cli.notifications_wizard.DiscordShooter') as shooter_cls:
+            shooter_cls.return_value.send_msg.side_effect = [RuntimeError('discord down'), None]
+            wizard.interactively_configure_discord(skip_prompt=True)
+
+    assert shooter_cls.call_count == 2
+    config.set_property.assert_called_once_with('discord', {'webhook_urls': ['https://good.example/hook']})
+
+
 def test_configure_ntfy_stores_custom_server_when_requested():
     wizard, config = make_wizard()
     inputs = iter(['topic-name', 'https://ntfy.example', ''])
@@ -155,6 +226,20 @@ def test_configure_ntfy_stores_custom_server_when_requested():
         'ntfy',
         {'topic': 'topic-name', 'server': 'https://ntfy.example'},
     )
+
+
+def test_configure_ntfy_retries_failed_test_message_then_stores_default_server_config():
+    wizard, config = make_wizard()
+    inputs = iter(['bad-topic', 'good-topic', ''])
+
+    with patch('builtins.input', side_effect=lambda _: next(inputs)):
+        with patch('moodle_dl.cli.notifications_wizard.Cutie.prompt_yes_or_no', return_value=False):
+            with patch('moodle_dl.cli.notifications_wizard.NtfyShooter') as shooter_cls:
+                shooter_cls.return_value.send.side_effect = [ConnectionError('ntfy down'), None]
+                wizard.interactively_configure_ntfy(skip_prompt=True)
+
+    assert shooter_cls.call_count == 2
+    config.set_property.assert_called_once_with('ntfy', {'topic': 'good-topic'})
 
 
 def test_configure_xmpp_stores_sender_target_and_error_flag():
@@ -175,6 +260,35 @@ def test_configure_xmpp_stores_sender_target_and_error_flag():
             'password': 'secret',
             'target': 'user@example.com',
             'send_error_msg': True,
+        },
+    )
+
+
+def test_configure_xmpp_retries_failed_test_message_then_stores_config():
+    wizard, config = make_wizard()
+    inputs = iter([
+        'bad-bot@example.com',
+        'bad-user@example.com',
+        'good-bot@example.com',
+        'good-user@example.com',
+        '',
+        'n',
+    ])
+
+    with patch('builtins.input', side_effect=lambda _: next(inputs)):
+        with patch('moodle_dl.cli.notifications_wizard.getpass', side_effect=['bad-secret', 'good-secret']):
+            with patch('moodle_dl.cli.notifications_wizard.XmppShooter') as shooter_cls:
+                shooter_cls.return_value.send.side_effect = [RuntimeError('xmpp down'), None]
+                wizard.interactively_configure_xmpp(skip_prompt=True)
+
+    assert shooter_cls.call_count == 2
+    config.set_property.assert_called_once_with(
+        'xmpp',
+        {
+            'sender': 'good-bot@example.com',
+            'password': 'good-secret',
+            'target': 'good-user@example.com',
+            'send_error_msg': False,
         },
     )
 

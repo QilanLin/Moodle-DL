@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import unittest
+from contextlib import suppress
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -48,7 +49,12 @@ def make_download_service():
         start=MagicMock(),
         stop=MagicMock(),
         wait_if_requested=AsyncMock(),
+        is_paused=MagicMock(return_value=False),
     )
+    service._status_log_event = None
+    service._status_log_loop = None
+    service._last_logged_status_snapshot = None
+    service._bytes_downloaded_at_last_status_log_signal = 0
     return service
 
 
@@ -251,21 +257,11 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         service.status.files_to_download = 4
         service.progress_tracker.get_progress_line.return_value = 'progress'
         service.progress_tracker.get_statistics_line.return_value = 'stats'
-        sleep_calls = {'count': 0}
 
-        async def fake_sleep(_seconds):
-            sleep_calls['count'] += 1
-            if sleep_calls['count'] > 1:
-                raise asyncio.CancelledError()
+        with patch('moodle_dl.downloader.download_service.logging') as mock_logging:
+            service._log_download_status_once()
+            service._log_download_status_once()
 
-        async def run_once():
-            with patch('moodle_dl.downloader.download_service.asyncio.sleep', side_effect=fake_sleep):
-                with patch('moodle_dl.downloader.download_service.logging') as mock_logging:
-                    with self.assertRaises(asyncio.CancelledError):
-                        await service.log_download_status()
-                    return mock_logging
-
-        mock_logging = asyncio.run(run_once())
         service.progress_tracker.update.assert_called_once_with(
             downloaded_bytes=20,
             total_bytes=100,
@@ -275,6 +271,61 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
             skipped=0,
         )
         mock_logging.info.assert_has_calls([call('progress'), call('   stats')])
+
+    def test_log_download_status_waits_for_events_and_skips_while_paused(self):
+        service = make_download_service()
+        service.status.files_to_download = 1
+        service.progress_tracker.get_progress_line.return_value = 'progress'
+        service.progress_tracker.get_statistics_line.return_value = ''
+        service.pause_controller.is_paused = MagicMock(side_effect=[True, False])
+
+        async def run_logger():
+            service._status_log_event = asyncio.Event()
+            service._status_log_loop = asyncio.get_running_loop()
+            task = asyncio.create_task(service.log_download_status())
+
+            service._status_log_event.set()
+            await asyncio.sleep(0)
+            service.progress_tracker.update.assert_not_called()
+
+            service.status.files_downloaded = 1
+            service._status_log_event.set()
+            await asyncio.sleep(0)
+
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+        with patch('moodle_dl.downloader.download_service.logging') as mock_logging:
+            asyncio.run(run_logger())
+
+        service.progress_tracker.update.assert_called_once()
+        mock_logging.info.assert_called_once_with('progress')
+
+    def test_status_callback_signals_progress_for_actions_not_seconds(self):
+        service = make_download_service()
+        service.PROGRESS_LOG_MIN_BYTES = 100
+        service._signal_status_log = MagicMock()
+        task = SimpleNamespace(
+            file=make_file('status.pdf'),
+            course=Course(7, 'Status Course'),
+            status=SimpleNamespace(get_error_text=MagicMock(return_value='network error')),
+        )
+
+        service.status_callback(DlEvent.RECEIVED, task, bytes_received=50)
+        service.status_callback(DlEvent.RECEIVED, task, bytes_received=49)
+        service._signal_status_log.assert_not_called()
+
+        service.status_callback(DlEvent.RECEIVED, task, bytes_received=1)
+        service._signal_status_log.assert_called_once()
+        service._signal_status_log.reset_mock()
+
+        service.status_callback(DlEvent.TOTAL_SIZE, task, content_length=100)
+        service.status_callback(DlEvent.TOTAL_SIZE_UPDATE, task, content_length_diff=50)
+        service.status_callback(DlEvent.FAILED, task)
+        service.status_callback(DlEvent.FINISHED, task)
+
+        self.assertEqual(service._signal_status_log.call_count, 4)
 
     def test_display_download_summary_logs_each_line(self):
         service = make_download_service()

@@ -133,6 +133,8 @@ class DownloadPauseController:
 class DownloadService:
     "Manages jobs to download, delete or create files of courses"
 
+    PROGRESS_LOG_MIN_BYTES = 16 * 1024 * 1024
+
     def __init__(self, courses: List[Course], config: ConfigHelper, opts: MoodleDlOpts, database: StateRecorder):
         self.courses = courses
         self.config = config
@@ -149,6 +151,10 @@ class DownloadService:
         # 🆕 增强的进度追踪器
         self.progress_tracker = ProgressTracker()
         self.pause_controller = DownloadPauseController()
+        self._status_log_event = None
+        self._status_log_loop = None
+        self._last_logged_status_snapshot = None
+        self._bytes_downloaded_at_last_status_log_signal = 0
 
     def _configure_task_settings(self) -> tuple:
         """Configure task settings and create thread pool.
@@ -337,6 +343,7 @@ class DownloadService:
         使用 with 语句确保锁在任何情况下都会被释放，
         避免数据库操作抛出异常时造成死锁。
         """
+        should_log_status = False
         with self.status.lock:
             if event == DlEvent.RECEIVED:
                 self.status.bytes_downloaded += extra_args['bytes_received']
@@ -367,11 +374,39 @@ class DownloadService:
             elif event == DlEvent.TOTAL_SIZE_UPDATE:
                 self.status.bytes_to_download += extra_args['content_length_diff']
 
+            should_log_status = self._should_signal_status_log_locked(event)
+
+        if should_log_status:
+            self._signal_status_log()
+
+    def _should_signal_status_log_locked(self, event: DlEvent) -> bool:
+        if event in (DlEvent.FINISHED, DlEvent.FAILED, DlEvent.TOTAL_SIZE, DlEvent.TOTAL_SIZE_UPDATE):
+            return True
+
+        if event == DlEvent.RECEIVED:
+            last_signal_bytes = getattr(self, '_bytes_downloaded_at_last_status_log_signal', 0)
+            if self.status.bytes_downloaded - last_signal_bytes >= self.PROGRESS_LOG_MIN_BYTES:
+                self._bytes_downloaded_at_last_status_log_signal = self.status.bytes_downloaded
+                return True
+
+        return False
+
+    def _signal_status_log(self) -> None:
+        event = getattr(self, '_status_log_event', None)
+        loop = getattr(self, '_status_log_loop', None)
+        if event is None or loop is None or loop.is_closed():
+            return
+
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass
+
     def run(self):
         asyncio.run(self.real_run())
 
     async def real_run(self):
-        "Starts all tasks and issues status messages at regular intervals"
+        "Starts all tasks and issues status messages when download state changes"
 
         # delete files, that should be deleted
         self.database.batch_delete_files(self.courses)
@@ -380,6 +415,10 @@ class DownloadService:
             return
 
         # run all other tasks
+        self._status_log_event = asyncio.Event()
+        self._status_log_loop = asyncio.get_running_loop()
+        self._last_logged_status_snapshot = None
+        self._bytes_downloaded_at_last_status_log_signal = self.status.bytes_downloaded
         status_logger_task = asyncio.create_task(self.log_download_status())
         self.pause_controller.start()
 
@@ -423,29 +462,53 @@ class DownloadService:
         记录下载进度状态（使用增强的进度追踪器）
         """
         while True:
-            # 每 2 秒打印一次当前状态
-            await asyncio.sleep(2)
+            event = getattr(self, '_status_log_event', None)
+            if event is None:
+                event = asyncio.Event()
+                self._status_log_event = event
+                self._status_log_loop = asyncio.get_running_loop()
 
-            # 更新进度追踪器
-            self.progress_tracker.update(
-                downloaded_bytes=self.status.bytes_downloaded,
-                total_bytes=self.status.bytes_to_download,
-                completed=self.status.files_downloaded,
-                failed=self.status.files_failed,
-                total=self.status.files_to_download,
-                skipped=0  # 目前 DownloadStatus 没有跳过计数，可以后续添加
-            )
-            
-            # 获取进度信息
-            progress_line = self.progress_tracker.get_progress_line()
-            statistics_line = self.progress_tracker.get_statistics_line()
-            
-            # 显示进度
-            logging.info(progress_line)
-            
-            # 如果有统计信息，也显示
-            if statistics_line:
-                logging.info(f"   {statistics_line}")
+            await event.wait()
+            event.clear()
+
+            if self.pause_controller.is_paused():
+                continue
+
+            self._log_download_status_once()
+
+    def _log_download_status_once(self):
+        status_snapshot = (
+            self.status.bytes_downloaded,
+            self.status.bytes_to_download,
+            self.status.files_downloaded,
+            self.status.files_failed,
+            self.status.files_to_download,
+        )
+        if status_snapshot == getattr(self, '_last_logged_status_snapshot', None):
+            return
+
+        self._last_logged_status_snapshot = status_snapshot
+
+        # 更新进度追踪器
+        self.progress_tracker.update(
+            downloaded_bytes=self.status.bytes_downloaded,
+            total_bytes=self.status.bytes_to_download,
+            completed=self.status.files_downloaded,
+            failed=self.status.files_failed,
+            total=self.status.files_to_download,
+            skipped=0  # 目前 DownloadStatus 没有跳过计数，可以后续添加
+        )
+
+        # 获取进度信息
+        progress_line = self.progress_tracker.get_progress_line()
+        statistics_line = self.progress_tracker.get_statistics_line()
+
+        # 显示进度
+        logging.info(progress_line)
+
+        # 如果有统计信息，也显示
+        if statistics_line:
+            logging.info(f"   {statistics_line}")
     
     def _display_download_summary(self):
         """

@@ -281,6 +281,11 @@ async def test_lesson_web_fallback_access_and_question_helpers():
     assert "1 / 2" in files[0]["description"]
     qa_mod.client.async_post.side_effect = RequestRejectedError("denied")
     assert await qa_mod._get_questions_and_answers({"lesson_id": 99}) == []
+    qa_mod.client.async_post.side_effect = RuntimeError("unavailable")
+    assert await qa_mod._get_questions_and_answers({"lesson_id": 99}) == []
+    qa_mod.client.async_post.side_effect = None
+    qa_mod.client.async_post.return_value = {"attempts": []}
+    assert await qa_mod._get_questions_and_answers({"lesson_id": 99}) == []
 
 
 @pytest.mark.asyncio
@@ -319,6 +324,58 @@ async def test_lesson_real_fetch_attempt_page_and_attempt_files():
     disabled_mod.add_lessons_files = AsyncMock()
     assert await disabled_mod.real_fetch_mod_entries([Course(10, "Course")], {}) == {}
 
+    fallback_mod = make_mod(LessonMod)
+    fallback_mod.client.async_post.side_effect = RequestRejectedError("mobile disabled")
+    fallback_mod._fetch_lessons_web_api = AsyncMock(
+        return_value=[
+            {
+                "id": 100,
+                "coursemodule": 45,
+                "course": 10,
+                "name": "Fallback Lesson",
+                "intro": "<p>Fallback</p>",
+                "timemodified": 456,
+            }
+        ]
+    )
+    fallback_mod._get_lesson_access_info = AsyncMock(return_value={})
+    fallback_mod.add_lessons_files = AsyncMock()
+
+    fallback_result = await fallback_mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    assert fallback_result[10][45]["name"] == "Fallback Lesson"
+    fallback_mod._fetch_lessons_web_api.assert_awaited_once()
+    fallback_mod.add_lessons_files.assert_awaited_once()
+
+    entries = {10: {44: {"id": 99, "name": "Lesson", "files": []}}}
+    with patch.object(LessonMod, "run_async_load_function_on_mod_entries", new_callable=AsyncMock) as runner:
+        await make_mod(LessonMod, make_config(download_lessons=False)).add_lessons_files(entries)
+        runner.assert_not_called()
+    with patch.object(LessonMod, "run_async_load_function_on_mod_entries", new_callable=AsyncMock) as runner:
+        await make_mod(LessonMod, version=2014051200).add_lessons_files(entries)
+        runner.assert_not_called()
+    with patch.object(LessonMod, "run_async_load_function_on_mod_entries", new_callable=AsyncMock) as runner:
+        await make_mod(LessonMod).add_lessons_files(entries)
+        runner.assert_awaited_once()
+
+    lesson = {"id": 99, "name": "Lesson", "files": []}
+    load_mod = make_mod(LessonMod)
+    load_mod.client.async_post.return_value = {"answerpages": [], "userstats": {}}
+    load_mod._get_files_of_attempt = AsyncMock(return_value=[{"filename": "attempt"}])
+    await load_mod.load_lesson_files(lesson)
+    assert lesson["files"] == [{"filename": "attempt"}]
+    load_mod.client.async_post.assert_awaited_once_with(
+        "mod_lesson_get_user_attempt",
+        {"lessonid": 99, "userid": 7, "lessonattempt": 0},
+    )
+    load_mod._get_files_of_attempt.assert_awaited_once_with(
+        {"answerpages": [], "userstats": {}, "lesson_name": "Lesson", "lesson_id": 99}
+    )
+    load_mod.client.async_post.side_effect = RequestRejectedError("denied")
+    lesson = {"id": 99, "name": "Lesson", "files": []}
+    await load_mod.load_lesson_files(lesson)
+    assert lesson["files"] == []
+
     page_mod = make_mod(LessonMod)
     page_mod.client.async_post.return_value = {
         "contentfiles": [{"filename": "page.pdf", "filepath": "/"}],
@@ -327,6 +384,11 @@ async def test_lesson_real_fetch_attempt_page_and_attempt_files():
     page_files = await page_mod.load_attempt_page({"page": {"id": 5, "lessonid": 99}})
     assert page_files[0]["type"] == "lesson_file"
     assert page_files[1]["content"] == "<p>Page</p>"
+    page_mod.client.async_post.side_effect = None
+    page_mod.client.async_post.return_value = {"contentfiles": [], "pagecontent": None}
+    assert await page_mod.load_attempt_page({"page": {"id": 6, "lessonid": 99}}) == [
+        {"_is_page_content": True, "content": ""}
+    ]
     page_mod.client.async_post.side_effect = RequestRejectedError("denied")
     assert await page_mod.load_attempt_page({"page": {"id": 5, "lessonid": 99}}) == []
 
@@ -351,6 +413,19 @@ async def test_lesson_real_fetch_attempt_page_and_attempt_files():
     assert attempt_files[-1]["type"] == "html"
     assert attempt_files[-1]["filter_urls_during_search_containing"] == ["/mod_lesson/page_contents/"]
     assert attempt_files[-1]["no_search_for_urls"] is True
+
+    timecreated_mod = make_mod(LessonMod)
+    timecreated_mod._get_questions_and_answers = AsyncMock(return_value=[])
+    timecreated_mod.run_async_collect_function_on_list = AsyncMock(return_value=[])
+    attempt_files = await timecreated_mod._get_files_of_attempt(
+        {
+            "lesson_name": "No Grade",
+            "lesson_id": 100,
+            "userstats": {},
+            "answerpages": [{"page": {"id": 1, "lessonid": 100, "timecreated": 333}}],
+        }
+    )
+    assert attempt_files == []
 
 
 @pytest.mark.asyncio

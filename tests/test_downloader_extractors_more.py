@@ -252,6 +252,51 @@ def test_echo360_query_and_mediapackage_parsing():
     assert ie._download_json.call_args.kwargs["headers"] == {"Authorization": "Bearer token"}
 
 
+def test_echo360_real_extract_uses_session_token_and_share_or_public_link_id():
+    url = "https://echo360.org.uk/media/1d8392aa-a3e7-4e78-94cf-b6532c27208c/public"
+    ie = make_ie(Echo360IE)
+    ie._download_webpage = Mock(return_value="<html>player</html>")
+    ie._search_json = Mock(
+        return_value={"sessionId": "session-1", "shareLinkId": "share-1", "publicLinkId": "public-1", "mediaId": "media-1"}
+    )
+    ie._request_webpage = Mock(return_value=UrlHandle(headers={"Token": "session-token"}))
+    ie._call_api = Mock(return_value={"data": {"media": "payload"}})
+    ie._parse_mediapackage = Mock(return_value={"id": "media-1", "formats": []})
+
+    result = ie._real_extract(url)
+
+    assert result == {"id": "media-1", "formats": []}
+    ie._request_webpage.assert_called_once_with(
+        "https://echo360.org.uk/api/ui/sessions/session-1",
+        "1d8392aa-a3e7-4e78-94cf-b6532c27208c",
+        "Open video session",
+        "Unable to open video session",
+    )
+    ie._call_api.assert_called_once_with(
+        "echo360.org.uk",
+        "share-1",
+        "media-1",
+        "session-token",
+    )
+    ie._parse_mediapackage.assert_called_once_with({"media": "payload"})
+
+    public_link_ie = make_ie(Echo360IE)
+    public_link_ie._download_webpage = Mock(return_value="<html>player</html>")
+    public_link_ie._search_json = Mock(return_value={"sessionId": "session-2", "publicLinkId": "public-2", "mediaId": "media-2"})
+    public_link_ie._request_webpage = Mock(return_value=UrlHandle(headers={"Token": "public-token"}))
+    public_link_ie._call_api = Mock(return_value={"data": {"media": "fallback"}})
+    public_link_ie._parse_mediapackage = Mock(return_value={"id": "media-2", "formats": []})
+
+    public_link_ie._real_extract(url)
+
+    public_link_ie._call_api.assert_called_once_with(
+        "echo360.org.uk",
+        "public-2",
+        "media-2",
+        "public-token",
+    )
+
+
 def test_helixmedia_real_extract_and_extension_detection():
     ie = make_ie(HelixmediaLtiIE)
     assert ie.urlhandle_detect_ext(

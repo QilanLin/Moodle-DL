@@ -148,6 +148,64 @@ async def test_bbb_web_fallback_and_real_fetch_metadata():
     assert await disabled_mod.real_fetch_mod_entries([Course(10, "Course")], {}) == {}
 
 
+@pytest.mark.asyncio
+async def test_bbb_fallback_error_metadata_and_malformed_recordings():
+    fallback_mod = make_mod(BigbluebuttonbnMod)
+    fallback_mod.client.async_post.side_effect = [
+        RequestRejectedError("mobile disabled"),
+        RuntimeError("meeting info denied"),
+        RuntimeError("recordings denied"),
+    ]
+    core_contents = {
+        10: [
+            {
+                "modules": [
+                    {
+                        "id": 44,
+                        "instance": 99,
+                        "modname": "bigbluebuttonbn",
+                        "name": "Fallback Room",
+                        "description": "<p>Fallback</p>",
+                        "timemodified": 123,
+                    }
+                ]
+            }
+        ]
+    }
+
+    result = await fallback_mod.real_fetch_mod_entries([Course(10, "Course")], core_contents)
+
+    metadata = json.loads(result[10][44]["files"][-1]["content"])
+    assert metadata["meeting_details"] == {"error": "meeting info denied"}
+    assert metadata["recordings"] == {"error": "recordings denied"}
+
+    malformed_mod = make_mod(BigbluebuttonbnMod)
+    malformed_mod.client.async_post.side_effect = [
+        {
+            "bigbluebuttonbns": [
+                {
+                    "id": 100,
+                    "coursemodule": 45,
+                    "course": 10,
+                    "name": "Malformed Recordings",
+                    "timemodified": 222,
+                }
+            ]
+        },
+        {"statusopen": True},
+        {"status": True, "tabledata": {"data": "{not-json", "locale": "en"}},
+    ]
+
+    result = await malformed_mod.real_fetch_mod_entries([Course(10, "Course")], {})
+
+    files = result[10][45]["files"]
+    assert [file["filename"] for file in files] == ["metadata.json"]
+    metadata = json.loads(files[-1]["content"])
+    assert metadata["meeting_details"]["status"] == "Open"
+    assert metadata["recordings"]["total_count"] == 0
+    assert metadata["recordings"]["recordings"] == []
+
+
 def test_choice_names_and_markdown_formatters():
     mod = make_mod(ChoiceMod)
 
@@ -281,17 +339,56 @@ async def test_forum_real_fetch_add_posts_guards_and_discussion_fetchers():
     fetch_mod = make_mod(ForumMod)
     fetch_mod.client.async_post.return_value = {
         "discussions": [
-            {"subject": "New", "timemodified": 200, "discussion": 1, "created": 100},
+            {"subject": "New", "timemodified": 200, "modified": 250, "discussion": 1, "created": 100},
             {"subject": "Old", "timemodified": 50, "discussion": 2, "created": 40},
         ]
     }
     latest, done = await fetch_mod._fetch_discussions_mobile_api({"id": 99, "name": "Forum"}, 0, 100, [])
-    assert latest == [{"subject": "New", "timemodified": 200, "discussion_id": 1, "created": 100}]
+    assert latest == [{"subject": "New", "timemodified": 250, "discussion_id": 1, "created": 100}]
     assert done is True
 
     fetch_mod.client.async_post.return_value = {"discussions": []}
     assert await fetch_mod._fetch_discussions_mobile_api({"id": 99, "name": "Forum"}, 1, 0, []) == ([], True)
     assert await fetch_mod._fetch_discussions_web_api({"id": 99}, 0) == []
+
+
+@pytest.mark.asyncio
+async def test_forum_load_latest_discussions_adds_access_info_and_falls_back():
+    mod = make_mod(ForumMod, last_timestamps={"forum": {44: 100}})
+    mod.client.async_post.return_value = {"canviewdiscussion": True}
+    mod._fetch_discussions_mobile_api = AsyncMock(
+        return_value=(
+            [{"subject": "Topic", "timemodified": 200, "discussion_id": 7, "created": 1700000000}],
+            True,
+        )
+    )
+    mod.run_async_collect_function_on_list = AsyncMock(return_value=[{"filename": "post"}])
+    forum = {"id": 99, "_cmid": 44, "name": "Forum", "files": []}
+
+    await mod.load_latest_discussions(forum)
+
+    assert forum["files"][0]["filename"] == "access_information.json"
+    assert json.loads(forum["files"][0]["content"]) == {"canviewdiscussion": True}
+    assert forum["files"][1] == {"filename": "post"}
+    mod._fetch_discussions_mobile_api.assert_awaited_once_with(
+        forum,
+        0,
+        100,
+        [],
+    )
+    mod.run_async_collect_function_on_list.assert_awaited_once()
+
+    fallback_mod = make_mod(ForumMod)
+    fallback_mod.client.async_post.side_effect = RuntimeError("access denied")
+    fallback_mod._fetch_discussions_mobile_api = AsyncMock(side_effect=KeyError("bad response"))
+    fallback_mod._fetch_discussions_web_api = AsyncMock(return_value=[{"subject": "Fallback", "discussion_id": 8}])
+    fallback_mod.run_async_collect_function_on_list = AsyncMock(return_value=[{"filename": "fallback-post"}])
+    forum = {"id": 100, "_cmid": 45, "name": "Forum", "files": []}
+
+    await fallback_mod.load_latest_discussions(forum)
+
+    assert forum["files"] == [{"filename": "fallback-post"}]
+    fallback_mod._fetch_discussions_web_api.assert_awaited_once_with(forum, 0)
 
 
 @pytest.mark.asyncio
@@ -341,6 +438,9 @@ async def test_forum_posts_loading_and_inline_deduplication():
     fetch_mod.client.async_post.return_value = {"posts": []}
     with pytest.raises(KeyError, match="Mobile API"):
         await fetch_mod._fetch_discussion_posts_mobile_api({"discussionid": 10})
+    old_fetch_mod = make_mod(ForumMod, version=2013051400)
+    with pytest.raises(NotImplementedError):
+        await old_fetch_mod._fetch_discussion_posts_mobile_api({"discussionid": 10})
     assert await fetch_mod._fetch_discussion_posts_web_api(10) == []
 
     post_files = [{"filename": "same.png", "filesize": 10, "fileurl": "https://x/attachment/same.png"}]
