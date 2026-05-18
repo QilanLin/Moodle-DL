@@ -7,8 +7,9 @@ and can be tested independently.
 """
 
 import unittest
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch, call
 from concurrent.futures import ThreadPoolExecutor
+import pytest
 from moodle_dl.downloader.download_service import DownloadService
 from moodle_dl.types import File, Course, DownloadOptions, MoodleDlOpts
 
@@ -404,6 +405,56 @@ class TestDownloadServiceAtomization(unittest.TestCase):
         mock_logging.debug.assert_called()
         call_args = mock_logging.debug.call_args[0]
         self.assertIn('清理未完成下载记录时出错', call_args[0])
+
+
+@pytest.mark.asyncio
+async def test_real_run_rate_limits_only_before_following_network_tasks():
+    """Local generated tasks should not be delayed by the network throttle."""
+    config = MagicMock()
+    config.get_download_options.return_value = MagicMock()
+    config.get_manually_specified_course_ids.return_value = []
+    config.get_restricted_filenames.return_value = False
+    opts = MagicMock()
+    opts.download_chunk_size = 8192
+    opts.max_parallel_yt_dlp = 2
+    opts.cookies_text = None
+    opts.global_opts = MagicMock()
+    opts.global_opts.skip_cert_verify = False
+    database = MagicMock()
+    database.get_incomplete_downloads_for_retry.return_value = []
+    database.cleanup_old_incomplete_downloads.return_value = 0
+    service = DownloadService([], config, opts, database)
+
+    events = []
+
+    class FakeTask:
+        def __init__(self, name, network):
+            self.name = name
+            self.network = network
+
+        def may_perform_network_io(self):
+            return self.network
+
+        async def run(self):
+            events.append(self.name)
+
+    async def record_wait():
+        events.append('wait')
+
+    service.all_tasks = [
+        FakeTask('local-1', False),
+        FakeTask('network-1', True),
+        FakeTask('local-2', False),
+        FakeTask('network-2', True),
+    ]
+    service.pause_controller.enabled = False
+    service.pause_controller.wait_if_requested = AsyncMock()
+    service._wait_before_network_task = AsyncMock(side_effect=record_wait)
+
+    await service.real_run()
+
+    assert events == ['local-1', 'network-1', 'local-2', 'wait', 'network-2']
+    service._wait_before_network_task.assert_awaited_once()
 
 
 class TestGenAllTasksFlow(unittest.TestCase):

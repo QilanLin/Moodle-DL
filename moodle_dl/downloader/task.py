@@ -1590,6 +1590,35 @@ class Task:
         """
         return is_optional_metadata_filename(self.file.content_filename)
 
+    def may_perform_network_io(self) -> bool:
+        """Return whether this task may open a network connection during download."""
+        if self._is_metadata_file() and not self.opts.download_metadata_files:
+            return False
+
+        if self.file.content_type in ('description', 'html', 'content', 'directory_placeholder'):
+            return False
+
+        if self.file.content_fileurl and self.file.content_fileurl.startswith('data:'):
+            return False
+
+        if self.file.content_type == 'leganto_pdf':
+            return True
+
+        if self.file.module_modname.startswith('index_mod'):
+            return True
+
+        if self.file.module_modname.startswith('cookie_mod'):
+            return True
+
+        if self.file.module_modname.startswith('url'):
+            if not self.file.content_fileurl:
+                return False
+            if is_leganto_reading_list_url(self.file.content_fileurl):
+                return True
+            return self.opts.download_linked_files and not self.is_filtered_external_domain()
+
+        return bool(self.file.content_fileurl)
+
     async def real_run(self) -> bool:
         """
         主下载流程的原子化编排器。

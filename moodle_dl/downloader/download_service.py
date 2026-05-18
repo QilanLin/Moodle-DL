@@ -394,6 +394,23 @@ class DownloadService:
         except RuntimeError:
             pass
 
+    @staticmethod
+    def _download_delay_seconds() -> float:
+        return 2 + random.uniform(0, 3)
+
+    async def _wait_before_network_task(self) -> None:
+        delay = self._download_delay_seconds()
+        logging.debug(f'等待 {delay:.2f} 秒后继续下一个网络任务...')
+        await asyncio.sleep(delay)
+        await self.pause_controller.wait_if_requested()
+
+    @staticmethod
+    def _task_may_perform_network_io(task) -> bool:
+        checker = getattr(task, 'may_perform_network_io', None)
+        if callable(checker):
+            return bool(checker())
+        return True
+
     def run(self):
         asyncio.run(self.real_run())
 
@@ -428,17 +445,17 @@ class DownloadService:
         try:
             # ========== 单线程顺序下载（已启用） ==========
             # 按顺序逐个下载，不使用并发
-            for i, task in enumerate(self.all_tasks):
+            has_seen_network_task = False
+            for task in self.all_tasks:
+                task_may_use_network = self._task_may_perform_network_io(task)
+                if task_may_use_network and has_seen_network_task:
+                    await self._wait_before_network_task()
+
                 await task.run()
                 await self.pause_controller.wait_if_requested()
 
-                # 在每个任务之间添加随机延迟（2 到 5 秒）
-                # 避免对服务器造成过大压力，模拟自然的下载行为
-                if i < len(self.all_tasks) - 1:  # 最后一个任务后不需要等待
-                    delay = 2 + random.uniform(0, 3)
-                    logging.debug(f'等待 {delay:.2f} 秒后继续下一个任务...')
-                    await asyncio.sleep(delay)
-                    await self.pause_controller.wait_if_requested()
+                if task_may_use_network:
+                    has_seen_network_task = True
         finally:
             self.pause_controller.stop()
             status_logger_task.cancel()

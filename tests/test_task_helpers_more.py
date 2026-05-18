@@ -396,6 +396,27 @@ async def test_download_index_mod_page_saves_markdown_without_html_badges(task_f
     assert 'Use Git.' in saved_text
 
 
+def test_may_perform_network_io_distinguishes_local_generated_tasks(task_factory):
+    for content_type in ('description', 'html', 'content', 'directory_placeholder'):
+        task = task_factory(content_type=content_type, content_fileurl='https://example.com/file')
+        assert task.may_perform_network_io() is False
+
+    data_url = task_factory(module_modname='url', content_fileurl='data:text/plain,hello')
+    assert data_url.may_perform_network_io() is False
+
+    skipped_metadata = task_factory(content_filename='metadata.json', download_metadata_files=False)
+    assert skipped_metadata.may_perform_network_io() is False
+
+    normal_file = task_factory(content_type='application/pdf', content_fileurl='https://example.com/file.pdf')
+    assert normal_file.may_perform_network_io() is True
+
+    linked_file = task_factory(module_modname='url', download_linked_files=True)
+    assert linked_file.may_perform_network_io() is True
+
+    shortcut_only = task_factory(module_modname='url', download_linked_files=False)
+    assert shortcut_only.may_perform_network_io() is False
+
+
 def test_set_path_avoids_duplicate_generated_extensions_and_supports_forced_extensions(
     task_factory,
     tmp_path,
