@@ -506,10 +506,26 @@ async def test_execute_download_dispatches_to_type_specific_handlers(task_factor
     await leganto_task._execute_download()
     leganto_task._download_leganto_reading_list_pdf.assert_awaited_once()
 
-    index_task = task_factory(module_modname='index_mod-page')
+    index_task = task_factory(module_modname='index_mod-page', content_type='html')
     index_task._download_index_mod_page = AsyncMock()
     await index_task._execute_download()
     index_task._download_index_mod_page.assert_awaited_once()
+
+    index_asset = task_factory(
+        module_modname='index_mod-page',
+        content_type='file',
+        content_filename='Screenshot 2024-10-21 at 22.07.07.png',
+        content_fileurl='https://moodle.example.com/webservice/pluginfile.php/1/mod_page/content/3/image.png',
+    )
+    index_asset._download_index_mod_page = AsyncMock()
+    index_asset.add_token_to_url = MagicMock(return_value='https://moodle.example.com/image.png?token=token-abc')
+    index_asset.download_url = AsyncMock()
+    await index_asset._execute_download()
+    index_asset._download_index_mod_page.assert_not_awaited()
+    index_asset.download_url.assert_awaited_once_with(
+        'https://moodle.example.com/image.png?token=token-abc',
+        index_asset.file.saved_to,
+    )
 
     cookie_task = task_factory(module_modname='cookie_mod-helixmedia')
     cookie_task._download_cookie_mod_file = AsyncMock()
@@ -1918,6 +1934,13 @@ async def test_download_using_yt_dlp_returns_false_for_legacy_pages_and_generic_
         delete_if_successful=True,
     ) is False
 
+    index_asset = task_factory(module_modname='index_mod-page', content_filename='image.png')
+    assert await index_asset.download_using_yt_dlp(
+        'https://video.example.com/watch',
+        infos,
+        delete_if_successful=True,
+    ) is True
+
     fake_cls.set_generic_extractor_warning = True
     generic = task_factory(content_filename='video.mp4')
     assert await generic.download_using_yt_dlp(
@@ -2350,7 +2373,7 @@ async def test_execute_download_dispatches_by_content_and_module_type(task_facto
     await content._execute_download()
     content.create_content_file.assert_awaited_once()
 
-    index_mod = task_factory(module_modname='index_mod-page')
+    index_mod = task_factory(module_modname='index_mod-page', content_type='html')
     index_mod._download_index_mod_page = AsyncMock()
     await index_mod._execute_download()
     index_mod._download_index_mod_page.assert_awaited_once()

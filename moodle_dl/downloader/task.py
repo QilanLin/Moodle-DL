@@ -778,7 +778,7 @@ class Task:
                 ydl_result = await loop.run_in_executor(self.thread_pool, functools.partial(ydl.download, dl_url))
                 # We set the saved_to path in yt_hook_after_move
                 if ydl_result == 0:
-                    if self.file.module_modname.startswith('index_mod') or self.file.module_name == 'index_mod-page':
+                    if self._is_index_mod_page_file():
                         # We want to download legacy moodle pages
                         return False
                     # yt-dlp has an extractor for this URL so we do not want to download the URL extra
@@ -1646,6 +1646,29 @@ class Task:
 
         return bool(self.file.content_fileurl)
 
+    def _is_index_mod_page_file(self) -> bool:
+        """Return whether an index_mod entry is the page HTML, not an embedded asset."""
+        if (
+            not self.file.module_modname.startswith('index_mod')
+            and getattr(self.file, 'module_name', '') != 'index_mod-page'
+        ):
+            return False
+
+        content_type = (getattr(self.file, 'content_type', '') or '').lower()
+        if content_type in ('html', 'description'):
+            return True
+
+        filename = (getattr(self.file, 'content_filename', '') or '').lower()
+        if filename.endswith(('.html', '.htm')):
+            return True
+
+        file_url = getattr(self.file, 'content_fileurl', '') or ''
+        file_url_path = urlparse.urlsplit(file_url).path.lower()
+        if file_url_path.endswith(('.html', '.htm')):
+            return True
+
+        return False
+
     async def real_run(self) -> bool:
         """
         主下载流程的原子化编排器。
@@ -1768,7 +1791,10 @@ class Task:
         - data: 数据 URL
         - 默认: 常规 HTTP 下载
         """
-        if self.file.content_type == 'description':
+        if self._is_index_mod_page_file():
+            await self._download_index_mod_page()
+
+        elif self.file.content_type == 'description':
             await self.create_description()
         
         elif self.file.content_type == 'html':
@@ -1779,9 +1805,6 @@ class Task:
 
         elif self.file.content_type == 'leganto_pdf':
             await self._download_leganto_reading_list_pdf()
-        
-        elif self.file.module_modname.startswith('index_mod'):
-            await self._download_index_mod_page()
         
         elif self.file.module_modname.startswith('cookie_mod'):
             await self._download_cookie_mod_file()
