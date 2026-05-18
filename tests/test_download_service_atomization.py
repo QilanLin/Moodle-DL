@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 from concurrent.futures import ThreadPoolExecutor
 import pytest
 from moodle_dl.downloader.download_service import DownloadService
-from moodle_dl.types import File, Course, DownloadOptions, MoodleDlOpts
+from moodle_dl.types import File, Course, DownloadOptions, MoodleDlOpts, TaskState
 
 
 class TestDownloadServiceAtomization(unittest.TestCase):
@@ -649,6 +649,123 @@ def test_rewrite_downloaded_html_resource_links_uses_database_stored_files(tmp_p
 
     assert service._rewrite_downloaded_html_resource_links() == 1
     assert 'src="*02* Screenshot 2021-07-18 at 12.19.08.png"' in html_path.read_text(encoding='utf-8')
+
+
+def test_rewrite_html_resource_links_after_resource_task_finishes(tmp_path):
+    chapter_dir = tmp_path / '3.1. What name email configuration does git require'
+    chapter_dir.mkdir()
+    html_path = chapter_dir / '*01* index.html'
+    image_path = chapter_dir / '*02* Screenshot 2021-07-18 at 12.19.08.png'
+    html_path.write_text(
+        '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" '
+        'alt="GitHub primary email address"></p>',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    html_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='index.html',
+        content_fileurl='',
+        content_filesize=0,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='html',
+        content_isexternalfile=False,
+        saved_to=str(html_path),
+        file_id=29,
+    )
+    image_file = File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='Screenshot 2021-07-18 at 12.19.08.png',
+        content_fileurl=(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/11761256/mod_book/chapter/827835/'
+            'Screenshot%202021-07-18%20at%2012.19.08.png?token=secret&offline=1'
+        ),
+        content_filesize=1,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='file',
+        content_isexternalfile=False,
+        saved_to=str(image_path),
+        file_id=30,
+    )
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = [Course(1, 'Course', [html_file, image_file])]
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = []
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+    assert 'src="*02* Screenshot 2021-07-18 at 12.19.08.png"' in html_path.read_text(encoding='utf-8')
+    assert service._rewrite_html_resource_links_after_task(task) == 0
+
+
+def test_real_run_rewrites_html_resource_links_after_each_task():
+    async def idle_status_logger():
+        await asyncio.Event().wait()
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = []
+    service.all_tasks = [MagicMock()]
+    service.all_tasks[0].run = AsyncMock()
+    service.all_tasks[0].status.state = TaskState.FINISHED
+    service.database = MagicMock()
+    service.status = MagicMock()
+    service.status.bytes_downloaded = 0
+    service.status.files_to_download = 0
+    service.pause_controller = MagicMock()
+    service.pause_controller.wait_if_requested = AsyncMock()
+    service._task_may_perform_network_io = MagicMock(return_value=False)
+    service._rewrite_html_resource_links_after_task = MagicMock(return_value=0)
+    service._rewrite_downloaded_html_resource_links = MagicMock(return_value=0)
+    service.log_download_status = idle_status_logger
+
+    asyncio.run(service.real_run())
+
+    service.database.batch_delete_files.assert_called_once_with([])
+    service.all_tasks[0].run.assert_awaited_once()
+    service._rewrite_html_resource_links_after_task.assert_called_once_with(service.all_tasks[0])
+    service.pause_controller.wait_if_requested.assert_awaited_once()
+    service._rewrite_downloaded_html_resource_links.assert_called_once_with()
+
+
+def test_real_run_skips_incremental_html_rewrite_after_failed_task():
+    async def idle_status_logger():
+        await asyncio.Event().wait()
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = []
+    service.all_tasks = [MagicMock()]
+    service.all_tasks[0].run = AsyncMock()
+    service.all_tasks[0].status.state = TaskState.FAILED
+    service.database = MagicMock()
+    service.status = MagicMock()
+    service.status.bytes_downloaded = 0
+    service.status.files_to_download = 0
+    service.pause_controller = MagicMock()
+    service.pause_controller.wait_if_requested = AsyncMock()
+    service._task_may_perform_network_io = MagicMock(return_value=False)
+    service._rewrite_html_resource_links_after_task = MagicMock(return_value=0)
+    service._rewrite_downloaded_html_resource_links = MagicMock(return_value=0)
+    service.log_download_status = idle_status_logger
+
+    asyncio.run(service.real_run())
+
+    service.all_tasks[0].run.assert_awaited_once()
+    service._rewrite_html_resource_links_after_task.assert_not_called()
+    service.pause_controller.wait_if_requested.assert_awaited_once()
+    service._rewrite_downloaded_html_resource_links.assert_called_once_with()
 
 
 def test_real_run_rewrites_html_resource_links_without_download_tasks():

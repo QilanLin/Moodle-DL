@@ -128,6 +128,34 @@ class DownloadService:
     "Manages jobs to download, delete or create files of courses"
 
     PROGRESS_LOG_MIN_BYTES = 16 * 1024 * 1024
+    HTML_REWRITE_RESOURCE_EXTENSIONS = {
+        '.apng',
+        '.avif',
+        '.bmp',
+        '.css',
+        '.gif',
+        '.html',
+        '.htm',
+        '.ico',
+        '.jpeg',
+        '.jpg',
+        '.js',
+        '.m4a',
+        '.mp3',
+        '.mp4',
+        '.ogg',
+        '.ogv',
+        '.pdf',
+        '.png',
+        '.svg',
+        '.ttf',
+        '.wasm',
+        '.wav',
+        '.webm',
+        '.webp',
+        '.woff',
+        '.woff2',
+    }
 
     def __init__(
         self,
@@ -456,6 +484,8 @@ class DownloadService:
                     await self._wait_before_network_task()
 
                 await task.run()
+                if getattr(getattr(task, 'status', None), 'state', None) == TaskState.FINISHED:
+                    self._rewrite_html_resource_links_after_task(task)
                 await self.pause_controller.wait_if_requested()
         finally:
             self.pause_controller.stop()
@@ -534,50 +564,85 @@ class DownloadService:
         content_type = (getattr(file, 'content_type', '') or '').lower()
         return content_type == 'html' or saved_to.lower().endswith(('.html', '.htm'))
 
-    def _rewrite_downloaded_html_resource_links(self) -> int:
-        """Make saved HTML files reference downloaded embedded resources locally."""
-        files = list(self._iter_known_files())
-        local_resources = build_local_resource_map(files)
-        if not local_resources:
+    @staticmethod
+    def _is_shortcut_file_path(path: str) -> bool:
+        return path.lower().endswith(('.webloc', '.url', '.desktop'))
+
+    def _may_affect_html_resource_links(self, file: File) -> bool:
+        saved_to = getattr(file, 'saved_to', '') or ''
+        if not saved_to or not os.path.isfile(saved_to):
+            return False
+        if self._is_shortcut_file_path(saved_to):
+            return False
+        if self._is_saved_html_file(file):
+            return True
+
+        extension = os.path.splitext(saved_to.lower())[1]
+        return extension in self.HTML_REWRITE_RESOURCE_EXTENSIONS
+
+    def _rewrite_html_file_resource_links(self, file: File, local_resources: Dict[str, str]) -> int:
+        saved_to = getattr(file, 'saved_to', '') or ''
+        if not saved_to or not os.path.isfile(saved_to):
             return 0
 
+        try:
+            with open(saved_to, 'r', encoding='utf-8') as html_file:
+                html_content = html_file.read()
+
+            rewritten_html, file_replacements = rewrite_html_links_to_local_paths(
+                html_content,
+                saved_to,
+                local_resources,
+            )
+
+            if file_replacements <= 0:
+                return 0
+
+            with open(saved_to, 'w', encoding='utf-8') as html_file:
+                html_file.write(rewritten_html)
+
+            logging.debug(
+                '已将 %d 个 HTML 内嵌资源链接改为本地路径: %s',
+                file_replacements,
+                saved_to,
+            )
+            return file_replacements
+        except OSError as error:
+            logging.debug('重写 HTML 本地资源链接失败: %s (%s)', saved_to, error)
+            return 0
+
+    def _rewrite_html_resource_links_for_files(
+        self,
+        html_files: List[File],
+        local_resources: Dict[str, str],
+        *,
+        log_summary: bool,
+    ) -> int:
         replacement_count = 0
         html_file_count = 0
-        for file in files:
+        seen_html_paths = set()
+
+        for file in html_files:
             if not self._is_saved_html_file(file):
                 continue
 
             saved_to = getattr(file, 'saved_to', '') or ''
-            if not saved_to or not os.path.isfile(saved_to):
+            if not saved_to:
                 continue
 
-            try:
-                with open(saved_to, 'r', encoding='utf-8') as html_file:
-                    html_content = html_file.read()
+            saved_to_abs = os.path.abspath(saved_to)
+            if saved_to_abs in seen_html_paths:
+                continue
+            seen_html_paths.add(saved_to_abs)
 
-                rewritten_html, file_replacements = rewrite_html_links_to_local_paths(
-                    html_content,
-                    saved_to,
-                    local_resources,
-                )
+            file_replacements = self._rewrite_html_file_resource_links(file, local_resources)
+            if file_replacements <= 0:
+                continue
 
-                if file_replacements <= 0:
-                    continue
+            html_file_count += 1
+            replacement_count += file_replacements
 
-                with open(saved_to, 'w', encoding='utf-8') as html_file:
-                    html_file.write(rewritten_html)
-
-                html_file_count += 1
-                replacement_count += file_replacements
-                logging.debug(
-                    '已将 %d 个 HTML 内嵌资源链接改为本地路径: %s',
-                    file_replacements,
-                    saved_to,
-                )
-            except OSError as error:
-                logging.debug('重写 HTML 本地资源链接失败: %s (%s)', saved_to, error)
-
-        if replacement_count:
+        if log_summary and replacement_count:
             logging.info(
                 '已将 %d 个 HTML 内嵌资源链接改为本地路径（%d 个 HTML 文件）。 / '
                 'Rewrote %d embedded HTML resource link(s) to local paths across %d HTML file(s).',
@@ -588,6 +653,41 @@ class DownloadService:
             )
 
         return replacement_count
+
+    def _rewrite_html_resource_links_after_task(self, task: Task) -> int:
+        """Incrementally fix saved HTML references after a relevant file finishes."""
+        file = getattr(task, 'file', None)
+        if file is None or not self._may_affect_html_resource_links(file):
+            return 0
+
+        files = list(self._iter_known_files())
+        local_resources = build_local_resource_map(files)
+        if not local_resources:
+            return 0
+
+        if self._is_saved_html_file(file):
+            html_files = [file]
+        else:
+            html_files = [candidate for candidate in files if self._is_saved_html_file(candidate)]
+
+        return self._rewrite_html_resource_links_for_files(
+            html_files,
+            local_resources,
+            log_summary=False,
+        )
+
+    def _rewrite_downloaded_html_resource_links(self) -> int:
+        """Make saved HTML files reference downloaded embedded resources locally."""
+        files = list(self._iter_known_files())
+        local_resources = build_local_resource_map(files)
+        if not local_resources:
+            return 0
+
+        return self._rewrite_html_resource_links_for_files(
+            [file for file in files if self._is_saved_html_file(file)],
+            local_resources,
+            log_summary=True,
+        )
 
     async def log_download_status(self):
         """

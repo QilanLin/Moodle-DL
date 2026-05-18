@@ -179,10 +179,14 @@ def rewrite_html_links_to_local_paths(
                 return attr_match.group(0)
 
             relative_path = os.path.relpath(local_path, html_dir).replace(os.sep, '/')
+            escaped_relative_path = html.escape(relative_path, quote=True)
+            if escaped_relative_path == url:
+                return attr_match.group(0)
+
             replacements += 1
             return (
                 f'{attr_match.group("prefix")}{attr_match.group("quote")}'
-                f'{html.escape(relative_path, quote=True)}{attr_match.group("quote")}'
+                f'{escaped_relative_path}{attr_match.group("quote")}'
             )
 
         rewritten_attrs = HTML_RESOURCE_ATTR_PATTERN.sub(replace_attribute, attrs)
