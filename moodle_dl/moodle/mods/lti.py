@@ -3,7 +3,7 @@ import html
 import json
 import logging
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.downloader.leganto_print import is_leganto_lti_launch_url
@@ -75,177 +75,18 @@ class LtiMod(MoodleMod):
         3. Export metadata, configuration, and launch parameters
         """
 
-        result = {}
-
         # Check if LTI downloads are enabled
         if not self.config.get_download_ltis():
-            return result
-        
-        # 首先尝试使用 Mobile API
-        try:
-            response = await self.client.async_post(
-                'mod_lti_get_ltis_by_courses',
-                self.get_data_for_mod_entries_endpoint(courses),
-            )
-            ltis = response.get('ltis', [])
-        except (RequestRejectedError, Exception) as e:
-            # Mobile API 失败，尝试 Web API fallback
-            logging.debug(f"Mobile API 获取 LTI 模块失败: {e}，尝试使用 Web API fallback...")
-            ltis = await self._fetch_ltis_web_api(courses, core_contents)
+            return {}
 
+        result = {}
+        ltis = await self._fetch_ltis(courses, core_contents)
         for lti in ltis:
             course_id = lti.get('course', 0)
             module_id = lti.get('coursemodule', 0)
             lti_id = lti.get('id', 0)
             lti_name = lti.get('name', 'External Tool')
-
-            lti_files = []
-
-            # Copy introfiles to avoid modifying the original dict
-            intro_files = self.get_introfiles(lti, 'lti_file', copy=True)
-            lti_files.extend(intro_files)
-
-            # Get LTI intro/description
-            lti_intro = lti.get('intro', '')
-            intro_file = self.create_intro_file(lti_intro, lti.get('timemodified', 0))
-            if intro_file:
-                lti_files.append(intro_file)
-
-            # Get launch data (endpoint and parameters)
-            launch_data = None
-            try:
-                launch_response = await self.client.async_post(
-                    'mod_lti_get_tool_launch_data',
-                    {'toolid': lti_id},
-                )
-                launch_data = launch_response
-            except Exception as e:
-                logging.debug("Error getting LTI launch data for tool %s: %s", lti_id, str(e))
-
-            if launch_data:
-                endpoint = launch_data.get('endpoint', '')
-                parameters = launch_data.get('parameters', [])
-
-                if self.config.get_download_metadata_files():
-                    params_content = {
-                        'endpoint': endpoint,
-                        'parameters': parameters,
-                        'parameter_count': len(parameters),
-                    }
-
-                    lti_files.append(
-                        {
-                            'filename': PT.to_valid_name('Launch Parameters', is_file=True) + '.json',
-                            'filepath': '/',
-                            'content': json.dumps(params_content, indent=2, ensure_ascii=False),
-                            'type': 'content',
-                            'timemodified': lti.get('timemodified', 0),
-                        }
-                    )
-
-                    launch_form_html = self._generate_launch_form(endpoint, parameters, lti_name)
-                    lti_files.append(
-                        {
-                            'filename': PT.to_valid_name('Launch Form', is_file=True) + '.html',
-                            'filepath': '/',
-                            'html': launch_form_html,
-                            'type': 'html',
-                            'timemodified': lti.get('timemodified', 0),
-                            'filesize': len(launch_form_html),
-                        }
-                    )
-
-                if self._should_create_leganto_pdf_file(endpoint, lti_name):
-                    lti_files.append(
-                        {
-                            'filename': PT.to_valid_name(lti_name or 'Reading List', is_file=True) + '.pdf',
-                            'filepath': '/',
-                            'content_fileurl': endpoint,
-                            'content': json.dumps(
-                                {
-                                    'endpoint': endpoint,
-                                    'parameters': parameters,
-                                },
-                                indent=2,
-                                ensure_ascii=False,
-                            ),
-                            'type': 'leganto_pdf',
-                            'timemodified': lti.get('timemodified', 0),
-                            'filesize': 0,
-                            'isexternalfile': True,
-                        }
-                    )
-
-            # Create comprehensive metadata file
-            metadata = {
-                'lti_id': lti_id,
-                'course_id': course_id,
-                'name': lti_name,
-                'intro': lti_intro,
-                'tool_configuration': {
-                    'type_id': lti.get('typeid', 0),
-                    'tool_url': lti.get('toolurl', ''),
-                    'secure_tool_url': lti.get('securetoolurl', ''),
-                    'resource_key': lti.get('resourcekey', ''),
-                    'has_password': bool(lti.get('password', '')),
-                },
-                'launch_settings': {
-                    'launch_container': {
-                        'value': lti.get('launchcontainer', 0),
-                        'name': self._get_launch_container_name(lti.get('launchcontainer', 0)),
-                    },
-                    'show_title_launch': bool(lti.get('showtitlelaunch', 0)),
-                    'show_description_launch': bool(lti.get('showdescriptionlaunch', 0)),
-                    'debug_launch': bool(lti.get('debuglaunch', 0)),
-                },
-                'instructor_choices': {
-                    'send_name': lti.get('instructorchoicesendname', ''),
-                    'send_email_addr': bool(lti.get('instructorchoicesendemailaddr', 0)),
-                    'allow_roster': bool(lti.get('instructorchoiceallowroster', 0)),
-                    'allow_setting': bool(lti.get('instructorchoiceallowsetting', 0)),
-                    'accept_grades': bool(lti.get('instructorchoiceacceptgrades', 0)),
-                    'custom_parameters': lti.get('instructorcustomparameters', ''),
-                },
-                'grading': {
-                    'grade': lti.get('grade', 0),
-                },
-                'appearance': {
-                    'icon': lti.get('icon', ''),
-                    'secure_icon': lti.get('secureicon', ''),
-                },
-                'timestamps': {
-                    'time_created': lti.get('timecreated', 0),
-                    'time_modified': lti.get('timemodified', 0),
-                },
-                'service': {
-                    'service_salt': lti.get('servicesalt', ''),
-                },
-            }
-
-            # Add launch data summary to metadata
-            if launch_data:
-                metadata['launch_data'] = {
-                    'has_endpoint': bool(launch_data.get('endpoint', '')),
-                    'parameter_count': len(launch_data.get('parameters', [])),
-                    'endpoint_url': launch_data.get('endpoint', ''),
-                }
-
-            lti_files.append(
-                self.create_metadata_file(metadata, timemodified=lti.get('timemodified', 0))
-            )
-
-            # Also create a URL shortcut to the tool (for manual access)
-            tool_url = lti.get('securetoolurl', '') or lti.get('toolurl', '')
-            if tool_url:
-                lti_files.append(
-                    {
-                        'filename': PT.to_valid_name(lti_name, is_file=True),
-                        'filepath': '/',
-                        'content_fileurl': tool_url,
-                        'type': 'url',
-                        'timemodified': lti.get('timemodified', 0),
-                    }
-                )
+            launch_data = await self._get_launch_data(lti_id)
 
             self.add_module(
                 result,
@@ -254,11 +95,183 @@ class LtiMod(MoodleMod):
                 {
                     'id': lti_id,
                     'name': lti_name,
-                    'files': lti_files,
+                    'files': self._build_lti_files(lti, launch_data),
                 },
             )
 
         return result
+
+    async def _fetch_ltis(self, courses: List[Course], core_contents: Dict[int, List[Dict]]) -> List[Dict]:
+        try:
+            response = await self.client.async_post(
+                'mod_lti_get_ltis_by_courses',
+                self.get_data_for_mod_entries_endpoint(courses),
+            )
+            return response.get('ltis', [])
+        except (RequestRejectedError, Exception) as e:
+            logging.debug(f"Mobile API 获取 LTI 模块失败: {e}，尝试使用 Web API fallback...")
+            return await self._fetch_ltis_web_api(courses, core_contents)
+
+    async def _get_launch_data(self, lti_id: int) -> Optional[Dict]:
+        try:
+            return await self.client.async_post(
+                'mod_lti_get_tool_launch_data',
+                {'toolid': lti_id},
+            )
+        except Exception as e:
+            logging.debug("Error getting LTI launch data for tool %s: %s", lti_id, str(e))
+            return None
+
+    def _build_lti_files(self, lti: Dict, launch_data: Optional[Dict]) -> List[Dict]:
+        lti_name = lti.get('name', 'External Tool')
+        lti_intro = lti.get('intro', '')
+        lti_files = self.get_introfiles(lti, 'lti_file', copy=True)
+
+        intro_file = self.create_intro_file(lti_intro, lti.get('timemodified', 0))
+        if intro_file:
+            lti_files.append(intro_file)
+
+        if launch_data:
+            lti_files.extend(self._build_launch_files(lti, launch_data, lti_name))
+
+        metadata = self._build_metadata(lti, lti_intro, launch_data)
+        lti_files.append(self.create_metadata_file(metadata, timemodified=lti.get('timemodified', 0)))
+
+        tool_shortcut = self._build_tool_shortcut(lti, lti_name)
+        if tool_shortcut:
+            lti_files.append(tool_shortcut)
+
+        return lti_files
+
+    def _build_launch_files(self, lti: Dict, launch_data: Dict, lti_name: str) -> List[Dict]:
+        endpoint = launch_data.get('endpoint', '')
+        parameters = launch_data.get('parameters', [])
+        launch_files = []
+
+        if self.config.get_download_metadata_files():
+            launch_files.append(self._build_launch_parameters_file(endpoint, parameters, lti))
+            launch_files.append(self._build_launch_form_file(endpoint, parameters, lti_name, lti))
+
+        if self._should_create_leganto_pdf_file(endpoint, lti_name):
+            launch_files.append(self._build_leganto_pdf_file(endpoint, parameters, lti_name, lti))
+
+        return launch_files
+
+    @staticmethod
+    def _build_launch_parameters_file(endpoint: str, parameters: List[Dict], lti: Dict) -> Dict:
+        params_content = {
+            'endpoint': endpoint,
+            'parameters': parameters,
+            'parameter_count': len(parameters),
+        }
+
+        return {
+            'filename': PT.to_valid_name('Launch Parameters', is_file=True) + '.json',
+            'filepath': '/',
+            'content': json.dumps(params_content, indent=2, ensure_ascii=False),
+            'type': 'content',
+            'timemodified': lti.get('timemodified', 0),
+        }
+
+    def _build_launch_form_file(self, endpoint: str, parameters: List[Dict], lti_name: str, lti: Dict) -> Dict:
+        launch_form_html = self._generate_launch_form(endpoint, parameters, lti_name)
+        return {
+            'filename': PT.to_valid_name('Launch Form', is_file=True) + '.html',
+            'filepath': '/',
+            'html': launch_form_html,
+            'type': 'html',
+            'timemodified': lti.get('timemodified', 0),
+            'filesize': len(launch_form_html),
+        }
+
+    @staticmethod
+    def _build_leganto_pdf_file(endpoint: str, parameters: List[Dict], lti_name: str, lti: Dict) -> Dict:
+        return {
+            'filename': PT.to_valid_name(lti_name or 'Reading List', is_file=True) + '.pdf',
+            'filepath': '/',
+            'content_fileurl': endpoint,
+            'content': json.dumps(
+                {
+                    'endpoint': endpoint,
+                    'parameters': parameters,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            'type': 'leganto_pdf',
+            'timemodified': lti.get('timemodified', 0),
+            'filesize': 0,
+            'isexternalfile': True,
+        }
+
+    def _build_metadata(self, lti: Dict, lti_intro: str, launch_data: Optional[Dict]) -> Dict:
+        metadata = {
+            'lti_id': lti.get('id', 0),
+            'course_id': lti.get('course', 0),
+            'name': lti.get('name', 'External Tool'),
+            'intro': lti_intro,
+            'tool_configuration': {
+                'type_id': lti.get('typeid', 0),
+                'tool_url': lti.get('toolurl', ''),
+                'secure_tool_url': lti.get('securetoolurl', ''),
+                'resource_key': lti.get('resourcekey', ''),
+                'has_password': bool(lti.get('password', '')),
+            },
+            'launch_settings': {
+                'launch_container': {
+                    'value': lti.get('launchcontainer', 0),
+                    'name': self._get_launch_container_name(lti.get('launchcontainer', 0)),
+                },
+                'show_title_launch': bool(lti.get('showtitlelaunch', 0)),
+                'show_description_launch': bool(lti.get('showdescriptionlaunch', 0)),
+                'debug_launch': bool(lti.get('debuglaunch', 0)),
+            },
+            'instructor_choices': {
+                'send_name': lti.get('instructorchoicesendname', ''),
+                'send_email_addr': bool(lti.get('instructorchoicesendemailaddr', 0)),
+                'allow_roster': bool(lti.get('instructorchoiceallowroster', 0)),
+                'allow_setting': bool(lti.get('instructorchoiceallowsetting', 0)),
+                'accept_grades': bool(lti.get('instructorchoiceacceptgrades', 0)),
+                'custom_parameters': lti.get('instructorcustomparameters', ''),
+            },
+            'grading': {
+                'grade': lti.get('grade', 0),
+            },
+            'appearance': {
+                'icon': lti.get('icon', ''),
+                'secure_icon': lti.get('secureicon', ''),
+            },
+            'timestamps': {
+                'time_created': lti.get('timecreated', 0),
+                'time_modified': lti.get('timemodified', 0),
+            },
+            'service': {
+                'service_salt': lti.get('servicesalt', ''),
+            },
+        }
+
+        if launch_data:
+            metadata['launch_data'] = {
+                'has_endpoint': bool(launch_data.get('endpoint', '')),
+                'parameter_count': len(launch_data.get('parameters', [])),
+                'endpoint_url': launch_data.get('endpoint', ''),
+            }
+
+        return metadata
+
+    @staticmethod
+    def _build_tool_shortcut(lti: Dict, lti_name: str) -> Optional[Dict]:
+        tool_url = lti.get('securetoolurl', '') or lti.get('toolurl', '')
+        if not tool_url:
+            return None
+
+        return {
+            'filename': PT.to_valid_name(lti_name, is_file=True),
+            'filepath': '/',
+            'content_fileurl': tool_url,
+            'type': 'url',
+            'timemodified': lti.get('timemodified', 0),
+        }
 
     @staticmethod
     def _should_create_leganto_pdf_file(endpoint: str, lti_name: str) -> bool:

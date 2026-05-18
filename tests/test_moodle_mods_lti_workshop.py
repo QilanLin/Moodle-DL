@@ -124,6 +124,32 @@ async def test_lti_web_api_fallback_extracts_https_and_http_tool_urls():
 
 
 @pytest.mark.asyncio
+async def test_lti_web_api_fallback_handles_blank_url_content():
+    mod = make_mod(LtiMod)
+    courses = [Course(10, "Course")]
+    core_contents = {
+        10: [
+            {
+                "modules": [
+                    {
+                        "id": 44,
+                        "instance": 99,
+                        "modname": "lti",
+                        "name": "Blank Tool",
+                        "contents": [{"type": "url"}],
+                    }
+                ]
+            }
+        ]
+    }
+
+    ltis = await mod._fetch_ltis_web_api(courses, core_contents)
+
+    assert ltis[0]["toolurl"] == ""
+    assert ltis[0]["securetoolurl"] == ""
+
+
+@pytest.mark.asyncio
 async def test_lti_real_fetch_builds_launch_files_metadata_and_shortcut():
     mod = make_mod(LtiMod)
     mod.client.async_post.side_effect = [
