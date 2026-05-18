@@ -319,6 +319,53 @@ def test_find_all_urls_extracts_external_data_and_kaltura_urls():
     assert kaltura.content_fileurl == 'https://kaf.example.com/browseandembed/index/media/entryid/1_abc123'
 
 
+def test_find_all_urls_skips_relative_resources_and_resolves_root_relative_kaltura():
+    builder = make_builder()
+    html = (
+        '<img src="Screenshot%202021-07-18%20at%2012.19.08.png">'
+        '<a href="../local-guide.pdf">Local guide</a>'
+        '<iframe src="/filter/kaltura/lti_launch.php?courseid=0&amp;source='
+        'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_root%2F'
+        'playerSkin%2F42864872%2F"></iframe>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='book', content_filepath='/chapter/'),
+    )
+
+    assert all('Screenshot 2021-07-18' not in file.content_fileurl for file in files)
+    assert all('../local-guide.pdf' not in file.content_fileurl for file in files)
+    assert [(file.content_filename, file.content_fileurl) for file in files] == [
+        (
+            'Kaltura Video 1_root',
+            'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&source='
+            'https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_root/'
+            'playerSkin/42864872/',
+        )
+    ]
+
+
+def test_find_all_urls_skips_root_relative_moodle_resources_without_shortcuts():
+    builder = make_builder()
+    html = (
+        '<img src="/webservice/pluginfile.php/1/mod_book/chapter/2/image.png">'
+        '<a href="/course/view.php?id=119878">Course page</a>'
+        '<script src="/theme/yui_combo.php?rollup/3.17.2/yui-moodlesimple-min.js"></script>'
+    )
+
+    files = builder._find_all_urls(
+        html,
+        no_search_for_moodle_urls=False,
+        filter_urls_containing=[],
+        **make_location(module_modname='book', content_filepath='/chapter/'),
+    )
+
+    assert files == []
+
+
 def test_find_all_urls_skips_moodle_domain_urls_and_detects_helixmedia():
     builder = make_builder()
     html = (

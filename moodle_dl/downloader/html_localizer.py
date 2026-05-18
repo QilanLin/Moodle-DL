@@ -19,6 +19,8 @@ HTML_RESOURCE_ATTR_PATTERN = re.compile(
     r'(?P=quote)',
     flags=re.IGNORECASE | re.DOTALL,
 )
+LOCAL_RESOURCE_KEY_PREFIX = 'local:'
+FILENAME_INDEX_PREFIX_PATTERN = re.compile(r'^\*\d+\*\s*')
 EMBEDDED_RESOURCE_ATTRS = {
     'src': {'audio', 'embed', 'iframe', 'img', 'input', 'script', 'source', 'track', 'video'},
     'href': {'link'},
@@ -57,6 +59,41 @@ def canonical_resource_url(url: str) -> str:
     return urllib.parse.urlunsplit(('', parsed.netloc.lower(), path, query, ''))
 
 
+def canonical_local_resource_url(url: str, html_dir: str) -> str:
+    """Return a stable key for a relative HTML resource URL."""
+    if not isinstance(url, str):
+        return ''
+
+    url = html.unescape(url).strip()
+    if not url:
+        return ''
+
+    lowered = url.lower()
+    if lowered.startswith(('#', 'data:', 'mailto:', 'javascript:', 'tel:')):
+        return ''
+
+    url, _fragment = urllib.parse.urldefrag(url)
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme or parsed.netloc or parsed.path.startswith('/'):
+        return ''
+
+    relative_path = urllib.parse.unquote(parsed.path or '')
+    if not relative_path:
+        return ''
+
+    local_path = os.path.abspath(os.path.join(html_dir, relative_path))
+    return _local_resource_key(local_path)
+
+
+def _local_resource_key(path: str) -> str:
+    normalized = os.path.normpath(os.path.abspath(path)).replace(os.sep, '/')
+    return f'{LOCAL_RESOURCE_KEY_PREFIX}{normalized}'
+
+
+def _strip_filename_index_prefix(filename: str) -> str:
+    return FILENAME_INDEX_PREFIX_PATTERN.sub('', filename or '', count=1)
+
+
 def _normalize_token_pluginfile_path(path: str) -> str:
     token_match = re.match(r'(?P<prefix>.*/?)tokenpluginfile\.php/[^/]+(?P<rest>/.*)', path)
     if not token_match:
@@ -91,6 +128,14 @@ def build_local_resource_map(files: Iterable[File]) -> Dict[str, str]:
         if key:
             local_resources[key] = saved_to
 
+        saved_to_abs = os.path.abspath(saved_to)
+        local_resources[_local_resource_key(saved_to_abs)] = saved_to
+
+        stripped_filename = _strip_filename_index_prefix(os.path.basename(saved_to_abs))
+        if stripped_filename and stripped_filename != os.path.basename(saved_to_abs):
+            unprefixed_path = os.path.join(os.path.dirname(saved_to_abs), stripped_filename)
+            local_resources[_local_resource_key(unprefixed_path)] = saved_to
+
     return local_resources
 
 
@@ -122,6 +167,9 @@ def rewrite_html_links_to_local_paths(
             url = attr_match.group('url')
             key = canonical_resource_url(url)
             local_path = local_resources.get(key)
+            if not local_path:
+                local_key = canonical_local_resource_url(url, html_dir)
+                local_path = local_resources.get(local_key)
             if not local_path:
                 return attr_match.group(0)
 

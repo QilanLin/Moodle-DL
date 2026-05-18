@@ -454,6 +454,18 @@ class ResultBuilder:
             url = urlparse.unquote(url)
 
             url_parts = urlparse.urlparse(url)
+            if not url_parts.scheme and not url_parts.netloc:
+                if url.startswith('//'):
+                    url = f'https:{url}'
+                elif url.startswith('/'):
+                    url = urlparse.urljoin(self.moodle_base_url.rstrip('/') + '/', url)
+                else:
+                    # Relative HTML resources are handled by the HTML localizer
+                    # after their real Moodle file entry has been downloaded.
+                    # Creating shortcuts for them produces duplicate .webloc files.
+                    continue
+                url_parts = urlparse.urlparse(url)
+
             is_moodle_url = url_parts.hostname == self.moodle_domain or url_parts.netloc == self.moodle_domain
             is_embedded_media_candidate = self._is_kaltura_url_candidate(
                 url, url_parts

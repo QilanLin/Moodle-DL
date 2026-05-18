@@ -3,6 +3,7 @@ from pathlib import Path
 
 from moodle_dl.downloader.html_localizer import (
     build_local_resource_map,
+    canonical_local_resource_url,
     canonical_resource_url,
     rewrite_html_links_to_local_paths,
 )
@@ -42,6 +43,9 @@ def test_canonical_resource_url_matches_moodle_pluginfile_variants():
     assert canonical_resource_url(standard) == canonical_resource_url(token_plugin)
     assert canonical_resource_url('#local-anchor') == ''
     assert canonical_resource_url('student-vms-01.png') == ''
+    assert canonical_local_resource_url('student-vms-01.png', '/tmp/book') == (
+        'local:/tmp/book/student-vms-01.png'
+    )
 
 
 def test_build_local_resource_map_uses_downloaded_files_not_shortcuts(tmp_path):
@@ -59,9 +63,9 @@ def test_build_local_resource_map_uses_downloaded_files_not_shortcuts(tmp_path):
         make_file(real_url, str(image_path)),
     ])
 
-    assert local_map == {
-        canonical_resource_url(shortcut_url): str(image_path),
-    }
+    assert local_map[canonical_resource_url(shortcut_url)] == str(image_path)
+    assert local_map[canonical_local_resource_url('student-vms-01.png', str(image_path.parent))] == str(image_path)
+    assert all(not path.endswith('.webloc') for path in local_map.values())
 
 
 def test_rewrite_html_links_to_local_paths_rewrites_only_downloaded_resources(tmp_path):
@@ -103,3 +107,52 @@ def test_rewrite_html_links_to_local_paths_rewrites_only_downloaded_resources(tm
     assert f'href="{pdf_url}?forcedownload=1"' in rewritten
     assert 'https://external.example/missing.png' in rewritten
     assert 'href="#toc"' in rewritten
+
+
+def test_rewrite_html_links_to_local_paths_rewrites_relative_prefixed_resources(tmp_path):
+    html_path = tmp_path / 'book' / 'Chapter' / '*02* index.html'
+    image_path = tmp_path / 'book' / 'Chapter' / '*03* Screenshot 2021-07-18 at 12.19.08.png'
+    html_path.parent.mkdir(parents=True)
+    html_path.write_text('<html></html>', encoding='utf-8')
+    image_path.write_bytes(b'image')
+
+    html_content = '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" alt="GitHub"></p>'
+    local_map = build_local_resource_map([
+        make_file(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_book/chapter/2/'
+            'Screenshot%202021-07-18%20at%2012.19.08.png?token=x',
+            str(image_path),
+        )
+    ])
+
+    rewritten, count = rewrite_html_links_to_local_paths(html_content, str(html_path), local_map)
+
+    assert count == 1
+    assert 'src="*03* Screenshot 2021-07-18 at 12.19.08.png"' in rewritten
+
+
+def test_rewrite_html_links_to_local_paths_handles_relative_query_and_parent_dirs(tmp_path):
+    html_path = tmp_path / 'book' / 'chapter' / '*01* index.html'
+    image_path = tmp_path / 'book' / 'assets' / '*04* VM Control panel.png'
+    html_path.parent.mkdir(parents=True)
+    image_path.parent.mkdir(parents=True)
+    html_path.write_text('<html></html>', encoding='utf-8')
+    image_path.write_bytes(b'image')
+
+    html_content = (
+        '<img src="../assets/VM%20Control%20panel.png?rev=123#preview">'
+        '<a href="../assets/VM%20Control%20panel.png">Open image</a>'
+    )
+    local_map = build_local_resource_map([
+        make_file(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_book/chapter/2/'
+            'VM%20Control%20panel.png?token=x',
+            str(image_path),
+        )
+    ])
+
+    rewritten, count = rewrite_html_links_to_local_paths(html_content, str(html_path), local_map)
+
+    assert count == 1
+    assert 'src="../assets/*04* VM Control panel.png"' in rewritten
+    assert 'href="../assets/VM%20Control%20panel.png"' in rewritten
