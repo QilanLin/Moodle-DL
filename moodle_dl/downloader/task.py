@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import copy
 import functools
 import html
+import http.cookiejar
 import logging
 import os
 import posixpath
@@ -57,6 +59,7 @@ from moodle_dl.utils import PathTools as PT
 from moodle_dl.utils import (
     SslHelper,
     Timer,
+    clone_aiohttp_cookie_jar,
     convert_to_aiohttp_cookie_jar,
     format_bytes,
     format_seconds,
@@ -176,6 +179,34 @@ class Task:
         self.filename = self._generate_filename_with_index(file)
         self.status = TaskStatus()
 
+    def _get_cached_mozilla_cookie_jar(self):
+        if self.opts.cookies_text is None:
+            return None
+
+        cache_key = '_moodle_dl_cookie_jar_cache'
+        text_key = '_moodle_dl_cookie_jar_cache_text'
+        if getattr(self.opts, text_key, None) != self.opts.cookies_text:
+            cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
+            cookie_jar.load(ignore_discard=True, ignore_expires=True)
+            setattr(self.opts, text_key, self.opts.cookies_text)
+            setattr(self.opts, cache_key, cookie_jar)
+            setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
+
+        return getattr(self.opts, cache_key)
+
+    @staticmethod
+    def _clone_mozilla_cookie_jar(cookie_jar):
+        if cookie_jar is None or not isinstance(cookie_jar, http.cookiejar.CookieJar):
+            return cookie_jar
+
+        cloned = MoodleDLCookieJar()
+        for cookie in cookie_jar:
+            cloned.set_cookie(copy.copy(cookie))
+        return cloned
+
+    def _get_requests_cookie_jar(self):
+        return self._clone_mozilla_cookie_jar(self._get_cached_mozilla_cookie_jar())
+
     def _create_session_with_retry(self) -> requests.Session:
         """
         创建一个配置了重试机制的 requests.Session。
@@ -205,9 +236,7 @@ class Task:
         # 加载 Cookie
         if self.opts.cookies_text is not None:
             try:
-                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
-                cookie_jar.load(ignore_discard=True, ignore_expires=True)
-                session.cookies = cookie_jar
+                session.cookies = self._get_requests_cookie_jar()
                 logging.debug('[%d] ✓ 成功加载 Cookie', self.task_id)
             except Exception as e:
                 logging.warning('[%d] ⚠️  加载 Cookie 失败: %s', self.task_id, e)
@@ -1198,9 +1227,7 @@ class Task:
 
             # Legacy fallback: load cookies from opts.cookies_text (formerly Cookies.txt)
             if self.opts.cookies_text is not None:
-                cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
-                cookie_jar.load(ignore_discard=True, ignore_expires=True)
-                session.cookies = cookie_jar
+                session.cookies = self._get_requests_cookie_jar()
 
             # Set SSL verification
             verify_ssl = not self.opts.global_opts.skip_cert_verify
@@ -2007,11 +2034,12 @@ class Task:
         self.report_failure()
 
     def get_cookie_jar(self) -> aiohttp.CookieJar:
-        # TODO: Since we currently do not modify the cookieJar we could just use a deep copied instance.
         if self.opts.cookies_text is not None:
-            cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
-            cookie_jar.load(ignore_discard=True, ignore_expires=True)
-            return convert_to_aiohttp_cookie_jar(cookie_jar)
+            cached_aiohttp_cookie_jar = getattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
+            if cached_aiohttp_cookie_jar is None:
+                cached_aiohttp_cookie_jar = convert_to_aiohttp_cookie_jar(self._get_cached_mozilla_cookie_jar())
+                setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', cached_aiohttp_cookie_jar)
+            return clone_aiohttp_cookie_jar(cached_aiohttp_cookie_jar)
         return None
 
     async def check_range_download_opt(self, url, session):

@@ -49,6 +49,9 @@ class BookMod(MoodleMod):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._chapter_html_cache = {}
+        self._print_book_playwright_cookies_cache = None
+        self._print_book_cookie_summary_logged = False
+        self._print_book_first_request_logged = False
 
     @classmethod
     def download_condition(cls, config: ConfigHelper, file: File) -> bool:
@@ -681,6 +684,59 @@ class BookMod(MoodleMod):
     # Note: Cookies auto-refresh logic is now integrated directly into _fetch_print_book_html()
     # using the retry_count parameter. This follows DRY principle by reusing CookieManager.
 
+    @staticmethod
+    def _playwright_cookie_applies_to_host(cookie: Dict, host: str) -> bool:
+        host = (host or '').strip().lower()
+        cookie_domain = (cookie.get('domain') or '').strip().lstrip('.').lower()
+        if cookie_domain:
+            return cookie_domain == host or host.endswith(f'.{cookie_domain}')
+
+        cookie_url = cookie.get('url')
+        if cookie_url:
+            parsed_host = urllib.parse.urlparse(cookie_url).hostname or ''
+            return parsed_host.lower() == host
+
+        return False
+
+    def _get_print_book_playwright_cookies(self, force_reload: bool = False) -> List[Dict]:
+        if not force_reload and self._print_book_playwright_cookies_cache is not None:
+            return self._print_book_playwright_cookies_cache
+
+        from moodle_dl.cookie_manager import create_cookie_manager_from_client
+
+        cookie_manager = create_cookie_manager_from_client(self.client, self.config)
+        raw_cookies = cookie_manager.get_cookies_from_db() or []
+        moodle_domain = self.client.moodle_url.domain
+        playwright_cookies = [
+            cookie for cookie in raw_cookies
+            if self._playwright_cookie_applies_to_host(cookie, moodle_domain)
+        ]
+
+        if raw_cookies and not playwright_cookies:
+            logging.warning(
+                '⚠️  Auth database has cookies, but none apply to Moodle domain %s; '
+                'print book download will be skipped',
+                moodle_domain,
+            )
+
+        if force_reload or not self._print_book_cookie_summary_logged:
+            moodle_sessions = [c for c in playwright_cookies if c.get('name') == 'MoodleSession']
+            logging.debug(
+                '🔍 Print Book will use %d/%d Moodle-domain cookies (%d MoodleSession)',
+                len(playwright_cookies),
+                len(raw_cookies),
+                len(moodle_sessions),
+            )
+            if moodle_sessions:
+                logging.debug(
+                    '🔍 MoodleSession cookie domains: %s',
+                    [cookie.get('domain', '') for cookie in moodle_sessions],
+                )
+            self._print_book_cookie_summary_logged = True
+
+        self._print_book_playwright_cookies_cache = playwright_cookies
+        return playwright_cookies
+
     async def _fetch_print_book_html(
         self, module_id: int, course_id: int, retry_count: int = 0
     ) -> Tuple[str, str]:
@@ -713,10 +769,8 @@ class BookMod(MoodleMod):
             logging.info(f'📖 Fetching print book HTML using headless browser from: {print_book_url}')
 
             # 优先且唯一来源：从认证数据库中获取 Playwright 格式的 cookies（Cookies.txt 已彻底弃用）
-            from moodle_dl.cookie_manager import create_cookie_manager_from_client
-
-            cookie_manager = create_cookie_manager_from_client(self.client, self.config)
-            playwright_cookies = cookie_manager.get_cookies_from_db() or []
+            # Cookie DB is shared by all browser domains, so keep only cookies that apply to Moodle.
+            playwright_cookies = self._get_print_book_playwright_cookies(force_reload=retry_count > 0)
 
             if not playwright_cookies:
                 logging.warning(
@@ -747,30 +801,10 @@ class BookMod(MoodleMod):
                     ignore_https_errors=False,
                 )
 
-                # 🔍 DEBUG: 查看要添加的cookies
-                moodle_sessions = [c for c in playwright_cookies if c['name'] == 'MoodleSession']
-                logging.debug(f'🔍 准备添加 {len(playwright_cookies)} 个cookies')
-                logging.debug(f'🔍 其中MoodleSession cookies: {len(moodle_sessions)} 个')
-                if moodle_sessions:
-                    logging.debug(
-                        '🔍 MoodleSession cookie domains: %s',
-                        [cookie.get('domain', '') for cookie in moodle_sessions],
-                    )
-
                 await context.add_cookies(playwright_cookies)
-
-                # 🔍 DEBUG: 验证cookies是否被正确添加
-                added_cookies = await context.cookies()
-                added_sessions = [c for c in added_cookies if c['name'] == 'MoodleSession']
-                logging.debug(f'🔍 实际添加了 {len(added_cookies)} 个cookies')
-                logging.debug(f'🔍 其中MoodleSession cookies: {len(added_sessions)} 个')
 
                 # Create page and navigate
                 page = await context.new_page()
-
-                # 🔍 DEBUG: 监听所有HTTP请求，查看实际发送的cookies
-                # 用一个标志来只记录第一个Moodle请求的详细cookies
-                first_request_logged = [False]
 
                 async def log_request(request):
                     if moodle_domain in request.url:
@@ -779,13 +813,13 @@ class BookMod(MoodleMod):
                         has_moodle_session = 'MoodleSession' in cookie_header
 
                         # 只详细记录第一个请求（包括 MoodleSession 值）
-                        if not first_request_logged[0]:
+                        if not self._print_book_first_request_logged:
                             logging.debug(f'🔍 第一个HTTP请求: {request.url[:100]}')
                             logging.debug(f'🔍 Cookie header长度: {len(cookie_header)} 字符')
                             logging.debug(f'🔍 Cookie header有MoodleSession: {has_moodle_session}')
                             if not cookie_header:
                                 logging.debug(f'🔍 ❌ Cookie header为空！')
-                            first_request_logged[0] = True
+                            self._print_book_first_request_logged = True
 
                 page.on('request', log_request)
 
@@ -852,32 +886,16 @@ class BookMod(MoodleMod):
                     # Check if cookies expired (use global CookieManager detection)
                     from moodle_dl.cookie_manager import CookieManager
 
-                    # 🔍 DEBUG: 记录详细信息用于调试cookie过期检测
-                    logging.debug(f'🔍 Cookie检测 - 当前URL: {current_url}')
-                    logging.debug(f'🔍 Cookie检测 - HTML长度: {len(html_content)} 字符')
-                    logging.debug(f'🔍 Cookie检测 - HTML开头500字符: {html_content[:500]}')
-
-                    # 检查URL中的过期特征
-                    url_has_enrol = 'enrol/index.php' in current_url.lower()
-                    url_has_login = '/login/' in current_url.lower()
-                    url_has_auth = '/auth/' in current_url.lower()
-                    logging.debug(f'🔍 URL检测 - enrol: {url_has_enrol}, login: {url_has_login}, auth: {url_has_auth}')
-
-                    # 检查内容中的过期特征
-                    content_lower = html_content.lower()
-                    has_guest_user = 'guest user' in content_lower
-                    has_not_logged_in = 'not logged in' in content_lower
-                    has_login_required = 'login required' in content_lower
-                    has_auth_required = 'authentication required' in content_lower
-                    has_session_expired = 'session expired' in content_lower
-                    logging.debug(f'🔍 内容检测 - guest user: {has_guest_user}, not logged in: {has_not_logged_in}')
-                    logging.debug(f'🔍 内容检测 - login required: {has_login_required}, auth required: {has_auth_required}, session expired: {has_session_expired}')
-
                     # 检测是否被重定向（cookies过期或权限问题）
                     if CookieManager.is_cookie_expired_response(current_url, html_content):
                         is_enrol_page = 'enrol/index.php' in current_url.lower()
 
                         logging.warning(f'⚠️  检测到重定向到：{current_url}')
+                        logging.debug(
+                            '🔍 Cookie expiry details: html_length=%d html_start=%s',
+                            len(html_content),
+                            html_content[:500],
+                        )
                         await browser.close()
 
                         # 🔄 自动刷新 cookies 并重试（仅第一次失败时）
@@ -895,6 +913,7 @@ class BookMod(MoodleMod):
 
                             if cookie_manager.refresh_cookies(auto_get_token=False):
                                 logging.info('✅ Cookies刷新成功，正在重试Print Book下载...')
+                                self._print_book_playwright_cookies_cache = None
                                 # 递归调用自己，retry_count = 1 确保只重试一次
                                 return await self._fetch_print_book_html(module_id, course_id, retry_count=1)
                             else:

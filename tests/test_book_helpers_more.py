@@ -763,6 +763,25 @@ async def test_fetch_print_book_html_returns_empty_when_cookie_database_is_empty
     playwright.firefox.launch.assert_not_awaited()
 
 
+def test_print_book_playwright_cookies_are_filtered_and_cached():
+    book = make_book()
+    cookies = [
+        {'name': 'MoodleSession', 'value': 'abc', 'domain': 'keats.kcl.ac.uk', 'path': '/'},
+        {'name': 'KCLParent', 'value': 'parent', 'domain': '.kcl.ac.uk', 'path': '/'},
+        {'name': 'UrlCookie', 'value': 'url', 'url': 'https://keats.kcl.ac.uk/course/view.php?id=1'},
+        {'name': 'Other', 'value': 'other', 'domain': 'example.com', 'path': '/'},
+    ]
+    cookie_manager = make_cookie_manager(cookies=cookies)
+
+    with patch('moodle_dl.cookie_manager.create_cookie_manager_from_client', return_value=cookie_manager):
+        first = book._get_print_book_playwright_cookies()
+        second = book._get_print_book_playwright_cookies()
+
+    assert [cookie['name'] for cookie in first] == ['MoodleSession', 'KCLParent', 'UrlCookie']
+    assert second is first
+    cookie_manager.get_cookies_from_db.assert_called_once()
+
+
 @pytest.mark.asyncio
 async def test_fetch_print_book_html_uses_cookies_and_returns_book_content(monkeypatch):
     book = make_book()

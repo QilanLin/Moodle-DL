@@ -1171,6 +1171,25 @@ async def test_cookie_jar_and_range_download_helpers(task_factory):
     assert await task.check_range_download_opt('https://example.com/file', RaisingSession()) is False
 
 
+@pytest.mark.asyncio
+async def test_cookie_jar_conversion_is_cached_per_download_options(task_factory):
+    task = task_factory(cookies_text='cookie-data')
+    with (
+        patch('moodle_dl.downloader.task.MoodleDLCookieJar') as cookie_jar_cls,
+        patch('moodle_dl.downloader.task.convert_to_aiohttp_cookie_jar') as convert,
+    ):
+        cookie_jar = MagicMock()
+        cookie_jar_cls.return_value = cookie_jar
+        convert.return_value = 'aiohttp-cookie-jar'
+
+        assert task.get_cookie_jar() == 'aiohttp-cookie-jar'
+        assert task.get_cookie_jar() == 'aiohttp-cookie-jar'
+
+    cookie_jar_cls.assert_called_once()
+    cookie_jar.load.assert_called_once_with(ignore_discard=True, ignore_expires=True)
+    convert.assert_called_once_with(cookie_jar)
+
+
 class FakeHeadClientSession:
     response = None
     error = None

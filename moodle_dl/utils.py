@@ -2,6 +2,7 @@ import base64
 import binascii
 import collections
 import contextlib
+import copy
 import email.utils
 import getpass
 import html
@@ -351,6 +352,7 @@ ACCENT_CHARS = dict(
 )
 
 NO_DEFAULT = object()
+_WARNED_INVALID_AIOHTTP_COOKIE_KEYS = set()
 
 
 def is_path_like(f):
@@ -401,14 +403,37 @@ def convert_to_aiohttp_cookie_jar(mozilla_cookie_jar: http.cookiejar.MozillaCook
                 except http.cookies.CookieError as e:
                     # 跳过包含非法字符的 cookie 名称（如方括号、花括号等）
                     # 这些 cookie 不符合 RFC 6265 规范，但某些网站可能会设置
-                    import logging
-                    logging.warning(
-                        f'⚠️  跳过非法 cookie 名称: {cookie.name} (域名: {cookie.domain})'
-                        f' - 原因: {e}'
-                    )
+                    warning_key = (cookie.domain, cookie.path, cookie.name)
+                    if warning_key not in _WARNED_INVALID_AIOHTTP_COOKIE_KEYS:
+                        _WARNED_INVALID_AIOHTTP_COOKIE_KEYS.add(warning_key)
+                        logging.warning(
+                            f'⚠️  跳过非法 cookie 名称: {cookie.name} (域名: {cookie.domain})'
+                            f' - 原因: {e}'
+                        )
                     continue
 
     return aiohttp_cookie_jar
+
+
+def clone_aiohttp_cookie_jar(cookie_jar):
+    """Create a fresh aiohttp CookieJar without reparsing browser cookies."""
+    if cookie_jar is None or not hasattr(cookie_jar, '_cookies'):
+        return cookie_jar
+
+    cloned = CookieJar(unsafe=True)
+    # pylint: disable=protected-access
+    for cookie_key, morsels in cookie_jar._cookies.items():
+        for cookie_name, morsel in morsels.items():
+            cloned._cookies[cookie_key][cookie_name] = copy.copy(morsel)
+
+    for attr in ('_host_only_cookies', '_expirations', '_expire_heap'):
+        if hasattr(cookie_jar, attr):
+            setattr(cloned, attr, copy.copy(getattr(cookie_jar, attr)))
+
+    if hasattr(cookie_jar, '_treat_as_secure_origin'):
+        cloned._treat_as_secure_origin = copy.copy(cookie_jar._treat_as_secure_origin)
+
+    return cloned
 
 
 class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):

@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import Mock, MagicMock, patch
 import logging
 
+import moodle_dl.utils as utils_module
 from moodle_dl.utils import convert_to_aiohttp_cookie_jar
 
 
@@ -476,6 +477,22 @@ class TestConvertToAiohttpCookieJar(unittest.TestCase):
 
         # 应该只有 1 个正常 cookie 被转换
         self.assertEqual(nested_dict.total_cookies(), 1)
+
+    @patch('moodle_dl.utils.CookieJar')
+    def test_illegal_cookie_name_warning_is_emitted_once_per_cookie(self, mock_cookie_jar_class):
+        """测试同一个非法 cookie 只打印一次 warning，避免下载任务刷屏"""
+        utils_module._WARNED_INVALID_AIOHTTP_COOKIE_KEYS.clear()
+        mock_jar = MagicMock()
+        mock_jar._cookies = NestedDict()
+        mock_cookie_jar_class.return_value = mock_jar
+        self._add_cookie('cookie[1]', 'value', '.example.com')
+
+        with patch('moodle_dl.utils.logging.warning') as warning:
+            convert_to_aiohttp_cookie_jar(self.mozilla_jar)
+            convert_to_aiohttp_cookie_jar(self.mozilla_jar)
+
+        warning.assert_called_once()
+        utils_module._WARNED_INVALID_AIOHTTP_COOKIE_KEYS.clear()
 
 
 if __name__ == '__main__':
