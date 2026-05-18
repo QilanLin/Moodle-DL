@@ -296,6 +296,7 @@ def test_find_all_urls_extracts_external_data_and_kaltura_urls():
     builder = make_builder()
     html = (
         '<a href="https://external.example.com/file.pdf">File</a>'
+        '<a href="//cdn.example.com/protocol-relative.pdf">Protocol-relative</a>'
         '<img src="data:text/plain,hello">'
         '<a href="https://kaf.example.com/browseandembed/index/media/entryid/1_abc123">Video</a>'
     )
@@ -308,11 +309,14 @@ def test_find_all_urls_extracts_external_data_and_kaltura_urls():
     )
 
     external = next(file for file in files if file.content_fileurl == 'https://external.example.com/file.pdf')
+    protocol_relative = next(file for file in files if file.content_fileurl == 'https://cdn.example.com/protocol-relative.pdf')
     data_file = next(file for file in files if file.content_fileurl.startswith('data:text/plain'))
     kaltura = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
 
     assert external.module_modname == 'url-description-page'
     assert external.content_filename == 'https://external.example.com/file.pdf'
+    assert protocol_relative.module_modname == 'url-description-page'
+    assert protocol_relative.content_filename == 'https://cdn.example.com/protocol-relative.pdf'
     assert data_file.content_filename.startswith('embedded_text (')
     assert data_file.content_filename.endswith('.txt')
     assert kaltura.content_filename == 'Kaltura Video 1_abc123'

@@ -410,6 +410,70 @@ class ResultBuilder:
     def _is_helixmedia_url_candidate(url: str, url_parts) -> bool:
         return 'helixmedia' in (url or '').lower() and '/mod/helixmedia/view.php' in (url_parts.path or '')
 
+    def _normalize_extracted_html_url(self, url: str) -> tuple:
+        """Normalize an HTML URL candidate before turning it into a File entry."""
+        # To avoid different encodings and quotes and so that yt-dlp downloads correctly
+        # (See issues #96 and #103), we remove all encodings.
+        url = urlparse.unquote(html.unescape(url))
+        url_parts = urlparse.urlparse(url)
+
+        if not url_parts.scheme:
+            if url_parts.netloc:
+                url = f'https:{url}'
+            elif url.startswith('/'):
+                url = urlparse.urljoin(self.moodle_base_url.rstrip('/') + '/', url)
+            else:
+                # Relative HTML resources are handled by the HTML localizer
+                # after their real Moodle file entry has been downloaded.
+                # Creating shortcuts for them produces duplicate .webloc files.
+                return '', None
+            url_parts = urlparse.urlparse(url)
+
+        return url, url_parts
+
+    def _standard_kaltura_entry_url(self, entry_id: str) -> str:
+        return f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
+
+    def _normalize_kaltura_url(self, url: str, url_parts) -> tuple:
+        """Return (normalized_url, entry_id) for Kaltura candidates."""
+        if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
+            source_url = self._get_kaltura_lti_source_url(url)
+            entry_id = self._extract_kaltura_entry_id(source_url or url)
+            if not entry_id:
+                return url, None
+            if not source_url or not self._kaltura_source_has_player_context(source_url):
+                # Older Moodle pages sometimes expose only the entry id.
+                url = self._standard_kaltura_entry_url(entry_id)
+            logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
+            return url, entry_id
+
+        if 'browseandembed' in url_parts.path and 'entryid' in url.lower():
+            entry_id = self._extract_kaltura_entry_id(url)
+            if not entry_id:
+                return url, None
+            if url_parts.hostname == self.moodle_domain:
+                url = self._standard_kaltura_entry_url(entry_id)
+            logging.info(f'🎬 Converted Kaltura browseandembed URL to kalvidres format: entry_id={entry_id}')
+            return url, entry_id
+
+        if self._is_kaltura_url_candidate(url, url_parts):
+            entry_id = self._extract_kaltura_entry_id(url)
+            if not entry_id:
+                return url, None
+            if url_parts.hostname == self.moodle_domain or 'kaf.' in (url_parts.hostname or ''):
+                url = self._standard_kaltura_entry_url(entry_id)
+            logging.info(f'🎬 Converted Kaltura URL to kalvidres format: entry_id={entry_id}, original_url={url[:80]}...')
+            return url, entry_id
+
+        return url, None
+
+    @classmethod
+    def _extract_kaltura_entry_id(cls, url: str) -> Optional[str]:
+        entry_id_match = cls._match_kaltura_entry_id(url)
+        if not entry_id_match:
+            return None
+        return urlparse.unquote(entry_id_match.group(1))
+
     def _find_all_urls(
         self,
         content_html: str,
@@ -448,23 +512,9 @@ class ResultBuilder:
             if url == '':
                 continue
 
-            # To avoid different encodings and quotes and so that yt-dlp downloads correctly
-            # (See issues #96 and #103), we remove all encodings.
-            url = html.unescape(url)
-            url = urlparse.unquote(url)
-
-            url_parts = urlparse.urlparse(url)
-            if not url_parts.scheme and not url_parts.netloc:
-                if url.startswith('//'):
-                    url = f'https:{url}'
-                elif url.startswith('/'):
-                    url = urlparse.urljoin(self.moodle_base_url.rstrip('/') + '/', url)
-                else:
-                    # Relative HTML resources are handled by the HTML localizer
-                    # after their real Moodle file entry has been downloaded.
-                    # Creating shortcuts for them produces duplicate .webloc files.
-                    continue
-                url_parts = urlparse.urlparse(url)
+            url, url_parts = self._normalize_extracted_html_url(url)
+            if not url:
+                continue
 
             is_moodle_url = url_parts.hostname == self.moodle_domain or url_parts.netloc == self.moodle_domain
             is_embedded_media_candidate = self._is_kaltura_url_candidate(
@@ -494,63 +544,11 @@ class ResultBuilder:
             elif url_parts.hostname == self.moodle_domain:
                 location['module_modname'] = 'cookie_mod-description-' + original_module_modname
 
-            # Special handling for Kaltura URLs (multiple formats)
-            # These are embedded Kaltura videos that should be downloaded as kalvidres
-            kaltura_converted = False
-            
-            # Format 1: Kaltura LTI launch URLs
-            # Format: /filter/kaltura/lti_launch.php?...source=https://...entryid/1_xxxxx/...
-            if url_parts.hostname == self.moodle_domain and '/filter/kaltura/lti_launch.php' in url_parts.path:
-                source_url = self._get_kaltura_lti_source_url(url)
-                entry_id_match = self._match_kaltura_entry_id(source_url or url)
-                if entry_id_match:
-                    entry_id = entry_id_match.group(1)
-                    entry_id = urlparse.unquote(entry_id)
-                    if not source_url or not self._kaltura_source_has_player_context(source_url):
-                        # Older tests and some Moodle instances only expose the
-                        # entry id. Keep the legacy normalized URL in that case.
-                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
-                    location['module_modname'] = 'cookie_mod-kalvidres'
-                    kaltura_converted = True
-                    logging.info(f'🎬 Converted Kaltura LTI URL to kalvidres format: entry_id={entry_id}')
-            
-            # Format 2: Direct Kaltura browseandembed URLs
-            # Format: .../browseandembed/index/media/entryid/1_xxxxx/...
-            elif 'browseandembed' in url_parts.path and 'entryid' in url:
-                entry_id_match = self._match_kaltura_entry_id(url)
-                if entry_id_match:
-                    entry_id = entry_id_match.group(1)
-                    entry_id = urlparse.unquote(entry_id)
-                    # Normalize to standard kalvidres URL format
-                    if url_parts.hostname == self.moodle_domain:
-                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
-                    else:
-                        # External Kaltura domain, keep original URL
-                        pass
-                    location['module_modname'] = 'cookie_mod-kalvidres'
-                    kaltura_converted = True
-                    logging.info(f'🎬 Converted Kaltura browseandembed URL to kalvidres format: entry_id={entry_id}')
-            
-            # Format 3: Kaltura URLs containing kaltura domain or entryid pattern
-            # This catches other Kaltura URL formats that might be embedded in descriptions
-            elif self._is_kaltura_url_candidate(url, url_parts) and not kaltura_converted:
-                # Check if this looks like a Kaltura video URL
-                # Note: URL has already been decoded, so we match '/' first, then try encoded version
-                entry_id_match = self._match_kaltura_entry_id(url)
-                if entry_id_match:
-                    entry_id = entry_id_match.group(1)
-                    # Additional decode if entry_id contains encoded characters
-                    entry_id = urlparse.unquote(entry_id)
-                    # Try to normalize to standard format if it's from the same domain
-                    if url_parts.hostname == self.moodle_domain or 'kaf.' in url_parts.hostname:
-                        url = f'https://{self.moodle_domain}/browseandembed/index/media/entryid/{entry_id}'
-                    location['module_modname'] = 'cookie_mod-kalvidres'
-                    kaltura_converted = True
-                    logging.info(f'🎬 Converted Kaltura URL to kalvidres format: entry_id={entry_id}, original_url={url[:80]}...')
-            
-            # Special handling for HelixMedia URLs (similar to Kaltura)
-            # Format: /mod/helixmedia/view.php?id=...
-            if not kaltura_converted and 'helixmedia' in url.lower() and '/mod/helixmedia/view.php' in url:
+            url, entry_id = self._normalize_kaltura_url(url, url_parts)
+            kaltura_converted = entry_id is not None
+            if kaltura_converted:
+                location['module_modname'] = 'cookie_mod-kalvidres'
+            elif self._is_helixmedia_url_candidate(url, url_parts):
                 location['module_modname'] = 'cookie_mod-helixmedia'
                 logging.info(f'🎬 Detected HelixMedia URL in description: {url[:80]}...')
 

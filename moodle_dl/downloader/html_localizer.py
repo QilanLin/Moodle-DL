@@ -21,6 +21,7 @@ HTML_RESOURCE_ATTR_PATTERN = re.compile(
 )
 LOCAL_RESOURCE_KEY_PREFIX = 'local:'
 FILENAME_INDEX_PREFIX_PATTERN = re.compile(r'^\*\d+\*\s*')
+IGNORED_HTML_URL_PREFIXES = ('#', 'data:', 'mailto:', 'javascript:', 'tel:')
 EMBEDDED_RESOURCE_ATTRS = {
     'src': {'audio', 'embed', 'iframe', 'img', 'input', 'script', 'source', 'track', 'video'},
     'href': {'link'},
@@ -31,19 +32,11 @@ EMBEDDED_RESOURCE_ATTRS = {
 
 def canonical_resource_url(url: str) -> str:
     """Return a stable key for matching HTML resource URLs to downloaded files."""
-    if not isinstance(url, str):
+    prepared_url = _prepare_html_resource_url(url)
+    if not prepared_url:
         return ''
 
-    url = html.unescape(url).strip()
-    if not url:
-        return ''
-
-    lowered = url.lower()
-    if lowered.startswith(('#', 'data:', 'mailto:', 'javascript:', 'tel:')):
-        return ''
-
-    url, _fragment = urllib.parse.urldefrag(url)
-    parsed = urllib.parse.urlsplit(url)
+    parsed = urllib.parse.urlsplit(prepared_url)
     if not parsed.netloc:
         return ''
 
@@ -61,19 +54,11 @@ def canonical_resource_url(url: str) -> str:
 
 def canonical_local_resource_url(url: str, html_dir: str) -> str:
     """Return a stable key for a relative HTML resource URL."""
-    if not isinstance(url, str):
+    prepared_url = _prepare_html_resource_url(url)
+    if not prepared_url:
         return ''
 
-    url = html.unescape(url).strip()
-    if not url:
-        return ''
-
-    lowered = url.lower()
-    if lowered.startswith(('#', 'data:', 'mailto:', 'javascript:', 'tel:')):
-        return ''
-
-    url, _fragment = urllib.parse.urldefrag(url)
-    parsed = urllib.parse.urlsplit(url)
+    parsed = urllib.parse.urlsplit(prepared_url)
     if parsed.scheme or parsed.netloc or parsed.path.startswith('/'):
         return ''
 
@@ -85,6 +70,18 @@ def canonical_local_resource_url(url: str, html_dir: str) -> str:
     return _local_resource_key(local_path)
 
 
+def _prepare_html_resource_url(url: str) -> str:
+    if not isinstance(url, str):
+        return ''
+
+    url = html.unescape(url).strip()
+    if not url or url.lower().startswith(IGNORED_HTML_URL_PREFIXES):
+        return ''
+
+    url, _fragment = urllib.parse.urldefrag(url)
+    return url
+
+
 def _local_resource_key(path: str) -> str:
     normalized = os.path.normpath(os.path.abspath(path)).replace(os.sep, '/')
     return f'{LOCAL_RESOURCE_KEY_PREFIX}{normalized}'
@@ -92,6 +89,20 @@ def _local_resource_key(path: str) -> str:
 
 def _strip_filename_index_prefix(filename: str) -> str:
     return FILENAME_INDEX_PREFIX_PATTERN.sub('', filename or '', count=1)
+
+
+def _add_local_resource_alias(local_resources: Dict[str, str], local_path: str, saved_to: str) -> None:
+    local_resources[_local_resource_key(local_path)] = saved_to
+
+
+def _add_local_resource_aliases(local_resources: Dict[str, str], saved_to: str) -> None:
+    saved_to_abs = os.path.abspath(saved_to)
+    _add_local_resource_alias(local_resources, saved_to_abs, saved_to)
+
+    stripped_filename = _strip_filename_index_prefix(os.path.basename(saved_to_abs))
+    if stripped_filename and stripped_filename != os.path.basename(saved_to_abs):
+        unprefixed_path = os.path.join(os.path.dirname(saved_to_abs), stripped_filename)
+        _add_local_resource_alias(local_resources, unprefixed_path, saved_to)
 
 
 def _normalize_token_pluginfile_path(path: str) -> str:
@@ -128,13 +139,7 @@ def build_local_resource_map(files: Iterable[File]) -> Dict[str, str]:
         if key:
             local_resources[key] = saved_to
 
-        saved_to_abs = os.path.abspath(saved_to)
-        local_resources[_local_resource_key(saved_to_abs)] = saved_to
-
-        stripped_filename = _strip_filename_index_prefix(os.path.basename(saved_to_abs))
-        if stripped_filename and stripped_filename != os.path.basename(saved_to_abs):
-            unprefixed_path = os.path.join(os.path.dirname(saved_to_abs), stripped_filename)
-            local_resources[_local_resource_key(unprefixed_path)] = saved_to
+        _add_local_resource_aliases(local_resources, saved_to)
 
     return local_resources
 
@@ -165,11 +170,7 @@ def rewrite_html_links_to_local_paths(
                 return attr_match.group(0)
 
             url = attr_match.group('url')
-            key = canonical_resource_url(url)
-            local_path = local_resources.get(key)
-            if not local_path:
-                local_key = canonical_local_resource_url(url, html_dir)
-                local_path = local_resources.get(local_key)
+            local_path = _find_local_resource_path(url, html_dir, local_resources)
             if not local_path:
                 return attr_match.group(0)
 
@@ -188,3 +189,15 @@ def rewrite_html_links_to_local_paths(
         return f'<{tag_match.group("tag")}{rewritten_attrs}>'
 
     return HTML_TAG_PATTERN.sub(replace_tag, html_content), replacements
+
+
+def _find_local_resource_path(url: str, html_dir: str, local_resources: Dict[str, str]) -> str:
+    remote_key = canonical_resource_url(url)
+    if remote_key and remote_key in local_resources:
+        return local_resources[remote_key]
+
+    local_key = canonical_local_resource_url(url, html_dir)
+    if local_key and local_key in local_resources:
+        return local_resources[local_key]
+
+    return ''
