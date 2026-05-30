@@ -713,12 +713,19 @@ class TestRunMain(unittest.TestCase):
 
 
 class TestRefreshCookiesOnly(unittest.TestCase):
-    """refresh_cookies_only 分支测试"""
+    """refresh_cookies_only 分支测试
+
+    `refresh_cookies_only` 现在是一层薄壳，核心逻辑全部委托给
+    `moodle_dl.cli.authenticators.refresh_sso_cookies`（`--init --sso` 共享同一入口）。
+    这里只测试薄壳行为：URL 校验、浏览器选择、SSO browser fallback、保存偏好。
+    SSO + 浏览器导出回退的具体行为在 `test_authenticators*.py` 里覆盖。
+    """
 
     def setUp(self):
         self.config = MagicMock(spec=ConfigHelper)
         self.opts = MoodleDlOpts()
         self.config.get_misc_files_path.return_value = '/tmp/moodle'
+        self.config.get_auth_manager.return_value = MagicMock(name='auth_manager')
         self.log_patchers = [
             patch('moodle_dl.utils.Log.info'),
             patch('moodle_dl.utils.Log.success'),
@@ -731,113 +738,76 @@ class TestRefreshCookiesOnly(unittest.TestCase):
         for patcher in reversed(self.log_patchers):
             patcher.stop()
 
-    def _fake_export_module(self, export_result=True, test_result=True):
-        return SimpleNamespace(
-            export_cookies_from_browser=MagicMock(return_value=export_result),
-            export_cookies_interactive=MagicMock(return_value=export_result),
-            test_cookies=MagicMock(return_value=test_result),
-        )
-
-    def _fake_import_loader(self):
-        return SimpleNamespace(loader=SimpleNamespace(exec_module=MagicMock()))
-
-    def test_refresh_cookies_only_returns_when_moodle_url_is_missing(self):
-        """测试未配置 Moodle URL 时直接返回"""
+    def test_returns_when_moodle_url_is_missing(self):
+        """未配置 Moodle URL 时直接返回，且不调用 refresh_sso_cookies"""
         self.config.get_moodle_URL.return_value = None
 
-        refresh_cookies_only(self.config, self.opts)
+        with patch('moodle_dl.cli.authenticators.refresh_sso_cookies') as mock_refresh:
+            refresh_cookies_only(self.config, self.opts)
 
+        mock_refresh.assert_not_called()
         self.config.get_misc_files_path.assert_not_called()
 
-    def test_refresh_cookies_only_missing_export_script_returns(self):
-        """测试找不到导出脚本时直接返回"""
-        self.config.get_moodle_URL.return_value = SimpleNamespace(domain='keats.kcl.ac.uk')
-
-        with (
-            patch('moodle_dl.utils.Cutie.select', return_value=1),
-            patch('moodle_dl.main.os.path.exists', return_value=False),
-        ):
-            refresh_cookies_only(self.config, self.opts)
-
-        self.config.set_property.assert_not_called()
-
-    def test_refresh_cookies_only_selected_browser_success_saves_preference(self):
-        """测试指定浏览器导出成功后保存浏览器偏好"""
+    def test_selected_browser_success_saves_preference(self):
+        """SSO 成功时保存浏览器偏好"""
         self.config.get_moodle_URL.return_value = SimpleNamespace(domain='keats.kcl.ac.uk')
         self.config.get_property.return_value = 'firefox'
-        export_module = self._fake_export_module(export_result=True, test_result=True)
 
         with (
-            patch('moodle_dl.utils.Cutie.select', return_value=1),
-            patch('moodle_dl.main.os.path.exists', return_value=True),
-            patch('importlib.util.spec_from_file_location', return_value=self._fake_import_loader()),
-            patch('importlib.util.module_from_spec', return_value=export_module),
+            patch('moodle_dl.utils.Cutie.select', return_value=1),  # Firefox
+            patch('moodle_dl.cli.authenticators.refresh_sso_cookies', return_value=True) as mock_refresh,
         ):
             refresh_cookies_only(self.config, self.opts)
 
-        export_module.export_cookies_from_browser.assert_called_once_with(
-            domain='keats.kcl.ac.uk',
-            output_file='/tmp/moodle/Cookies.txt',
-            browser_name='firefox',
-        )
-        export_module.test_cookies.assert_called_once_with('keats.kcl.ac.uk', '/tmp/moodle/Cookies.txt')
+        mock_refresh.assert_called_once()
+        kwargs = mock_refresh.call_args.kwargs
+        self.assertEqual(kwargs['moodle_domain'], 'keats.kcl.ac.uk')
+        self.assertEqual(kwargs['cookies_path'], '/tmp/moodle/Cookies.txt')
+        self.assertEqual(kwargs['preferred_browser'], 'firefox')
+        self.assertIs(kwargs['auth_manager'], self.config.get_auth_manager.return_value)
         self.config.set_property.assert_called_once_with('preferred_browser', 'firefox')
 
-    def test_refresh_cookies_only_selected_browser_failed_cookie_test(self):
-        """测试指定浏览器导出后验证失败不会保存偏好"""
+    def test_failure_does_not_save_preference(self):
+        """SSO + 回退都失败时不会保存浏览器偏好"""
         self.config.get_moodle_URL.return_value = SimpleNamespace(domain='keats.kcl.ac.uk')
         self.config.get_property.side_effect = KeyError
-        export_module = self._fake_export_module(export_result=True, test_result=False)
 
         with (
             patch('moodle_dl.utils.Cutie.select', return_value=1),
-            patch('moodle_dl.main.os.path.exists', return_value=True),
-            patch('importlib.util.spec_from_file_location', return_value=self._fake_import_loader()),
-            patch('importlib.util.module_from_spec', return_value=export_module),
+            patch('moodle_dl.cli.authenticators.refresh_sso_cookies', return_value=False),
         ):
             refresh_cookies_only(self.config, self.opts)
 
-        export_module.export_cookies_from_browser.assert_called_once()
-        export_module.test_cookies.assert_called_once()
         self.config.set_property.assert_not_called()
 
-    def test_refresh_cookies_only_auto_detect_uses_interactive_export(self):
-        """测试自动检测分支调用交互式导出"""
+    def test_auto_detect_falls_back_to_firefox_for_sso(self):
+        """'自动检测' 时 SSO 阶段 fallback 到 firefox；成功也不保存偏好"""
         self.config.get_moodle_URL.return_value = SimpleNamespace(domain='keats.kcl.ac.uk')
         self.config.get_property.side_effect = KeyError
-        export_module = self._fake_export_module(export_result=False)
 
         with (
-            patch('moodle_dl.utils.Cutie.select', return_value=8),
-            patch('moodle_dl.main.os.path.exists', return_value=True),
-            patch('importlib.util.spec_from_file_location', return_value=self._fake_import_loader()),
-            patch('importlib.util.module_from_spec', return_value=export_module),
+            patch('moodle_dl.utils.Cutie.select', return_value=8),  # 自动检测
+            patch('moodle_dl.cli.authenticators.refresh_sso_cookies', return_value=True) as mock_refresh,
         ):
             refresh_cookies_only(self.config, self.opts)
 
-        export_module.export_cookies_interactive.assert_called_once_with(
-            domain='keats.kcl.ac.uk',
-            output_file='/tmp/moodle/Cookies.txt',
-            ask_browser=False,
-            auto_get_token=False,
-        )
-        export_module.export_cookies_from_browser.assert_not_called()
+        self.assertEqual(mock_refresh.call_args.kwargs['preferred_browser'], 'firefox')
+        # selected_browser 为 None 时不保存
         self.config.set_property.assert_not_called()
 
-    def test_refresh_cookies_only_logs_import_error(self):
-        """测试 browser-cookie3 导入错误会被吞掉并记录"""
+    def test_chrome_selection_propagates_to_refresh(self):
+        """选择 Chrome 时 preferred_browser='chrome' 正确传入，并在成功后保存"""
         self.config.get_moodle_URL.return_value = SimpleNamespace(domain='keats.kcl.ac.uk')
-        fake_spec = SimpleNamespace(loader=SimpleNamespace(exec_module=MagicMock(side_effect=ImportError('missing'))))
+        self.config.get_property.side_effect = KeyError
 
         with (
-            patch('moodle_dl.utils.Cutie.select', return_value=1),
-            patch('moodle_dl.main.os.path.exists', return_value=True),
-            patch('importlib.util.spec_from_file_location', return_value=fake_spec),
-            patch('importlib.util.module_from_spec', return_value=SimpleNamespace()),
+            patch('moodle_dl.utils.Cutie.select', return_value=0),  # Chrome
+            patch('moodle_dl.cli.authenticators.refresh_sso_cookies', return_value=True) as mock_refresh,
         ):
             refresh_cookies_only(self.config, self.opts)
 
-        self.config.set_property.assert_not_called()
+        self.assertEqual(mock_refresh.call_args.kwargs['preferred_browser'], 'chrome')
+        self.config.set_property.assert_called_once_with('preferred_browser', 'chrome')
 
 
 class TestMainEntrypoint(unittest.TestCase):

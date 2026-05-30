@@ -25,6 +25,9 @@ from moodle_dl.cli.authenticators import (
     SSOAuthenticator,
     BrowserSelector,
     _should_use_headless_sso,
+    perform_sso_auto_login,
+    fallback_read_browser_cookies,
+    refresh_sso_cookies,
 )
 
 
@@ -393,6 +396,304 @@ class TestSSOAuthenticator(unittest.TestCase):
 
         with patch.dict('os.environ', {'MOODLE_DL_HEADLESS': '0', 'MOODLE_DL_HEADFUL': '0'}, clear=True):
             self.assertFalse(_should_use_headless_sso())
+
+
+class TestSharedSSOEntryPoints(unittest.TestCase):
+    """模块级 SSO 入口测试：被 --init --sso 和 --refresh-cookies 共同复用"""
+
+    def setUp(self):
+        self.auth_manager = MagicMock(name='auth_manager')
+
+    # ---- perform_sso_auto_login ----
+
+    def test_perform_sso_auto_login_passes_arguments_through(self):
+        """SSO 成功路径：参数透传 + 返回 True"""
+        with (
+            patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=False),
+            patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=True) as mock_sso,
+        ):
+            result = perform_sso_auto_login(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='chrome',
+                auth_manager=self.auth_manager,
+                timeout=12345,
+            )
+
+        self.assertTrue(result)
+        mock_sso.assert_called_once_with(
+            moodle_domain='example.edu',
+            cookies_path='/tmp/Cookies.txt',
+            preferred_browser='chrome',
+            headless=False,
+            timeout=12345,
+            auth_manager=self.auth_manager,
+        )
+
+    def test_perform_sso_auto_login_uses_headless_when_env_says_so(self):
+        """MOODLE_DL_HEADLESS 控制 headless 参数"""
+        with (
+            patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=True),
+            patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=True) as mock_sso,
+        ):
+            perform_sso_auto_login(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertTrue(mock_sso.call_args.kwargs['headless'])
+
+    def test_perform_sso_auto_login_returns_false_when_sso_returns_false(self):
+        with (
+            patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=False),
+            patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', return_value=False),
+        ):
+            result = perform_sso_auto_login(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertFalse(result)
+
+    def test_perform_sso_auto_login_swallows_exceptions(self):
+        """SSO 抛任何异常都不会传出去，统一返回 False"""
+        with (
+            patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=False),
+            patch('moodle_dl.auto_sso_login.auto_login_with_sso_sync', side_effect=RuntimeError('boom')),
+        ):
+            result = perform_sso_auto_login(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertFalse(result)
+
+    # ---- fallback_read_browser_cookies ----
+
+    def _make_cookie(self, name='session', value='abc', domain='example.edu'):
+        cookie = MagicMock()
+        cookie.name = name
+        cookie.value = value
+        cookie.domain = domain
+        cookie.path = '/'
+        cookie.expires = 0
+        cookie.secure = True
+        cookie.has_nonstandard_attr.return_value = True
+        cookie.get_nonstandard_attr.return_value = 'Lax'
+        return cookie
+
+    def test_fallback_read_browser_cookies_saves_to_auth_manager(self):
+        """成功读到 cookies 后转换为 Playwright 格式并写入 AuthSessionManager"""
+        export_module = MagicMock()
+        export_module.get_cookies_from_browser.return_value = [
+            self._make_cookie('a', 'one'),
+            self._make_cookie('b', 'two'),
+        ]
+        self.auth_manager.save_sso_cookies.return_value = 'sess-123'
+
+        result = fallback_read_browser_cookies(
+            moodle_domain='example.edu',
+            preferred_browser='firefox',
+            auth_manager=self.auth_manager,
+            export_module=export_module,
+        )
+
+        self.assertTrue(result)
+        export_module.get_cookies_from_browser.assert_called_once_with(
+            domain='example.edu',
+            browser_name='firefox',
+        )
+        # 写入数据库的 cookies 列表是 Playwright 字典格式
+        saved = self.auth_manager.save_sso_cookies.call_args.args[0]
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[0]['name'], 'a')
+        self.assertEqual(saved[0]['value'], 'one')
+        self.assertEqual(saved[0]['domain'], 'example.edu')
+
+    def test_fallback_read_browser_cookies_returns_false_when_no_cookies(self):
+        export_module = MagicMock()
+        export_module.get_cookies_from_browser.return_value = []
+
+        result = fallback_read_browser_cookies(
+            moodle_domain='example.edu',
+            preferred_browser='firefox',
+            auth_manager=self.auth_manager,
+            export_module=export_module,
+        )
+
+        self.assertFalse(result)
+        self.auth_manager.save_sso_cookies.assert_not_called()
+
+    def test_fallback_read_browser_cookies_returns_false_when_save_fails(self):
+        export_module = MagicMock()
+        export_module.get_cookies_from_browser.return_value = [self._make_cookie()]
+        self.auth_manager.save_sso_cookies.return_value = None
+
+        result = fallback_read_browser_cookies(
+            moodle_domain='example.edu',
+            preferred_browser='firefox',
+            auth_manager=self.auth_manager,
+            export_module=export_module,
+        )
+
+        self.assertFalse(result)
+
+    def test_fallback_read_browser_cookies_lazy_loads_export_module(self):
+        """未传 export_module 时自动加载 ExportBrowserCookiesHelper"""
+        lazy_module = MagicMock()
+        lazy_module.get_cookies_from_browser.return_value = [self._make_cookie()]
+        self.auth_manager.save_sso_cookies.return_value = 'sess-1'
+
+        with patch(
+            'moodle_dl.cli.authenticators.ExportBrowserCookiesHelper.load_export_module',
+            return_value=lazy_module,
+        ) as mock_load:
+            result = fallback_read_browser_cookies(
+                moodle_domain='example.edu',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertTrue(result)
+        mock_load.assert_called_once()
+        lazy_module.get_cookies_from_browser.assert_called_once()
+
+    def test_fallback_read_browser_cookies_handles_module_load_failure(self):
+        """ExportBrowserCookiesHelper 加载失败时返回 False，不抛异常"""
+        with patch(
+            'moodle_dl.cli.authenticators.ExportBrowserCookiesHelper.load_export_module',
+            side_effect=FileNotFoundError('missing'),
+        ):
+            result = fallback_read_browser_cookies(
+                moodle_domain='example.edu',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertFalse(result)
+        self.auth_manager.save_sso_cookies.assert_not_called()
+
+    # ---- refresh_sso_cookies (orchestrator) ----
+
+    def test_refresh_sso_cookies_returns_true_when_sso_succeeds(self):
+        """SSO 成功时直接返回 True，不调用 fallback"""
+        with (
+            patch('moodle_dl.cli.authenticators.perform_sso_auto_login', return_value=True) as mock_sso,
+            patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies') as mock_fallback,
+        ):
+            result = refresh_sso_cookies(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertTrue(result)
+        mock_sso.assert_called_once()
+        mock_fallback.assert_not_called()
+
+    def test_refresh_sso_cookies_falls_back_when_sso_fails(self):
+        """SSO 失败时调用 fallback，且其结果决定最终返回值"""
+        with (
+            patch('moodle_dl.cli.authenticators.perform_sso_auto_login', return_value=False),
+            patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies', return_value=True) as mock_fallback,
+        ):
+            result = refresh_sso_cookies(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+                export_module='lazy-loaded-sentinel',
+            )
+
+        self.assertTrue(result)
+        mock_fallback.assert_called_once_with(
+            moodle_domain='example.edu',
+            preferred_browser='firefox',
+            auth_manager=self.auth_manager,
+            export_module='lazy-loaded-sentinel',
+        )
+
+    def test_refresh_sso_cookies_returns_false_when_both_fail(self):
+        with (
+            patch('moodle_dl.cli.authenticators.perform_sso_auto_login', return_value=False),
+            patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies', return_value=False),
+        ):
+            result = refresh_sso_cookies(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+            )
+
+        self.assertFalse(result)
+
+    def test_refresh_sso_cookies_passes_sso_timeout(self):
+        """sso_timeout 参数透传到 perform_sso_auto_login"""
+        with (
+            patch('moodle_dl.cli.authenticators.perform_sso_auto_login', return_value=True) as mock_sso,
+            patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies'),
+        ):
+            refresh_sso_cookies(
+                moodle_domain='example.edu',
+                cookies_path='/tmp/Cookies.txt',
+                preferred_browser='firefox',
+                auth_manager=self.auth_manager,
+                sso_timeout=99999,
+            )
+
+        self.assertEqual(mock_sso.call_args.kwargs['timeout'], 99999)
+
+
+class TestSSOAuthenticatorDelegatesToSharedFunctions(unittest.TestCase):
+    """验证 SSOAuthenticator 的实例方法只是模块级函数的薄壳"""
+
+    def setUp(self):
+        self.config = MagicMock(spec=ConfigHelper)
+        self.opts = MoodleDlOpts()
+        self.moodle_url = MoodleURL(True, 'example.edu', '/')
+        self.auth = SSOAuthenticator(self.config, self.opts, self.moodle_url)
+        self.auth.preferred_browser = 'chrome'
+        self.auth._cookies_path = '/tmp/Cookies.txt'
+        self.auth._export_module = MagicMock(name='export_module')
+        self.auth_manager = MagicMock(name='auth_manager')
+        self.config.get_auth_manager.return_value = self.auth_manager
+
+    def test_instance_sso_method_forwards_to_module_function(self):
+        with patch('moodle_dl.cli.authenticators.perform_sso_auto_login', return_value=True) as mock_fn:
+            self.assertTrue(self.auth._perform_sso_auto_login())
+
+        mock_fn.assert_called_once_with(
+            moodle_domain='example.edu',
+            cookies_path='/tmp/Cookies.txt',
+            preferred_browser='chrome',
+            auth_manager=self.auth_manager,
+            timeout=60000,
+        )
+
+    def test_instance_fallback_method_forwards_to_module_function(self):
+        with patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies', return_value=True) as mock_fn:
+            self.assertTrue(self.auth._fallback_read_browser_cookies())
+
+        mock_fn.assert_called_once_with(
+            moodle_domain='example.edu',
+            preferred_browser='chrome',
+            auth_manager=self.auth_manager,
+            export_module=self.auth._export_module,
+        )
+
+    def test_instance_fallback_method_guards_against_missing_export_module(self):
+        """没加载 export_module 时直接返回 False，且不调用模块级函数"""
+        self.auth._export_module = None
+        with patch('moodle_dl.cli.authenticators.fallback_read_browser_cookies') as mock_fn:
+            self.assertFalse(self.auth._fallback_read_browser_cookies())
+        mock_fn.assert_not_called()
 
 
 class TestAuthenticatorIntegration(unittest.TestCase):

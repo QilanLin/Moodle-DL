@@ -57,6 +57,175 @@ def _should_use_headless_sso() -> bool:
     return False
 
 
+def perform_sso_auto_login(
+    *,
+    moodle_domain: str,
+    cookies_path: str,
+    preferred_browser: str,
+    auth_manager,
+    timeout: int = 60000,
+) -> bool:
+    """
+    使用 Playwright 执行 SSO 自动登录，刷新 Moodle cookies。
+
+    与 `--init --sso` 的 SSO 步骤共享同一份实现：默认有头浏览器，
+    遇到多账号 / MFA / 验证码可以在浏览器窗口里手动操作。
+
+    @return: SSO 成功返回 True；任何异常或失败返回 False
+    """
+    try:
+        logging.info(
+            _(
+                '步骤 1：使用 SSO 自动登录获取 cookies...',
+                'Step 1: Using SSO auto-login to get cookies...',
+            )
+        )
+        logging.info(
+            _(
+                '   （从 {browser} 浏览器读取 SSO cookies，并在 Playwright 中恢复 Moodle 登录状态）',
+                '   (Reading SSO cookies from {browser} and restoring Moodle login state in Playwright)',
+                browser=preferred_browser,
+            )
+        )
+
+        use_headless = _should_use_headless_sso()
+
+        if not use_headless:
+            logging.info('')
+            logging.info(_('🌐 已启用有头模式（Headful Mode）', '🌐 Headful Mode is enabled'))
+            logging.info(_('   - 浏览器窗口将可见，你可以手动操作', '   - The browser window will be visible, and you can interact with it manually'))
+            logging.info(_('   - 适用于多账号选择、验证码输入等场景', '   - Useful for account selection, CAPTCHA, MFA, and similar steps'))
+            logging.info(_('   - 如需无头模式，可设置 MOODLE_DL_HEADLESS=1（或兼容写法 MOODLE_DL_HEADFUL=0）', '   - To use headless mode, set MOODLE_DL_HEADLESS=1 (or MOODLE_DL_HEADFUL=0)'))
+            logging.info('')
+        else:
+            logging.info(_('🌐 已启用无头模式（Headless Mode）', '🌐 Headless Mode is enabled'))
+            logging.info(_('   - 不会显示浏览器窗口', '   - No browser window will be shown'))
+            logging.info(_('   - 如遇账号选择、MFA 或重新授权，请改用默认有头模式', '   - If account selection, MFA, or reauthorization is needed, use the default headful mode'))
+
+        from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+
+        sso_login_success = auto_login_with_sso_sync(
+            moodle_domain=moodle_domain,
+            cookies_path=cookies_path,
+            preferred_browser=preferred_browser,
+            headless=use_headless,
+            timeout=timeout,
+            auth_manager=auth_manager,
+        )
+
+        if sso_login_success:
+            Log.success(_('✅ SSO 自动登录成功！已获取新的 cookies', '✅ SSO auto-login succeeded. New cookies were obtained.'))
+            return True
+
+        Log.warning(_('⚠️  SSO 自动登录失败', '⚠️  SSO auto-login failed'))
+        return False
+
+    except Exception as e:
+        logging.error(_('❌ SSO 自动登录出错: {error}', '❌ SSO auto-login error: {error}', error=e))
+        return False
+
+
+def fallback_read_browser_cookies(
+    *,
+    moodle_domain: str,
+    preferred_browser: str,
+    auth_manager,
+    export_module=None,
+) -> bool:
+    """
+    回退方案：直接从本地浏览器 cookie 数据库读取已登录的 cookies。
+
+    SSO 自动登录失败时使用；要求用户已在指定浏览器中登录 Moodle。
+    新的 cookies 直接写入 AuthSessionManager（v2：无文件中转）。
+
+    @param export_module: 已加载的 export_browser_cookies 模块；None 时自动加载
+    @return: 成功返回 True
+    """
+    if export_module is None:
+        try:
+            export_module = ExportBrowserCookiesHelper.load_export_module()
+        except (FileNotFoundError, ImportError) as e:
+            Log.warning(_('⚠️  无法加载导出模块: {error}', '⚠️  Unable to load export module: {error}', error=e))
+            return False
+
+    try:
+        logging.info(_('尝试从浏览器读取现有 cookies（回退方案）...', 'Trying to read existing cookies from the browser (fallback)...'))
+        logging.info(_('  💡 v2: 直接存入数据库（无需临时文件）', '  💡 v2: saving directly to the database (no temporary file)'))
+
+        cookies_list = export_module.get_cookies_from_browser(
+            domain=moodle_domain,
+            browser_name=preferred_browser,
+        )
+
+        if not cookies_list:
+            Log.warning(_('⚠️  从浏览器读取 cookies 失败', '⚠️  Failed to read cookies from the browser'))
+            return False
+
+        cookies = []
+        for cookie in cookies_list:
+            cookies.append({
+                'name': cookie.name,
+                'value': cookie.value,
+                'domain': cookie.domain,
+                'path': cookie.path or '/',
+                'expires': cookie.expires if cookie.expires else 0,
+                'secure': cookie.secure,
+                'httponly': bool(cookie.has_nonstandard_attr('HttpOnly')),
+                'samesite': cookie.get_nonstandard_attr('SameSite', 'Lax'),
+            })
+
+        session_id = auth_manager.save_sso_cookies(cookies)
+
+        if session_id:
+            Log.success(_('✅ 从浏览器成功读取 cookies', '✅ Successfully read cookies from the browser'))
+            Log.success(_('✅ Cookies 已直接保存到数据库: {session_id}', '✅ Cookies were saved directly to the database: {session_id}', session_id=session_id))
+            logging.info(_('   共 {count} 个 cookies', '   {count} cookies in total', count=len(cookies)))
+            return True
+
+        logging.error(_('❌ Cookies 保存到数据库失败', '❌ Failed to save cookies to the database'))
+        return False
+
+    except Exception as e:
+        logging.error(_('❌ 从浏览器读取 cookies 时出错: {error}', '❌ Error while reading cookies from the browser: {error}', error=e))
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def refresh_sso_cookies(
+    *,
+    moodle_domain: str,
+    cookies_path: str,
+    preferred_browser: str,
+    auth_manager,
+    export_module=None,
+    sso_timeout: int = 60000,
+) -> bool:
+    """
+    刷新 SSO cookies 的统一入口：先尝试 Playwright SSO 自动登录，失败再回退到浏览器静默导出。
+
+    `--init --sso` 和 `--refresh-cookies` 共用此入口，保证两条命令行路径
+    具有完全一致的多账号 / MFA / 验证码交互体验。
+
+    @return: 任一路径成功即返回 True
+    """
+    if perform_sso_auto_login(
+        moodle_domain=moodle_domain,
+        cookies_path=cookies_path,
+        preferred_browser=preferred_browser,
+        auth_manager=auth_manager,
+        timeout=sso_timeout,
+    ):
+        return True
+
+    return fallback_read_browser_cookies(
+        moodle_domain=moodle_domain,
+        preferred_browser=preferred_browser,
+        auth_manager=auth_manager,
+        export_module=export_module,
+    )
+
+
 # ==================== 异常定义 ====================
 
 class AuthenticationError(Exception):
@@ -768,117 +937,27 @@ class SSOAuthenticator(BaseAuthenticator):
             return None, None
 
     def _perform_sso_auto_login(self) -> bool:
-        """
-        执行 SSO 自动登录
-
-        返回: True 成功，False 失败
-        """
-        try:
-            logging.info(_('步骤 1：使用 SSO 自动登录获取 cookies...', 'Step 1: Using SSO auto-login to get cookies...'))
-            logging.info(
-                _(
-                    '   （从 {browser} 浏览器读取 SSO cookies，并在 Playwright 中恢复 Moodle 登录状态）',
-                    '   (Reading SSO cookies from {browser} and restoring Moodle login state in Playwright)',
-                    browser=self.preferred_browser,
-                )
-            )
-
-            use_headless = _should_use_headless_sso()
-
-            if not use_headless:
-                logging.info('')
-                logging.info(_('🌐 已启用有头模式（Headful Mode）', '🌐 Headful Mode is enabled'))
-                logging.info(_('   - 浏览器窗口将可见，你可以手动操作', '   - The browser window will be visible, and you can interact with it manually'))
-                logging.info(_('   - 适用于多账号选择、验证码输入等场景', '   - Useful for account selection, CAPTCHA, MFA, and similar steps'))
-                logging.info(_('   - 如需无头模式，可设置 MOODLE_DL_HEADLESS=1（或兼容写法 MOODLE_DL_HEADFUL=0）', '   - To use headless mode, set MOODLE_DL_HEADLESS=1 (or MOODLE_DL_HEADFUL=0)'))
-                logging.info('')
-            else:
-                logging.info(_('🌐 已启用无头模式（Headless Mode）', '🌐 Headless Mode is enabled'))
-                logging.info(_('   - 不会显示浏览器窗口', '   - No browser window will be shown'))
-                logging.info(_('   - 如遇账号选择、MFA 或重新授权，请改用默认有头模式', '   - If account selection, MFA, or reauthorization is needed, use the default headful mode'))
-
-            from moodle_dl.auto_sso_login import auto_login_with_sso_sync
-
-            sso_login_success = auto_login_with_sso_sync(
-                moodle_domain=self.moodle_url.domain,
-                cookies_path=self._cookies_path,
-                preferred_browser=self.preferred_browser,
-                headless=use_headless,
-                timeout=60000,
-                auth_manager=self.config.get_auth_manager()
-            )
-
-            if sso_login_success:
-                Log.success(_('✅ SSO 自动登录成功！已获取新的 cookies', '✅ SSO auto-login succeeded. New cookies were obtained.'))
-                return True
-            else:
-                Log.warning(_('⚠️  SSO 自动登录失败', '⚠️  SSO auto-login failed'))
-                return False
-
-        except Exception as e:
-            logging.error(_('❌ SSO 自动登录出错: {error}', '❌ SSO auto-login error: {error}', error=e))
-            return False
+        """SSO 自动登录 - 委托给模块级 `perform_sso_auto_login`"""
+        return perform_sso_auto_login(
+            moodle_domain=self.moodle_url.domain,
+            cookies_path=self._cookies_path,
+            preferred_browser=self.preferred_browser,
+            auth_manager=self.config.get_auth_manager(),
+            timeout=60000,
+        )
 
     def _fallback_read_browser_cookies(self) -> bool:
-        """
-        回退：从浏览器读取现有 cookies
-
-        当 SSO 自动登录失败时调用此方法，尝试从浏览器读取已存在的 cookies
-        
-        **v2: 完全数据库化**：浏览器 → 数据库（永不出现 cookie txt）
-
-        返回: True 成功，False 失败
-        """
+        """从浏览器读取现有 cookies - 委托给模块级 `fallback_read_browser_cookies`"""
         if not self._export_module:
             logging.warning(_('⚠️  export_module 未加载，无法读取浏览器 cookies', '⚠️  export_module is not loaded; cannot read browser cookies'))
             return False
 
-        try:
-            logging.info(_('尝试从浏览器读取现有 cookies（回退方案）...', 'Trying to read existing cookies from the browser (fallback)...'))
-            logging.info(_('  💡 v2: 直接存入数据库（无需临时文件）', '  💡 v2: saving directly to the database (no temporary file)'))
-
-            # v2: 直接从浏览器获取 cookies 列表
-            cookies_list = self._export_module.get_cookies_from_browser(
-                domain=self.moodle_url.domain,
-                browser_name=self.preferred_browser,
-            )
-
-            if cookies_list:
-                # 转换为 Playwright 格式
-                cookies = []
-                for cookie in cookies_list:
-                    cookies.append({
-                        'name': cookie.name,
-                        'value': cookie.value,
-                        'domain': cookie.domain,
-                        'path': cookie.path or '/',
-                        'expires': cookie.expires if cookie.expires else 0,
-                        'secure': cookie.secure,
-                        'httponly': bool(cookie.has_nonstandard_attr('HttpOnly')),
-                        'samesite': cookie.get_nonstandard_attr('SameSite', 'Lax')
-                    })
-
-                # ✅ 直接保存到数据库（无文件中转）
-                auth_manager = self.config.get_auth_manager()
-                session_id = auth_manager.save_sso_cookies(cookies)
-
-                if session_id:
-                    Log.success(_('✅ 从浏览器成功读取 cookies', '✅ Successfully read cookies from the browser'))
-                    Log.success(_('✅ Cookies 已直接保存到数据库: {session_id}', '✅ Cookies were saved directly to the database: {session_id}', session_id=session_id))
-                    logging.info(_('   共 {count} 个 cookies', '   {count} cookies in total', count=len(cookies)))
-                    return True
-                else:
-                    logging.error(_('❌ Cookies 保存到数据库失败', '❌ Failed to save cookies to the database'))
-                    return False
-            else:
-                Log.warning(_('⚠️  从浏览器读取 cookies 失败', '⚠️  Failed to read cookies from the browser'))
-                return False
-
-        except Exception as e:
-            logging.error(_('❌ 从浏览器读取 cookies 时出错: {error}', '❌ Error while reading cookies from the browser: {error}', error=e))
-            import traceback
-            traceback.print_exc()
-            return False
+        return fallback_read_browser_cookies(
+            moodle_domain=self.moodle_url.domain,
+            preferred_browser=self.preferred_browser,
+            auth_manager=self.config.get_auth_manager(),
+            export_module=self._export_module,
+        )
 
     def _extract_api_token(self) -> Tuple[Optional[str], Optional[str]]:
         """
