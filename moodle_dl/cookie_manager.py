@@ -215,15 +215,20 @@ class CookieManager:
                     # 但由于当前函数不是 async，我们需要用线程池来运行
                     import concurrent.futures
                     from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+                    from moodle_dl.cli.authenticators import _should_use_headless_sso
 
                     # 使用线程池在后台运行同步版本（它会创建新的事件循环）
+                    # 默认有头模式（与 --init --sso / --refresh-cookies 一致），
+                    # 这样 Microsoft 多账号选择器、MFA、验证码都能手动处理。
+                    # 如不希望下载中途弹窗，可设置 MOODLE_DL_HEADLESS=1。
+                    use_headless = _should_use_headless_sso()
                     with concurrent.futures.ThreadPoolExecutor() as executor:
                         future = executor.submit(
                             auto_login_with_sso_sync,
                             self.moodle_domain,
                             self.cookies_path,
                             preferred_browser,
-                            True,  # headless
+                            use_headless,
                             30000,  # timeout
                             self._auth_manager  # 传入 AuthSessionManager 保存到数据库
                         )
@@ -246,12 +251,16 @@ class CookieManager:
 
                 try:
                     from moodle_dl.auto_sso_login import auto_login_with_sso_sync
+                    from moodle_dl.cli.authenticators import _should_use_headless_sso
 
+                    # 默认有头模式（与 --init --sso / --refresh-cookies 一致），
+                    # 这样 Microsoft 多账号选择器、MFA、验证码都能手动处理。
+                    # 如不希望下载中途弹窗，可设置 MOODLE_DL_HEADLESS=1。
                     success = auto_login_with_sso_sync(
                         moodle_domain=self.moodle_domain,
                         cookies_path=self.cookies_path,
                         preferred_browser=preferred_browser,
-                        headless=True,  # 使用无头模式（后台运行）
+                        headless=_should_use_headless_sso(),
                         auth_manager=self._auth_manager  # 传入 AuthSessionManager 保存到数据库
                     )
 

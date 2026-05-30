@@ -100,19 +100,39 @@ def test_load_export_module_loads_module_successfully():
     loader.exec_module.assert_called_once_with(module)
 
 
-def test_refresh_cookies_auto_sso_success_returns_true():
+def test_refresh_cookies_auto_sso_success_defaults_to_headful():
+    """下载中途 cookie 过期触发的 SSO 刷新，默认有头模式（与 --init --sso 一致）。
+
+    避免无头浏览器卡在 Microsoft 多账号选择器、MFA、验证码上。
+    """
     manager = make_manager()
 
-    with patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True) as auto_login:
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=False),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True) as auto_login,
+    ):
         assert manager.refresh_cookies() is True
 
     auto_login.assert_called_once_with(
         moodle_domain="example.test",
         cookies_path="/tmp/cookies.txt",
         preferred_browser="firefox",
-        headless=True,
+        headless=False,
         auth_manager=None,
     )
+
+
+def test_refresh_cookies_auto_sso_honors_headless_env_var():
+    """MOODLE_DL_HEADLESS=1 时 SSO 刷新走无头模式"""
+    manager = make_manager()
+
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=True),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True) as auto_login,
+    ):
+        assert manager.refresh_cookies() is True
+
+    assert auto_login.call_args.kwargs["headless"] is True
 
 
 def test_refresh_cookies_falls_back_to_browser_export_and_saves_session():
@@ -147,8 +167,32 @@ def test_refresh_cookies_handles_empty_and_exceptional_browser_export():
 async def test_refresh_cookies_uses_threaded_sso_when_event_loop_is_running():
     manager = make_manager()
 
-    with patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True):
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=False),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True) as auto_login,
+    ):
         assert manager.refresh_cookies() is True
+
+    # 在线程池里仍然以位置参数调用 auto_login_with_sso_sync(domain, path, browser, headless, ...)
+    args = auto_login.call_args.args
+    assert args[0] == "example.test"
+    assert args[1] == "/tmp/cookies.txt"
+    assert args[2] == "firefox"
+    assert args[3] is False  # 默认有头
+
+
+@pytest.mark.asyncio
+async def test_refresh_cookies_threaded_sso_honors_headless_env_var():
+    """事件循环内的 SSO 刷新同样响应 MOODLE_DL_HEADLESS"""
+    manager = make_manager()
+
+    with (
+        patch("moodle_dl.cli.authenticators._should_use_headless_sso", return_value=True),
+        patch("moodle_dl.auto_sso_login.auto_login_with_sso_sync", return_value=True) as auto_login,
+    ):
+        assert manager.refresh_cookies() is True
+
+    assert auto_login.call_args.args[3] is True
 
 
 def test_load_cookies_from_file_parses_valid_netscape_file(tmp_path):
