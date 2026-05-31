@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import base64
 import json
 from concurrent.futures import ThreadPoolExecutor
@@ -1697,6 +1698,119 @@ async def test_extract_kalvidres_text_does_not_warmup_on_cross_domain_redirect(t
     # 只有原 fetch，没有 warm-up 也没有重试
     assert len(sessions) == 1
     assert Task._last_session_warmup_at == 0.0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_warmup_calls_serialize_and_only_one_fires(task_factory, warmup_isolation):
+    """两个并发 task 同时撞上 enrol → Lock 串行化 → 只有 1 个真正发 GET。
+
+    没这一条，删掉 _session_warmup_lock 整个文件别的测试还能过——下载并发场景
+    才是 Lock 存在的全部理由。
+    """
+    task_a = task_factory()
+    task_b = task_factory()
+
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=SimpleNamespace(
+            status_code=200,
+            url='https://moodle.example.com/my/',
+        ))
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        results = await asyncio.gather(
+            task_a._try_warmup_session('moodle.example.com'),
+            task_b._try_warmup_session('moodle.example.com'),
+        )
+
+    # 一个真跑了 warm-up（True），另一个被节流（False）—— 顺序不保证
+    assert sorted(results) == [False, True]
+    assert len(sessions) == 1, '并发调用只应触发 1 次 warm-up GET'
+
+
+@pytest.mark.asyncio
+async def test_warmup_runs_again_after_throttle_window_expires(task_factory, warmup_isolation):
+    """超过 5 分钟窗口后，再次调用应真正发 warm-up；不能永久卡住。"""
+    task = task_factory()
+
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=SimpleNamespace(status_code=200, url='https://moodle.example.com/my/'))
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        first = await task._try_warmup_session('moodle.example.com')
+        # 把时间戳推回到 6 分钟前，模拟窗口过期
+        Task._last_session_warmup_at -= (Task.SESSION_WARMUP_MIN_INTERVAL_S + 60)
+        second = await task._try_warmup_session('moodle.example.com')
+
+    assert first is True
+    assert second is True, '节流窗口过期后应允许再次 warm-up'
+    assert len(sessions) == 2
+
+
+@pytest.mark.asyncio
+async def test_warmup_passes_existing_cookies_to_homepage_request(task_factory, warmup_isolation):
+    """warm-up 的灵魂就是携带现有 cookie 让 Moodle 重新识别——少了这步整个机制无意义。"""
+    task = task_factory(cookies_text='# Netscape cookie jar')
+
+    cookie_jar_sentinel = MagicMock(name='cookie_jar')
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=SimpleNamespace(status_code=200, url='https://moodle.example.com/my/'))
+        sessions.append(sess)
+        return sess
+
+    with (
+        patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session),
+        patch.object(Task, '_get_requests_cookie_jar', return_value=cookie_jar_sentinel),
+    ):
+        result = await task._try_warmup_session('moodle.example.com')
+
+    assert result is True
+    assert len(sessions) == 1
+    assert sessions[0].cookies is cookie_jar_sentinel, 'warm-up 必须用现有 cookie，否则等于没刷'
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_text_skips_retry_when_warmup_is_throttled(task_factory, tmp_path, warmup_isolation):
+    """节流命中时不应再发起重试 fetch——这就是节流要省的开销，必须锁死。"""
+    task = task_factory()
+
+    # 预先把时间戳设到刚刚（在窗口内）让 warm-up 必被节流
+    Task._last_session_warmup_at = asyncio.get_event_loop().time()
+
+    redirect = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/enrol/index.php?id=1',
+        text='<html>enrol</html>',
+    )
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=redirect)
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        result = await task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'throttled.md'),
+        )
+
+    assert result is False
+    # 原 fetch 1 次；warm-up 被节流（无 GET）；不应有重试 fetch
+    assert len(sessions) == 1, '节流命中时不应创建额外 session（既不 warm-up 也不 retry）'
 
 
 @pytest.mark.asyncio
