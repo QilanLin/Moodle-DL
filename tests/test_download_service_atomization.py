@@ -1000,3 +1000,66 @@ def test_rewrite_html_resource_links_skips_unreadable_file(tmp_path):
 
     # 文件被删了 → 走 isfile 检查直接返回 0，不应抛
     assert service._rewrite_html_resource_links_after_task(task) == 0
+
+
+def test_rewrite_html_resource_links_handles_utf8_bom(tmp_path):
+    # Windows Notepad / 一些 CMS 会给 UTF-8 文件加 BOM；不应被当成 cp1252
+    html_bytes = b'\xef\xbb\xbf' + '<p>café <img src="diagram.png"></p>'.encode('utf-8')
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    assert written.startswith(b'\xef\xbb\xbf'), '应保留 UTF-8 BOM'
+    assert '*02* diagram.png' in written.decode('utf-8-sig')
+    assert 'café' in written.decode('utf-8-sig')
+
+
+def test_rewrite_html_resource_links_honors_html5_meta_charset_short_form(tmp_path):
+    # HTML5 短格式：<meta charset="..."> —— 与 http-equiv 形式同等重要
+    html_bytes = (
+        b'<!DOCTYPE html><html><head><meta charset="windows-1252"></head>'
+        b'<body>cliff \x96 <img src="diagram.png"></body></html>'
+    )
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    assert b'\x96' in written, 'cp1252 字节应原样保留'
+    assert b'*02* diagram.png' in written
+
+
+def test_rewrite_html_resource_links_prefers_bom_over_meta_declaration(tmp_path):
+    # 优先级不变量：BOM 是文件头明示，永远胜过 <meta> 声明。
+    # 这里 BOM 说 UTF-16 LE，<meta> 谎称是 cp1252；要按 BOM 走。
+    inner = (
+        '<html><head><meta charset="windows-1252"></head>'
+        '<body><img src="diagram.png"></body></html>'
+    )
+    html_bytes = inner.encode('utf-16')  # 自带 UTF-16 LE BOM
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    assert written.startswith(b'\xff\xfe'), 'BOM 必须按原编码保留'
+    # 用 cp1252 解析会乱码，用 UTF-16 才对
+    assert '*02* diagram.png' in written.decode('utf-16')
+
+
+def test_rewrite_html_resource_links_does_not_write_when_nothing_changes(tmp_path):
+    # 当 rewrite_html_links_to_local_paths 返回 0 个替换时，文件不应被写回 ——
+    # 否则会因为编码 round-trip（即便结果一致）刷新 mtime，触发同步工具误判。
+    html_bytes = b'<p>nothing to rewrite here, no img tags</p>'
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    original_mtime = html_path.stat().st_mtime_ns
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 0
+
+    assert html_path.read_bytes() == html_bytes
+    assert html_path.stat().st_mtime_ns == original_mtime, '无变化时不应回写文件'
