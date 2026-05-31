@@ -115,6 +115,17 @@ class Task:
     CHUNK_SIZE = 102400  # default: 1024 * 100 = 100kb; will be overwritten with download_chunk_size
     MAX_DL_RETRIES = 3
 
+    # ======================== Session warm-up 节流 ========================
+    # 当 kalvidres 请求落到 enrol/login 重定向页时，Moodle 的 session 可能只是
+    # 进入了"降级"状态——cookie 还在但服务端不认。一次便宜的主页 GET 就能让
+    # session 重新被识别。但要节流：避免大批量重定向风暴时每个任务都打主页。
+    # 5 分钟窗口是经验值——比 sessiontimeout (8h) 短得多，比单批下载的
+    # 短突发 (秒级) 长得多。
+    SESSION_WARMUP_MIN_INTERVAL_S = 5 * 60
+    _last_session_warmup_at: float = 0.0
+    # asyncio.Lock 必须惰性创建，否则会绑到 import 时的 event loop（通常是 None）
+    _session_warmup_lock: Optional[asyncio.Lock] = None
+
     # ======================== Kaltura 提取常量 ========================
     # HTTP 请求配置
     REQUEST_TIMEOUT = 30
@@ -1206,6 +1217,70 @@ class Task:
         async with aiofiles.open(self.file.saved_to, "wb") as target_file:
             await target_file.write(data)
 
+    @classmethod
+    def _get_session_warmup_lock(cls) -> asyncio.Lock:
+        """惰性创建跨任务共享的 asyncio.Lock。
+
+        必须在 await 上下文里第一次访问；不能放到类定义里——那样会绑定到
+        import 时（通常 None）的 event loop，并发任务上各自的 loop 看不到它。
+        """
+        if cls._session_warmup_lock is None:
+            cls._session_warmup_lock = asyncio.Lock()
+        return cls._session_warmup_lock
+
+    async def _try_warmup_session(self, moodle_domain: str) -> bool:
+        """主动 GET Moodle 主页，把 session 从'降级'状态拉回来。
+
+        触发场景：kalvidres 请求被重定向到 enrol/index.php 或 login/index.php。
+        Moodle 服务端 session 偶尔会进入这种状态——cookie 还在浏览器里、用户也
+        真的注册了课程，但服务端这次请求里没认出来。一次便宜的 GET / 通常就
+        能让后续请求恢复正常。
+
+        @param moodle_domain: 形如 "keats.kcl.ac.uk"
+        @return: True 表示这次调用真的发起了 warm-up（不保证 session 恢复了，
+                 调用方应该接着重试原请求；返回 False 表示被节流跳过了）。
+        """
+        lock = self._get_session_warmup_lock()
+        async with lock:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - Task._last_session_warmup_at
+            if elapsed < self.SESSION_WARMUP_MIN_INTERVAL_S:
+                logging.debug(
+                    '[%d] Session warm-up 已在 %.0fs 前执行过，跳过（最小间隔 %ds）',
+                    self.task_id, elapsed, self.SESSION_WARMUP_MIN_INTERVAL_S,
+                )
+                return False
+
+            # 真正发起 warm-up GET。用 requests + 现有 cookie，跟随重定向；
+            # 失败也吞掉——这只是个保底机制，真有问题让调用方的重试自己暴露。
+            try:
+                warmup_url = f'https://{moodle_domain}/'
+                logging.info(
+                    '[%d] 🔄 Session 似乎降级，访问 %s 尝试唤醒...',
+                    self.task_id, warmup_url,
+                )
+                session = requests.Session()
+                if self.opts.cookies_text is not None:
+                    session.cookies = self._get_requests_cookie_jar()
+                verify_ssl = not self.opts.global_opts.skip_cert_verify
+                resp = await asyncio.to_thread(
+                    session.get, warmup_url,
+                    headers=self.RQ_HEADER, verify=verify_ssl,
+                    timeout=self.REQUEST_TIMEOUT, allow_redirects=True,
+                )
+                # 注意：这里不判断结果是 my/ 还是 login/——成败让调用方的重试
+                # 决定。我们只关心"warm-up 这个动作已经执行了"。
+                logging.debug(
+                    '[%d] Warm-up 完成 (status=%d, final_url=%s)',
+                    self.task_id, resp.status_code, resp.url,
+                )
+            except Exception as e:
+                logging.debug('[%d] Warm-up 请求失败: %s', self.task_id, e)
+                # 故意吞——warm-up 失败不应阻塞重试
+
+            Task._last_session_warmup_at = now
+            return True
+
     async def extract_kalvidres_text(self, url: str, save_path: str) -> bool:
         """
         Extract text content from a kalvidres page and save as Markdown.
@@ -1219,39 +1294,55 @@ class Task:
             import re
             import html as html_module
             import requests
+            from urllib.parse import urlparse
 
             logging.debug('[%d] Extracting text from kalvidres URL: %s', self.task_id, url)
 
-            # Use requests library for better cookie handling with redirects
-            session = requests.Session()
-
-            # Legacy fallback: load cookies from opts.cookies_text (formerly Cookies.txt)
-            if self.opts.cookies_text is not None:
-                session.cookies = self._get_requests_cookie_jar()
-
-            # Set SSL verification
             verify_ssl = not self.opts.global_opts.skip_cert_verify
+            original_domain = urlparse(url).netloc
 
-            # Make request with cookies and follow redirects
-            response = session.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+            def _fetch():
+                # 每次重试都用新 session，避免上一轮的状态污染
+                sess = requests.Session()
+                if self.opts.cookies_text is not None:
+                    sess.cookies = self._get_requests_cookie_jar()
+                return sess.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
+
+            response = _fetch()
+            final_url = response.url
+            final_domain = urlparse(final_url).netloc
+
+            # session 降级检测：cookie 还在但服务端没认出来。enrol/login 重定向
+            # 且仍在同一域名 → 试一次主页 warm-up，让 Moodle 服务端把 session
+            # 状态拉回来，再重试一次。warm-up 自带 5 分钟节流。
+            redirect_to_auth = (
+                response.status_code == 200
+                and ('login/index.php' in final_url or 'enrol/index.php' in final_url)
+                and final_domain == original_domain
+            )
+            if redirect_to_auth:
+                logging.info(
+                    '[%d] Kalvidres 被重定向到 %s，尝试 session warm-up 后重试',
+                    self.task_id, final_url,
+                )
+                warmed = await self._try_warmup_session(original_domain)
+                if warmed:
+                    response = _fetch()
+                    final_url = response.url
+                    final_domain = urlparse(final_url).netloc
 
             if response.status_code != 200:
                 logging.warning('[%d] Failed to fetch kalvidres page: %d', self.task_id, response.status_code)
                 return False
 
-            # Check if redirected to Moodle login page
-            final_url = response.url
             logging.debug('[%d] Kalvidres page URL: %s', self.task_id, final_url)
 
-            # Extract domain from original URL and final URL
-            from urllib.parse import urlparse
-            original_domain = urlparse(url).netloc
-            final_domain = urlparse(final_url).netloc
-
-            # If redirected to login/index.php on the SAME domain, cookies are invalid
-            # If redirected to a DIFFERENT domain, it's likely SSO (Microsoft, Google, etc.) which is ok
+            # 重试后仍在 enrol/login → cookie 真死了（或用户真没注册）
             if ('login/index.php' in final_url or 'enrol/index.php' in final_url) and final_domain == original_domain:
-                logging.warning('[%d] Redirected to Moodle login page at %s, cookies may be invalid', self.task_id, final_url)
+                logging.warning(
+                    '[%d] Warm-up 后仍被重定向到 %s，cookies 可能已失效或用户未注册该课程',
+                    self.task_id, final_url,
+                )
                 return False
 
             html_content = response.text

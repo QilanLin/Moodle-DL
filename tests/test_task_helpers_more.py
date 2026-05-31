@@ -1519,6 +1519,186 @@ async def test_extract_kalvidres_text_handles_cookie_fallback_and_empty_pages(ta
     empty_task._save_kalvidres_text.assert_not_awaited()
 
 
+# ---- Session warm-up on enrol/login redirect -------------------------------
+#
+# 真实场景：用户已注册 PEP 课程，但 kalvidres 请求落到 enrol/index.php。
+# Moodle 服务端的 session 偶尔会进入"降级"状态——cookie 有效，但服务端没认。
+# 一次便宜的主页 GET 通常就能恢复。整个机制对每个 Task 实例透明，但状态在
+# 类级别共享（节流 + Lock），所以测试要小心隔离。
+
+def _reset_warmup_state():
+    Task._last_session_warmup_at = 0.0
+    Task._session_warmup_lock = None
+
+
+@pytest.fixture(autouse=False)
+def warmup_isolation():
+    """每个 warm-up 测试前后清掉类级状态，避免相互污染。"""
+    _reset_warmup_state()
+    yield
+    _reset_warmup_state()
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_text_warms_up_session_on_enrol_redirect(task_factory, tmp_path, warmup_isolation):
+    """enrol/index.php 重定向 → warm-up 一次 → 重试拿到真页面 → 成功提取"""
+    task = task_factory()
+
+    enrol_redirect = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/enrol/index.php?id=119910',
+        text='<html>enrol page</html>',
+    )
+    warmup_ok = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/my/',
+        text='<html>my dashboard</html>',
+    )
+    real_page = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/mod/kalvidres/view.php?id=1',
+        text='<html><head><title>Lecture</title></head><body><h1>Hello</h1></body></html>',
+    )
+
+    # 3 个 session 各自一次 .get()：原 fetch → warm-up → 重试 fetch
+    responses_iter = iter([enrol_redirect, warmup_ok, real_page])
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(side_effect=lambda *a, **kw: next(responses_iter))
+        sessions.append(sess)
+        return sess
+
+    task._save_kalvidres_text = AsyncMock()
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        result = await task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'ok.md'),
+        )
+
+    assert result is True
+    task._save_kalvidres_text.assert_awaited_once()
+    # 3 个 session 被创建：原 fetch / warm-up GET / 重试 fetch
+    assert len(sessions) == 3
+    # 类状态被更新（节流计时器记上了）
+    assert Task._last_session_warmup_at > 0
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_text_gives_up_after_warmup_still_redirects(task_factory, tmp_path, warmup_isolation):
+    """warm-up 后还是 enrol/login → 标记 cookies 失效或未注册，返回 False，不再循环"""
+    task = task_factory()
+
+    redirect = SimpleNamespace(
+        status_code=200,
+        url='https://moodle.example.com/login/index.php',
+        text='<html>login</html>',
+    )
+
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        # 所有 fetch 都返回 redirect
+        sess.get = MagicMock(return_value=redirect)
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        result = await task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'fail.md'),
+        )
+
+    assert result is False
+    # 只重试 1 次（warm-up + retry），不会无限循环
+    # 原 fetch (1) + warm-up GET (1) + 重试 fetch (1) = 3
+    assert len(sessions) == 3
+
+
+@pytest.mark.asyncio
+async def test_warmup_is_throttled_within_window(task_factory, warmup_isolation):
+    """5 分钟窗口内第二次调用直接返回 False，不发起 GET。"""
+    task = task_factory()
+
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=SimpleNamespace(status_code=200, url='https://moodle.example.com/my/'))
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        first = await task._try_warmup_session('moodle.example.com')
+        second = await task._try_warmup_session('moodle.example.com')
+
+    assert first is True
+    assert second is False, '5 分钟节流应阻止第二次 warm-up'
+    assert len(sessions) == 1, '第二次调用不应创建新 session'
+
+
+@pytest.mark.asyncio
+async def test_warmup_swallows_network_errors(task_factory, warmup_isolation):
+    """warm-up 自身失败不应抛——只是个保底机制"""
+    task = task_factory()
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(side_effect=requests.ConnectionError('网络断了'))
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        # 不应抛
+        result = await task._try_warmup_session('moodle.example.com')
+
+    # 仍返回 True（warm-up 这个"动作"已经执行了），并且节流时间戳已更新
+    assert result is True
+    assert Task._last_session_warmup_at > 0
+
+
+@pytest.mark.asyncio
+async def test_warmup_lock_lazy_initializes(warmup_isolation):
+    """Lock 必须惰性创建，避免绑定到 import 时的 event loop。"""
+    assert Task._session_warmup_lock is None
+    lock = Task._get_session_warmup_lock()
+    assert lock is not None
+    # 第二次调用返回同一个实例
+    assert Task._get_session_warmup_lock() is lock
+
+
+@pytest.mark.asyncio
+async def test_extract_kalvidres_text_does_not_warmup_on_cross_domain_redirect(task_factory, tmp_path, warmup_isolation):
+    """重定向到外部 SSO (Microsoft) 不算 session 降级，不应触发 warm-up"""
+    task = task_factory()
+
+    sso_redirect = SimpleNamespace(
+        status_code=200,
+        url='https://login.microsoftonline.com/common/oauth2/authorize?...',
+        text='<html>SSO</html>',
+    )
+
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=sso_redirect)
+        sessions.append(sess)
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        result = await task.extract_kalvidres_text(
+            'https://moodle.example.com/mod/kalvidres/view.php?id=1',
+            str(tmp_path / 'sso.md'),
+        )
+
+    assert result is False
+    # 只有原 fetch，没有 warm-up 也没有重试
+    assert len(sessions) == 1
+    assert Task._last_session_warmup_at == 0.0
+
+
 @pytest.mark.asyncio
 async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory):
     task = task_factory()
