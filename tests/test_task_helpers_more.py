@@ -742,6 +742,37 @@ async def test_leganto_pdf_download_uses_lti_launch_payload(task_factory):
 
 
 @pytest.mark.asyncio
+async def test_leganto_pdf_download_honors_headless_env_override(task_factory):
+    """MOODLE_DL_HEADLESS=1 → _should_use_headless_sso 返回 True → Leganto 也走无头。
+
+    锁定 task.py 真的查了开关；少了这条用例，硬编码 headless=False 也能让所有现
+    存测试通过，但 CI / 无人值守跑就会卡 SSO 弹窗。
+    """
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = (
+        '{"endpoint": "https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1", '
+        '"parameters": [{"name": "id_token", "value": "signed-token"}]}'
+    )
+    await task._prepare_download()
+
+    with (
+        patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls,
+        patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=True),
+    ):
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock()
+
+        await task._download_leganto_reading_list_pdf()
+
+    printer_cls.assert_called_once_with('cookie-data', skip_cert_verify=False, headless=True)
+
+
+@pytest.mark.asyncio
 async def test_leganto_pdf_target_removes_previous_shortcut_fallback(task_factory, tmp_path):
     old_shortcut = tmp_path / 'Week 1' / '*07* Reading List.webloc'
     old_shortcut.parent.mkdir(parents=True, exist_ok=True)

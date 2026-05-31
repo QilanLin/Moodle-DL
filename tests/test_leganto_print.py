@@ -1625,3 +1625,31 @@ async def test_context_close_failure_does_not_mask_real_error(monkeypatch, tmp_p
 async def test_wall_clock_budget_is_a_class_constant(monkeypatch, tmp_path):
     """TOTAL_BUDGET_S 默认 90s，但允许 subclass 或测试覆盖。"""
     assert LegantoPdfPrinter.TOTAL_BUDGET_S == 90
+
+
+@pytest.mark.asyncio
+async def test_print_to_pdf_propagates_cancellation_without_conversion(monkeypatch, tmp_path):
+    """用户 Ctrl+C → CancelledError 必须原样穿透，不能被转成 timeout RuntimeError。
+
+    asyncio.wait_for 在内部 task 被外部取消时抛 CancelledError（不是 TimeoutError）。
+    如果有人把 'except asyncio.TimeoutError' 简化成 'except Exception'，Ctrl+C 就会
+    变成 '渲染超过 90s 预算' 这种误导性错误，调用栈也会被截断。
+    """
+    printer = LegantoPdfPrinter('cookie-data')
+    printer.TOTAL_BUDGET_S = 60
+
+    async def hang_forever(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(printer, '_print_to_pdf_unbounded', hang_forever)
+
+    task = asyncio.create_task(printer.print_to_pdf(
+        'https://rl.kcl.ac.uk/leganto/nui/lists/1',
+        str(tmp_path / 'out.pdf'),
+    ))
+    # 让 wait_for 开始等
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
