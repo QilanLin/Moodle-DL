@@ -15,6 +15,47 @@ from moodle_dl.downloader.download_service import DownloadService
 from moodle_dl.types import File, Course, DownloadOptions, MoodleDlOpts, TaskState
 
 
+def make_saved_html_file(path, *, file_id=29, url='', content_type='html') -> File:
+    return File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='index.html',
+        content_fileurl=url,
+        content_filesize=0,
+        content_timemodified=0,
+        module_modname='book',
+        content_type=content_type,
+        content_isexternalfile=False,
+        saved_to=str(path),
+        file_id=file_id,
+    )
+
+
+def make_saved_image_file(path, *, file_id=30) -> File:
+    return File(
+        module_id=20,
+        section_name='Need help?',
+        section_id=1,
+        module_name='What name/email configuration does git require?',
+        content_filepath='/',
+        content_filename='Screenshot 2021-07-18 at 12.19.08.png',
+        content_fileurl=(
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/11761256/mod_book/chapter/827835/'
+            'Screenshot%202021-07-18%20at%2012.19.08.png?token=secret&offline=1'
+        ),
+        content_filesize=1,
+        content_timemodified=0,
+        module_modname='book',
+        content_type='file',
+        content_isexternalfile=False,
+        saved_to=str(path),
+        file_id=file_id,
+    )
+
+
 class TestDownloadServiceAtomization(unittest.TestCase):
     """Test atomized DownloadService functions"""
 
@@ -711,6 +752,87 @@ def test_rewrite_html_resource_links_after_resource_task_finishes(tmp_path):
     assert service._rewrite_html_resource_links_after_task(task) == 0
 
 
+def test_rewrite_html_resource_links_after_html_task_finishes_when_resource_exists(tmp_path):
+    chapter_dir = tmp_path / '3.1. What name email configuration does git require'
+    chapter_dir.mkdir()
+    html_path = chapter_dir / '*01* index.html'
+    image_path = chapter_dir / '*02* Screenshot 2021-07-18 at 12.19.08.png'
+    html_path.write_text(
+        '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" '
+        'alt="GitHub primary email address"></p>',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    html_file = make_saved_html_file(html_path)
+    image_file = make_saved_image_file(image_path)
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = [Course(1, 'Course', [html_file, image_file])]
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = []
+    task = MagicMock(file=html_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+    assert 'src="*02* Screenshot 2021-07-18 at 12.19.08.png"' in html_path.read_text(encoding='utf-8')
+
+
+def test_empty_queue_rewrites_stored_html_resource_links_for_resume(tmp_path):
+    chapter_dir = tmp_path / '3.1. What name email configuration does git require'
+    chapter_dir.mkdir()
+    html_path = chapter_dir / '*01* index.html'
+    image_path = chapter_dir / '*02* Screenshot 2021-07-18 at 12.19.08.png'
+    html_path.write_text(
+        '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" '
+        'alt="GitHub primary email address"></p>',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    html_file = make_saved_html_file(html_path)
+    image_file = make_saved_image_file(image_path)
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = []
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = [Course(1, 'Course', [html_file, image_file])]
+
+    asyncio.run(service.real_run())
+
+    service.database.batch_delete_files.assert_called_once_with([])
+    assert 'src="*02* Screenshot 2021-07-18 at 12.19.08.png"' in html_path.read_text(encoding='utf-8')
+
+
+def test_rewrite_downloaded_html_resource_links_skips_invalid_encoding_html(tmp_path):
+    chapter_dir = tmp_path / 'chapter'
+    chapter_dir.mkdir()
+    broken_html_path = chapter_dir / '*01* broken.html'
+    valid_html_path = chapter_dir / '*02* index.html'
+    image_path = chapter_dir / '*03* Screenshot 2021-07-18 at 12.19.08.png'
+    broken_html_path.write_bytes(b'\xff\xfe\x00\x00')
+    valid_html_path.write_text(
+        '<p><img src="Screenshot%202021-07-18%20at%2012.19.08.png" alt="GitHub"></p>',
+        encoding='utf-8',
+    )
+    image_path.write_bytes(b'image')
+
+    broken_html_file = make_saved_html_file(broken_html_path, file_id=29)
+    valid_html_file = make_saved_html_file(valid_html_path, file_id=30)
+    image_file = make_saved_image_file(image_path, file_id=31)
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = [Course(1, 'Course', [broken_html_file, valid_html_file, image_file])]
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = []
+
+    assert service._rewrite_downloaded_html_resource_links() == 1
+    assert 'src="*03* Screenshot 2021-07-18 at 12.19.08.png"' in valid_html_path.read_text(encoding='utf-8')
+    assert broken_html_path.read_bytes() == b'\xff\xfe\x00\x00'
+
+
 def test_real_run_rewrites_html_resource_links_after_each_task():
     async def idle_status_logger():
         await asyncio.Event().wait()
@@ -779,3 +901,102 @@ def test_real_run_rewrites_html_resource_links_without_download_tasks():
 
     service.database.batch_delete_files.assert_called_once_with([])
     service._rewrite_downloaded_html_resource_links.assert_called_once_with()
+
+
+# ---- HTML 编码检测与回写 ----------------------------------------------------
+#
+# 真实数据：Word 导出的 *Lab1/Lab2 worksheet.html* 是带 BOM 的 UTF-16 LE，
+# *Lab3 worksheet.html* 是无 BOM 的 cp1252（含 0x96 这种 cp1252-only 字符）。
+# 在 #38240e9 之前，rewrite 用 utf-8 死活解码，整批 worksheet 都被静默跳过。
+# 这些用例锁死正确的回退顺序，并保证写回不破坏原始字节序列。
+
+def _make_html_file_with_image(tmp_path, html_bytes: bytes) -> tuple:
+    chapter_dir = tmp_path / 'Assessment'
+    chapter_dir.mkdir()
+    html_path = chapter_dir / '*07* Lab1 worksheet.html'
+    image_path = chapter_dir / '*02* diagram.png'
+
+    html_path.write_bytes(html_bytes)
+    image_path.write_bytes(b'image-bytes')
+
+    html_file = make_saved_html_file(html_path, file_id=101)
+    image_file = make_saved_image_file(image_path, file_id=102)
+
+    service = DownloadService.__new__(DownloadService)
+    service.courses = [Course(1, 'Course', [html_file, image_file])]
+    service.all_tasks = []
+    service.database = MagicMock()
+    service.database.get_stored_files.return_value = []
+    return service, html_path, image_file
+
+
+def test_rewrite_html_resource_links_handles_utf16_le_with_bom(tmp_path):
+    html_text = '<p><img src="diagram.png" alt="d"></p>'
+    html_bytes = html_text.encode('utf-16')  # 自带 UTF-16 LE BOM
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    assert written.startswith(b'\xff\xfe'), '应保留原始 UTF-16 LE BOM'
+    assert '*02* diagram.png' in written.decode('utf-16')
+
+
+def test_rewrite_html_resource_links_handles_cp1252_word_export(tmp_path):
+    # Word 导出 cp1252：0x96 是 en-dash，UTF-8 解不出来
+    html_bytes = (
+        b'<html><head><title>Lab 3 \x96 worksheet</title></head>'
+        b'<body><img src="diagram.png"></body></html>'
+    )
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    assert b'\x96' in written, '应保留 cp1252 字节序列，不要篡改成 UTF-8'
+    assert b'*02* diagram.png' in written
+
+
+def test_rewrite_html_resource_links_honors_meta_charset_declaration(tmp_path):
+    # 没有 BOM，但 <meta charset> 声明了 windows-1252
+    html_bytes = (
+        b'<!DOCTYPE html><html><head>'
+        b'<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">'
+        b'</head><body>n\xe9 \x96 <img src="diagram.png"></body></html>'
+    )
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    written = html_path.read_bytes()
+    decoded = written.decode('windows-1252')
+    assert '*02* diagram.png' in decoded
+    assert 'né' in decoded
+
+
+def test_rewrite_html_resource_links_round_trips_utf8(tmp_path):
+    # 默认情况：UTF-8，无 BOM，无 meta —— 不要回退到 cp1252
+    html_bytes = '<p>café — <img src="diagram.png"></p>'.encode('utf-8')
+    service, html_path, image_file = _make_html_file_with_image(tmp_path, html_bytes)
+    task = MagicMock(file=image_file)
+
+    assert service._rewrite_html_resource_links_after_task(task) == 1
+
+    decoded = html_path.read_text(encoding='utf-8')
+    assert 'café — ' in decoded
+    assert '*02* diagram.png' in decoded
+
+
+def test_rewrite_html_resource_links_skips_unreadable_file(tmp_path):
+    # 即使所有解码都失败也只是 debug 一行、返回 0，不能抛
+    service, html_path, _image_file = _make_html_file_with_image(
+        tmp_path, b'<p><img src="diagram.png"></p>'
+    )
+    html_path.unlink()
+    task = MagicMock(file=_image_file)
+
+    # 文件被删了 → 走 isfile 检查直接返回 0，不应抛
+    assert service._rewrite_html_resource_links_after_task(task) == 0

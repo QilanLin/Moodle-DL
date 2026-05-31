@@ -2,6 +2,7 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -17,6 +18,67 @@ from moodle_dl.downloader.task import Task
 from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.types import Course, DlEvent, DownloadOptions, DownloadStatus, File, MoodleDlOpts, TaskState
 from moodle_dl.utils import calc_speed, format_bytes, format_speed, PathTools as PT
+
+
+# 按优先级排列的 BOM —— UTF-32 BOM 必须先于 UTF-16 BOM 检查，否则会被误识别为后者。
+_BOM_ENCODINGS: Tuple[Tuple[bytes, str], ...] = (
+    (b'\x00\x00\xfe\xff', 'utf-32-be'),
+    (b'\xff\xfe\x00\x00', 'utf-32-le'),
+    (b'\xef\xbb\xbf', 'utf-8-sig'),
+    (b'\xfe\xff', 'utf-16-be'),
+    (b'\xff\xfe', 'utf-16-le'),
+)
+
+# <meta charset="..."> 或 <meta http-equiv="Content-Type" content="text/html; charset=...">
+# 在已检测过 BOM 后，HTML 头部通常都能用 ASCII 子集解析（Word 导出的 cp1252 文档也满足）。
+_META_CHARSET_RE = re.compile(
+    rb"""<meta[^>]+?charset\s*=\s*["']?([\w\-:.]+)""",
+    re.IGNORECASE,
+)
+
+
+def _detect_bom_encoding(raw: bytes) -> Optional[str]:
+    for bom, encoding in _BOM_ENCODINGS:
+        if raw.startswith(bom):
+            return encoding
+    return None
+
+
+def _detect_html_meta_encoding(raw: bytes) -> Optional[str]:
+    # 只扫描前 4 KiB，charset 声明照规范必须出现在 <head> 的前 1024 字节内，留点余量
+    match = _META_CHARSET_RE.search(raw[:4096])
+    if not match:
+        return None
+    try:
+        encoding = match.group(1).decode('ascii').strip().lower()
+    except UnicodeDecodeError:
+        return None
+    # 一些 Word 导出的页面会写 charset=unicode 这种非标准名，跳过
+    if not encoding or encoding == 'unicode':
+        return None
+    return encoding
+
+
+def _detect_encoding_with_optional_lib(raw: bytes) -> Optional[str]:
+    """charset-normalizer / chardet 通常由 requests 间接安装；缺失时静默跳过。"""
+    try:
+        from charset_normalizer import from_bytes  # type: ignore
+
+        best = from_bytes(raw).best()
+        if best is not None and best.encoding:
+            return best.encoding
+    except ImportError:
+        pass
+    try:
+        import chardet  # type: ignore
+
+        guess = chardet.detect(raw)
+        encoding = guess.get('encoding') if guess else None
+        if encoding:
+            return encoding
+    except ImportError:
+        pass
+    return None
 
 
 class DownloadPauseController:
@@ -586,8 +648,7 @@ class DownloadService:
             return 0
 
         try:
-            with open(saved_to, 'r', encoding='utf-8') as html_file:
-                html_content = html_file.read()
+            html_content, encoding = self._read_html_file(saved_to)
 
             rewritten_html, file_replacements = rewrite_html_links_to_local_paths(
                 html_content,
@@ -598,7 +659,8 @@ class DownloadService:
             if file_replacements <= 0:
                 return 0
 
-            with open(saved_to, 'w', encoding='utf-8') as html_file:
+            # 用原始编码写回，避免破坏 Word 导出的 UTF-16 / cp1252 文档
+            with open(saved_to, 'w', encoding=encoding, errors='replace', newline='') as html_file:
                 html_file.write(rewritten_html)
 
             logging.debug(
@@ -607,9 +669,56 @@ class DownloadService:
                 saved_to,
             )
             return file_replacements
-        except OSError as error:
+        except (OSError, UnicodeDecodeError, UnicodeError, LookupError) as error:
             logging.debug('重写 HTML 本地资源链接失败: %s (%s)', saved_to, error)
             return 0
+
+    @staticmethod
+    def _read_html_file(path: str) -> Tuple[str, str]:
+        """
+        读取 HTML 文件并返回 (内容, 检测出的编码)。
+
+        编码检测顺序：
+        1. BOM (UTF-8 / UTF-16 / UTF-32) —— 文件头明示，最可靠
+        2. <meta charset="..."> / <meta http-equiv="Content-Type" content="...charset=..."> 声明
+        3. 严格 UTF-8
+        4. 可选的 charset-normalizer / chardet 自动检测
+        5. cp1252 兜底（Windows / Word 导出常见编码），decode 失败位用替换字符
+
+        写回时复用同一编码，避免破坏原始字节序列。
+        """
+        with open(path, 'rb') as fh:
+            raw = fh.read()
+
+        # 1. BOM
+        bom_encoding = _detect_bom_encoding(raw)
+        if bom_encoding is not None:
+            return raw.decode(bom_encoding), bom_encoding
+
+        # 2. HTML meta 声明
+        meta_encoding = _detect_html_meta_encoding(raw)
+        if meta_encoding is not None:
+            try:
+                return raw.decode(meta_encoding), meta_encoding
+            except (UnicodeDecodeError, LookupError):
+                pass  # 声明的编码不可用，继续尝试
+
+        # 3. UTF-8（最常见）
+        try:
+            return raw.decode('utf-8'), 'utf-8'
+        except UnicodeDecodeError:
+            pass
+
+        # 4. 第三方检测（requests 通常会带上其中一个）
+        detected = _detect_encoding_with_optional_lib(raw)
+        if detected is not None:
+            try:
+                return raw.decode(detected), detected
+            except (UnicodeDecodeError, LookupError):
+                pass
+
+        # 5. cp1252 兜底
+        return raw.decode('cp1252', errors='replace'), 'cp1252'
 
     def _rewrite_html_resource_links_for_files(
         self,
