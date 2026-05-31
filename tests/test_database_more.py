@@ -518,6 +518,29 @@ def test_failed_file_lifecycle_and_grouped_queries(recorder):
     ]
 
 
+def test_permanent_failure_marker_excluded_from_retry_queue(recorder):
+    """以 '[PERMANENT] ' 前缀的失败既不出现在 retry 列表，也不计入 summary。
+
+    download_service 用这个前缀给 LegantoPermanentFailureError 之类不可恢复
+    错误打标。少了 DB 这层过滤，--retry-failed 还会把它们捞出来重跑，每次
+    浪费 90s wall-clock budget。
+    """
+    retryable = make_file(module_id=11, filename='retryable.pdf', url='https://example.com/retryable.pdf')
+    permanent = make_file(module_id=12, filename='deleted-list.pdf', url='https://example.com/deleted-list.pdf')
+
+    recorder.save_failed_file(retryable, 303, 'Course Three', 'network blip')
+    recorder.save_failed_file(permanent, 303, 'Course Three', '[PERMANENT] Reading List deleted')
+
+    grouped = recorder.get_failed_files_with_course_info(min_failures=1)
+    assert 303 in grouped
+    assert [f.content_filename for f in grouped[303]['files']] == ['retryable.pdf'], \
+        '[PERMANENT] 文件不应出现在 retry 列表'
+
+    summary = recorder.get_failed_files_summary()
+    assert summary[303]['failed_count'] == 1, \
+        'summary 数字应反映实际会被重试的数量，permanent 不算'
+
+
 def test_delete_file_and_batch_delete_files_mark_rows_deleted_and_clear_cache(recorder):
     first = make_file(module_id=1, filename='delete-me.pdf', url='https://example.com/delete-me.pdf')
     first.file_id = recorder.new_file(first, 101, 'Course One')

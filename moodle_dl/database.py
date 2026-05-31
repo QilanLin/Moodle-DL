@@ -1411,10 +1411,14 @@ class StateRecorder:
     def get_failed_files_with_course_info(self, min_failures: int = 1) -> Dict[int, Dict]:
         """
         查询下载失败的文件列表，并按课程分组
-        
+
         包含 'failed' 和 'retrying' 状态的文件：
         - 'failed': 上次下载失败的文件
         - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
+
+        排除：last_failed_reason 以 '[PERMANENT] ' 开头的文件——这是被标记为
+        不可恢复（如 Reading List 已被学校删除），重试 100% 会再次失败，强制
+        重试只是浪费 wall-clock。用户若仍想试，可清除 last_failed_reason。
 
         @param min_failures: 最小连续失败次数，默认1（所有失败文件）
                             注意：'retrying' 状态的文件 consecutive_failures=0，
@@ -1431,6 +1435,7 @@ class StateRecorder:
                 (download_status = 'failed' AND consecutive_failures >= ?)
                 OR download_status = 'retrying'
             )
+            AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
             ORDER BY course_id, consecutive_failures DESC, last_failed_at DESC
             """,
             (min_failures,)
@@ -1458,10 +1463,14 @@ class StateRecorder:
     def get_failed_files_summary(self) -> Dict[int, Dict]:
         """
         获取失败文件的统计摘要（按课程分组）
-        
+
         包含 'failed' 和 'retrying' 状态的文件：
         - 'failed': 上次下载失败的文件
         - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
+
+        排除 last_failed_reason 以 '[PERMANENT] ' 开头的不可恢复失败，
+        保持与 get_failed_files_with_course_info 一致——summary 的数字
+        就是实际会被重试的数字。
 
         @return: 字典，键为 course_id，值为统计信息
         """
@@ -1479,6 +1488,7 @@ class StateRecorder:
                 MAX(last_failed_at) as latest_failure
             FROM files
             WHERE download_status IN ('failed', 'retrying')
+            AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
             GROUP BY course_id
             ORDER BY failed_count DESC
             """

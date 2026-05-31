@@ -1653,3 +1653,40 @@ async def test_print_to_pdf_propagates_cancellation_without_conversion(monkeypat
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+# ---- LegantoPermanentFailureError classification ----------------------------
+#
+# 不可恢复错误标记的全部价值——少了下面的分类逻辑，rl.kcl.ac.uk/nui/error/* 这种
+# 显式"找不到 list"会被当成普通 RuntimeError，进入 --retry-failed 队列被反复折腾。
+
+def test_classify_load_error_upgrades_nui_error_path_to_permanent():
+    from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
+
+    page = SimpleNamespace(url='https://rl.kcl.ac.uk/leganto/nui/error/general?auth=SAML')
+    err = LegantoPdfPrinter._classify_load_error(page, 'Leganto reading list did not load: Leganto error page')
+
+    assert isinstance(err, LegantoPermanentFailureError)
+    assert 'Reading List 可能已被课程管理员删除' in str(err)
+
+
+def test_classify_load_error_keeps_sso_bounce_as_regular_runtime_error():
+    """微软 SSO 跳转不是 permanent——重新登录就能修。"""
+    from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
+
+    page = SimpleNamespace(url='https://login.microsoftonline.com/common/oauth2/authorize')
+    err = LegantoPdfPrinter._classify_load_error(page, 'Leganto redirected to Microsoft account sign-in')
+
+    assert isinstance(err, RuntimeError)
+    assert not isinstance(err, LegantoPermanentFailureError), \
+        'SSO 跳转应保持可重试'
+
+
+def test_classify_load_error_keeps_non_error_leganto_path_as_regular():
+    """正常的 /leganto/nui/lists/* 路径上偶发的 error 文本不属于永久失败。"""
+    from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
+
+    page = SimpleNamespace(url='https://rl.kcl.ac.uk/leganto/nui/lists/12345')
+    err = LegantoPdfPrinter._classify_load_error(page, 'Some transient marker hit')
+
+    assert not isinstance(err, LegantoPermanentFailureError)

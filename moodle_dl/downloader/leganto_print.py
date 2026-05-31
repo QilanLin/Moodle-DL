@@ -24,6 +24,17 @@ LEGANTO_ERROR_MARKERS = (
     'The user is not authorized',
     'Please contact your course instructor',
 )
+
+
+class LegantoPermanentFailureError(RuntimeError):
+    """Leganto 一侧的不可恢复错误（Reading List 被删 / 永久失权）。
+
+    抛出后调用方不应该再走 fallback 链，下载层也不应该把它放进 --retry-failed
+    队列——下次重试会 100% 命中同一错误，纯粹浪费 wall-clock budget。
+
+    典型触发：URL 落在 rl.kcl.ac.uk/leganto/nui/error/*，这是 Leganto 显式的
+    "找不到此 Reading List" 错误页，由学校课程管理员删除 list 引起。
+    """
 LEGANTO_LAUNCH_COOKIE_NAMES = {
     'JSESSIONID',
     'XSRF-TOKEN',
@@ -471,7 +482,7 @@ class LegantoPdfPrinter:
 
         load_error = await self._get_load_error(page)
         if load_error:
-            raise RuntimeError(load_error)
+            raise self._classify_load_error(page, load_error)
 
         try:
             await page.wait_for_function(
@@ -487,7 +498,7 @@ class LegantoPdfPrinter:
 
         load_error = await self._get_load_error(page)
         if load_error:
-            raise RuntimeError(load_error)
+            raise self._classify_load_error(page, load_error)
 
         current_url = page.url
         if '/leganto/' not in current_url:
@@ -499,6 +510,22 @@ class LegantoPdfPrinter:
             raise RuntimeError(
                 'Leganto reading list did not render; stored Leganto session cookies may be expired'
             )
+
+    @staticmethod
+    def _classify_load_error(page, load_error: str) -> RuntimeError:
+        """把 Leganto 显式错误页（nui/error/*）升级为 LegantoPermanentFailureError。
+
+        其他错误（Microsoft 跳转、LTI launch 失败等）保持 RuntimeError，因为
+        course_url fallback 还可能救回来。
+        """
+        parsed = urlparse.urlparse(getattr(page, 'url', '') or '')
+        host = (parsed.hostname or '').lower()
+        path = parsed.path or ''
+        if host == 'rl.kcl.ac.uk' and LEGANTO_ERROR_PATH_RE.match(path):
+            return LegantoPermanentFailureError(
+                f'{load_error}（Reading List 可能已被课程管理员删除，跳过且不再重试）'
+            )
+        return RuntimeError(load_error)
 
     async def _body_text(self, page) -> str:
         try:

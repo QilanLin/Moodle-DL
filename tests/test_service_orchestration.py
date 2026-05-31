@@ -150,6 +150,50 @@ class TestDownloadServiceOrchestration(unittest.TestCase):
         self.assertEqual(service.status.files_failed, 2)
         self.assertEqual(service.status.files_downloaded, 0)
 
+    def test_status_callback_marks_permanent_failures_with_prefix(self):
+        """LegantoPermanentFailureError → save_failed_file 收到 '[PERMANENT] ' 前缀的 reason。
+
+        这个前缀是 --retry-failed 跳过此类失败的依据；没了它，被删的 Reading List
+        每次 retry 都会再被打开浏览器卡 90 秒。
+        """
+        from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
+
+        service = make_download_service()
+        course = Course(9, 'Permanent Failure Course')
+        task = SimpleNamespace(
+            file=make_file('deleted-list.pdf'),
+            course=course,
+            status=SimpleNamespace(
+                get_error_text=MagicMock(return_value='Leganto reading list deleted'),
+                error=LegantoPermanentFailureError('Leganto reading list deleted'),
+            ),
+        )
+
+        service.status_callback(DlEvent.FAILED, task)
+
+        service.database.save_failed_file.assert_called_once_with(
+            task.file, 9, course.fullname, '[PERMANENT] Leganto reading list deleted'
+        )
+
+    def test_status_callback_does_not_mark_regular_failures(self):
+        """普通 RuntimeError 不应被加 [PERMANENT] 前缀——保护正常的 retry 路径。"""
+        service = make_download_service()
+        course = Course(10, 'Regular Failure')
+        task = SimpleNamespace(
+            file=make_file('flaky.pdf'),
+            course=course,
+            status=SimpleNamespace(
+                get_error_text=MagicMock(return_value='network blip'),
+                error=RuntimeError('network blip'),
+            ),
+        )
+
+        service.status_callback(DlEvent.FAILED, task)
+
+        service.database.save_failed_file.assert_called_once_with(
+            task.file, 10, course.fullname, 'network blip'
+        )
+
     def test_real_run_deletes_old_files_runs_tasks_and_shows_summary(self):
         service = make_download_service()
         first = SimpleNamespace(run=AsyncMock())

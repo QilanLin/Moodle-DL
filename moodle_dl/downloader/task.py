@@ -43,7 +43,7 @@ from moodle_dl.downloader.leganto_download import (
     leganto_lti_launch_token_expiry,
     leganto_moodle_launch_url,
 )
-from moodle_dl.downloader.leganto_print import LegantoPdfPrinter, is_leganto_reading_list_url
+from moodle_dl.downloader.leganto_print import LegantoPdfPrinter, LegantoPermanentFailureError, is_leganto_reading_list_url
 from moodle_dl.file_classifier import is_optional_metadata_filename
 from moodle_dl.types import (
     Course,
@@ -2004,7 +2004,19 @@ class Task:
             await self.create_shortcut()
 
     async def _download_leganto_reading_list_pdf(self):
-        """Save a Leganto reading list through the page's Print list action."""
+        """Save a Leganto reading list through the page's Print list action.
+
+        三级 fallback 链（任一成功即返回）：
+          1. stored_lti  —— 用 Moodle 返回的 LTI id_token 直接 POST 到 Leganto
+          2. moodle_lti  —— 从 Moodle 的 mod/lti/view.php 重新发起 launch
+          3. course_url  —— 打开课程主页，找 Reading List 链接点过去
+
+        实测三级最稳：当 Moodle 的 LTI launch 也跳回主页时（如 session 半失效），
+        从课程页点链接通常能拿到一份新鲜的 launch context。
+
+        遇到 LegantoPermanentFailureError（Reading List 已被学校删除等）会立即
+        短路——后面的 fallback 也救不回，重试只会浪费 wall-clock budget。
+        """
         plan = build_leganto_download_plan(
             content_type=self.file.content_type,
             file_url=self.file.content_fileurl,
@@ -2035,26 +2047,59 @@ class Task:
             skip_cert_verify=self.opts.global_opts.skip_cert_verify,
             headless=_should_use_headless_sso(),
         )
-        try:
-            await printer.print_to_pdf(
-                plan.target_url(),
-                self.file.saved_to,
-                **plan.print_kwargs(),
-            )
-        except RuntimeError as exc:
-            if plan.launch_parameters is None or not plan.moodle_launch_url:
+
+        # 按优先级排列要尝试的 fallback 阶段。每阶段都是一组 print_to_pdf 参数。
+        attempts = []
+        if plan.launch_parameters is not None:
+            attempts.append((
+                'stored LTI launch',
+                {
+                    'url': plan.target_url(),
+                    **plan.print_kwargs(),
+                },
+            ))
+        if plan.moodle_launch_url:
+            attempts.append((
+                'Moodle LTI launch',
+                {
+                    'url': plan.moodle_launch_url,
+                    'launch_parameters': None,
+                    'moodle_launch_url': plan.moodle_launch_url,
+                    'course_url': None,
+                },
+            ))
+        if plan.course_url:
+            attempts.append((
+                'Moodle course page',
+                {
+                    'url': plan.course_url,
+                    'launch_parameters': None,
+                    'moodle_launch_url': None,
+                    'course_url': plan.course_url,
+                },
+            ))
+
+        last_exc: Optional[BaseException] = None
+        for stage, kwargs in attempts:
+            url = kwargs.pop('url')
+            try:
+                await printer.print_to_pdf(url, self.file.saved_to, **kwargs)
+                return
+            except LegantoPermanentFailureError:
+                # 不可恢复——传播给 status_callback，最终标记为 permanent，不再
+                # 进入 --retry-failed 队列。
                 raise
-            logging.warning(
-                '[%d] Stored Leganto LTI launch failed (%s); retrying from Moodle module',
-                self.task_id,
-                exc,
-            )
-            await printer.print_to_pdf(
-                plan.moodle_launch_url,
-                self.file.saved_to,
-                moodle_launch_url=plan.moodle_launch_url,
-                course_url=None,
-            )
+            except RuntimeError as exc:
+                last_exc = exc
+                logging.warning(
+                    '[%d] Leganto fallback "%s" failed (%s); trying next stage',
+                    self.task_id, stage, exc,
+                )
+
+        # 所有 fallback 都失败——抛最后一次的真错而不是新错，方便诊断。
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError('Leganto reading list download had no usable fallback')
 
     def _leganto_lti_launch_token_expiry(self, launch_parameters) -> Optional[int]:
         """Return the expiry timestamp of a Leganto LTI id_token, if readable."""

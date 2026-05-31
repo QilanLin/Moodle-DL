@@ -674,8 +674,10 @@ async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_fact
         await task._download_external_url_with_fallback()
 
     printer_cls.assert_called_once_with(task.opts.cookies_text, skip_cert_verify=False, headless=False)
+    # url-type Leganto link: no LTI launch_parameters, no module_id → 没有 stored_lti
+    # 也没有 moodle_launch_url，只剩 course_url 这一级 fallback——直接走课程页点击。
     printer.print_to_pdf.assert_awaited_once_with(
-        leganto_url,
+        'https://moodle.example.com/course/view.php?id=7',
         task.file.saved_to,
         launch_parameters=None,
         moodle_launch_url=None,
@@ -824,7 +826,10 @@ async def test_leganto_pdf_download_retries_from_moodle_module_when_stored_launc
         'https://moodle.example.com/mod/lti/view.php?id=10',
         task.file.saved_to,
     )
+    # 新 fallback 链显式地传完整的 print_kwargs（包括 launch_parameters=None），
+    # 比之前的隐式覆盖更安全——少了它，重试用的还是上一次的 launch_parameters。
     assert printer.print_to_pdf.await_args_list[1].kwargs == {
+        'launch_parameters': None,
         'moodle_launch_url': 'https://moodle.example.com/mod/lti/view.php?id=10',
         'course_url': None,
     }
@@ -857,6 +862,80 @@ async def test_leganto_pdf_download_refreshes_expired_lti_launch_payload(task_fa
         moodle_launch_url='https://moodle.example.com/mod/lti/view.php?id=10',
         course_url=None,
     )
+
+
+@pytest.mark.asyncio
+async def test_leganto_pdf_walks_three_stage_fallback_chain(task_factory):
+    """stored_lti 失败 → moodle_lti 失败 → course_url 成功。
+
+    锁定新加的第三级 fallback：当 LTI launch 也跳回主页时（用户报告的真实
+    场景），从课程页点 Reading List 链接是已知有效的最后一招。
+    """
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = json.dumps({
+        'endpoint': 'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        'parameters': [{'name': 'id_token', 'value': make_jwt({'exp': 9999999999})}],
+    })
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock(side_effect=[
+            RuntimeError('Invalid token'),                                # stage 1 fail
+            RuntimeError('Leganto reading list did not load; final URL was /my/'),  # stage 2 fail
+            None,                                                          # stage 3 success
+        ])
+
+        await task._download_leganto_reading_list_pdf()
+
+    assert printer.print_to_pdf.await_count == 3
+    # stage 3 = course_url 路径
+    final_call = printer.print_to_pdf.await_args_list[2]
+    assert final_call.args[0] == 'https://moodle.example.com/course/view.php?id=7'
+    assert final_call.kwargs == {
+        'launch_parameters': None,
+        'moodle_launch_url': None,
+        'course_url': 'https://moodle.example.com/course/view.php?id=7',
+    }
+
+
+@pytest.mark.asyncio
+async def test_leganto_permanent_failure_short_circuits_remaining_fallbacks(task_factory):
+    """Reading List 已被删除（LegantoPermanentFailureError）→ 后面的 fallback 不再尝试。
+
+    课程管理员删了 list 后，stored_lti / moodle_lti / course_url 三条路都会
+    跳到同一个 nui/error/* 页。重试只是浪费 wall-clock budget；用户也无法救。
+    """
+    from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
+
+    task = task_factory(
+        content_type='leganto_pdf',
+        content_fileurl='https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        content_filename='Reading List.pdf',
+        cookies_text='cookie-data',
+    )
+    task.file.content = json.dumps({
+        'endpoint': 'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
+        'parameters': [{'name': 'id_token', 'value': make_jwt({'exp': 9999999999})}],
+    })
+    await task._prepare_download()
+
+    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+        printer = printer_cls.return_value
+        printer.print_to_pdf = AsyncMock(
+            side_effect=LegantoPermanentFailureError('Leganto reading list deleted'),
+        )
+
+        with pytest.raises(LegantoPermanentFailureError, match='deleted'):
+            await task._download_leganto_reading_list_pdf()
+
+    # 关键：只调了 1 次，后续 2 级 fallback 没尝试
+    assert printer.print_to_pdf.await_count == 1
 
 
 @pytest.mark.asyncio

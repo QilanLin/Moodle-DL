@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.html_localizer import build_local_resource_map, rewrite_html_links_to_local_paths
+from moodle_dl.downloader.leganto_print import LegantoPermanentFailureError
 from moodle_dl.downloader.progress_tracker import ProgressTracker
 from moodle_dl.downloader.task import Task
 from moodle_dl.network_throttle import NetworkThrottle
@@ -79,6 +80,19 @@ def _detect_encoding_with_optional_lib(raw: bytes) -> Optional[str]:
     except ImportError:
         pass
     return None
+
+
+# 永久性失败异常白名单——遇到这些类型的错误，--retry-failed 不再放回队列。
+# 加新类型时只需在这里追加，无需改 status_callback / DB schema。
+_PERMANENT_FAILURE_TYPES: Tuple[type, ...] = (
+    LegantoPermanentFailureError,
+)
+# DB 里 last_failed_reason 用的标记 prefix。
+PERMANENT_FAILURE_PREFIX = '[PERMANENT] '
+
+
+def _is_permanent_failure(error: Any) -> bool:
+    return isinstance(error, _PERMANENT_FAILURE_TYPES)
 
 
 class DownloadPauseController:
@@ -444,6 +458,11 @@ class DownloadService:
                 # 记录失败的文件到数据库，包括目标路径和失败原因
                 try:
                     error_message = task.status.get_error_text() if task.status else '未知错误'
+                    # LegantoPermanentFailureError 等不可恢复错误打 [PERMANENT] 标记，
+                    # 后续 --retry-failed 会按此 prefix 过滤掉，避免 100% 命中的失败
+                    # 一次次浪费 wall-clock budget。
+                    if _is_permanent_failure(getattr(task.status, 'error', None) if task.status else None):
+                        error_message = f'{PERMANENT_FAILURE_PREFIX}{error_message}'
                     self.database.save_failed_file(
                         task.file,
                         task.course.id,
