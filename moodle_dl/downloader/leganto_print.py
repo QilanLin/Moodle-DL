@@ -6,6 +6,7 @@ import os
 import re
 import time
 import urllib.parse as urlparse
+from contextlib import suppress
 from http.cookiejar import MozillaCookieJar
 from io import StringIO
 from pathlib import Path
@@ -161,6 +162,12 @@ class LegantoPdfPrinter:
     """Open a Leganto reading list, trigger Print list, and save the page as PDF."""
 
     PRINT_TIMEOUT_MS = 60_000
+    # 单份 Reading List 的总 wall-clock 预算。打开浏览器、LTI launch、Leganto
+    # 自身渲染、Print list 弹菜单、page.pdf —— 任何一个阶段卡住都不应让整个
+    # 下载 pipeline 卡几分钟。
+    # 设 90s 是经验值：正常 Leganto 30s 内就绪；超过 90s 一般是 session/LTI
+    # 已经死了，重试也救不回，不如赶紧放弃让 pipeline 往下走。
+    TOTAL_BUDGET_S = 90
 
     def __init__(
         self,
@@ -174,6 +181,37 @@ class LegantoPdfPrinter:
         self.headless = headless
 
     async def print_to_pdf(
+        self,
+        url: str,
+        output_path: str,
+        *,
+        launch_parameters: Optional[List[Dict[str, str]]] = None,
+        moodle_launch_url: Optional[str] = None,
+        course_url: Optional[str] = None,
+    ) -> None:
+        """打印 Leganto Reading List 为 PDF，整个流程 wall-clock 受 TOTAL_BUDGET_S 限制。
+
+        各内部 stage 自己也有 PRINT_TIMEOUT_MS 超时，但多个 stage 串联起来可以累
+        计出几分钟的死等（实测见过 5 分钟）。外层 wall-clock 是兜底——超过预算
+        立即抛 RuntimeError，让 pipeline 继续处理下一个文件。
+        """
+        try:
+            await asyncio.wait_for(
+                self._print_to_pdf_unbounded(
+                    url, output_path,
+                    launch_parameters=launch_parameters,
+                    moodle_launch_url=moodle_launch_url,
+                    course_url=course_url,
+                ),
+                timeout=self.TOTAL_BUDGET_S,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f'Leganto reading list 渲染超过 {self.TOTAL_BUDGET_S}s 预算 '
+                f'（session/LTI 可能已失效，跳过此文件）'
+            ) from exc
+
+    async def _print_to_pdf_unbounded(
         self,
         url: str,
         output_path: str,
@@ -229,8 +267,12 @@ class LegantoPdfPrinter:
                 await self._stabilize_page(print_page)
                 await print_page.pdf(path=output_path, format='A4', print_background=True)
             finally:
-                await context.close()
-                await browser.close()
+                # cleanup 一定要包 try/except——TargetClosedError / 取消导致的
+                # 二次异常会吞掉 _wait_for_leganto_ready 抛出的真正诊断信息。
+                with suppress(Exception):
+                    await context.close()
+                with suppress(Exception):
+                    await browser.close()
 
     async def _add_cookies(self, context, *, skip_leganto_launch_cookies: bool = False) -> None:
         cookies = cookies_text_to_playwright(self.cookies_text)

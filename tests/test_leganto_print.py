@@ -1504,3 +1504,124 @@ async def test_print_to_pdf_short_circuits_when_direct_print_pdf_download_succee
     printer._stabilize_page.assert_not_awaited()
     assert context.closed is True
     assert manager.chromium.browser.closed is True
+
+
+# ---- Wall-clock budget --------------------------------------------------
+#
+# 真实场景：Leganto + LTI + KCL SSO 偶尔会让 print_to_pdf 卡 5+ 分钟（多个
+# 60s 阶段串联），阻塞整个 retry pipeline。一旦超过 TOTAL_BUDGET_S，必须放
+# 弃这份 Reading List 让 pipeline 继续。
+
+@pytest.mark.asyncio
+async def test_print_to_pdf_raises_on_wall_clock_timeout(monkeypatch, tmp_path):
+    printer = LegantoPdfPrinter('cookie-data')
+    printer.TOTAL_BUDGET_S = 0.2  # 缩短到 200ms，测试本身不能跑半天
+
+    async def hang_forever(*args, **kwargs):
+        await asyncio.sleep(10)
+
+    monkeypatch.setattr(printer, '_print_to_pdf_unbounded', hang_forever)
+
+    with pytest.raises(RuntimeError, match=r'渲染超过 0\.2s 预算'):
+        await printer.print_to_pdf(
+            'https://rl.kcl.ac.uk/leganto/nui/lists/1',
+            str(tmp_path / 'out.pdf'),
+        )
+
+
+@pytest.mark.asyncio
+async def test_print_to_pdf_propagates_other_errors_unchanged(monkeypatch, tmp_path):
+    """wall-clock 包装不应吞掉真正的内部错误。"""
+    printer = LegantoPdfPrinter('cookie-data')
+    printer.TOTAL_BUDGET_S = 60
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError('Leganto reading list did not load: Leganto error page')
+
+    monkeypatch.setattr(printer, '_print_to_pdf_unbounded', fail)
+
+    with pytest.raises(RuntimeError, match='Leganto error page'):
+        await printer.print_to_pdf(
+            'https://rl.kcl.ac.uk/leganto/nui/lists/1',
+            str(tmp_path / 'out.pdf'),
+        )
+
+
+@pytest.mark.asyncio
+async def test_context_close_failure_does_not_mask_real_error(monkeypatch, tmp_path):
+    """context.close() / browser.close() 失败不应吞掉 _wait_for_leganto_ready 的诊断信息。
+
+    历史 bug：5 分钟卡死后真错被 TargetClosedError(BrowserContext.close) 吞了，
+    用户只看到无关的关闭错误，看不到 'Leganto error page' 之类的根因。
+    """
+    page = SimpleNamespace(
+        url='https://rl.kcl.ac.uk/leganto/nui/lists/1',
+        context=None,
+        goto=AsyncMock(),
+    )
+
+    class ExplodingContext:
+        def __init__(self):
+            self.page = page
+            page.context = self
+
+        async def new_page(self):
+            return self.page
+
+        async def add_cookies(self, _cookies):
+            pass
+
+        async def close(self):
+            raise RuntimeError('TargetClosedError: BrowserContext already closed')
+
+    class ExplodingBrowser:
+        def __init__(self):
+            self.context = ExplodingContext()
+
+        async def new_context(self, **_):
+            return self.context
+
+        async def close(self):
+            raise RuntimeError('Browser close also fails')
+
+    class ExplodingChromium:
+        def __init__(self):
+            self.browser = ExplodingBrowser()
+
+        async def launch(self, **_):
+            return self.browser
+
+    class FakeManager:
+        chromium = ExplodingChromium()
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+
+    manager = FakeManager()
+    original_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == 'playwright.async_api':
+            return SimpleNamespace(async_playwright=lambda: manager)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, '__import__', fake_import)
+
+    printer = LegantoPdfPrinter('cookie-data')
+    printer._add_cookies = AsyncMock()
+    # 真正的诊断错误从内部抛出
+    printer._wait_for_leganto_ready = AsyncMock(
+        side_effect=RuntimeError('Leganto reading list did not load: Leganto error page')
+    )
+
+    with pytest.raises(RuntimeError, match='Leganto error page'):
+        await printer.print_to_pdf(
+            'https://rl.kcl.ac.uk/leganto/nui/lists/1',
+            str(tmp_path / 'out.pdf'),
+        )
+    # 关键：用户看到的是 'Leganto error page'，不是 close 的二次异常
+
+
+@pytest.mark.asyncio
+async def test_wall_clock_budget_is_a_class_constant(monkeypatch, tmp_path):
+    """TOTAL_BUDGET_S 默认 90s，但允许 subclass 或测试覆盖。"""
+    assert LegantoPdfPrinter.TOTAL_BUDGET_S == 90

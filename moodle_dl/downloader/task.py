@@ -2026,10 +2026,14 @@ class Task:
             raise RuntimeError('Leganto launch data is unavailable')
 
         self._prepare_leganto_pdf_target()
+        # 默认有头：Leganto 偶尔会跳 SSO，需要让用户能看到登录界面；
+        # 与 mid-download cookie refresh 行为一致。
+        # MOODLE_DL_HEADLESS=1 可强制无头（适合 CI/无人值守）。
+        from moodle_dl.cli.authenticators import _should_use_headless_sso
         printer = LegantoPdfPrinter(
             self.opts.cookies_text,
             skip_cert_verify=self.opts.global_opts.skip_cert_verify,
-            headless=True,
+            headless=_should_use_headless_sso(),
         )
         try:
             await printer.print_to_pdf(

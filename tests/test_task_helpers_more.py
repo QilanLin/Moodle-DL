@@ -663,13 +663,17 @@ async def test_external_url_fallback_saves_leganto_reading_list_as_pdf(task_fact
     await task._prepare_download()
     task.create_shortcut = AsyncMock()
 
-    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+    # 默认有头：让 Leganto 偶发跳 SSO 时用户能看到。锁定无头则被尊重。
+    with (
+        patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls,
+        patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=False),
+    ):
         printer = printer_cls.return_value
         printer.print_to_pdf = AsyncMock()
 
         await task._download_external_url_with_fallback()
 
-    printer_cls.assert_called_once_with(task.opts.cookies_text, skip_cert_verify=False, headless=True)
+    printer_cls.assert_called_once_with(task.opts.cookies_text, skip_cert_verify=False, headless=False)
     printer.print_to_pdf.assert_awaited_once_with(
         leganto_url,
         task.file.saved_to,
@@ -718,13 +722,16 @@ async def test_leganto_pdf_download_uses_lti_launch_payload(task_factory):
     )
     await task._prepare_download()
 
-    with patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls:
+    with (
+        patch('moodle_dl.downloader.task.LegantoPdfPrinter') as printer_cls,
+        patch('moodle_dl.cli.authenticators._should_use_headless_sso', return_value=False),
+    ):
         printer = printer_cls.return_value
         printer.print_to_pdf = AsyncMock()
 
         await task._download_leganto_reading_list_pdf()
 
-    printer_cls.assert_called_once_with('cookie-data', skip_cert_verify=False, headless=True)
+    printer_cls.assert_called_once_with('cookie-data', skip_cert_verify=False, headless=False)
     printer.print_to_pdf.assert_awaited_once_with(
         'https://rl.kcl.ac.uk/lti/v3/launch/44KCL_INST/LMS_MOODLE_1',
         task.file.saved_to,
