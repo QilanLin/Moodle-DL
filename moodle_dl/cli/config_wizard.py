@@ -722,53 +722,65 @@ class ConfigWizard:
             Log.success(_('已添加 {new_count} 个手动课程，总计 {total_count} 个', 'Added {new_count} manual course(s), {total_count} total', new_count=len(new_ids), total_count=len(all_ids)))
         
         print('')
-    
     @staticmethod
     def _parse_course_ids(input_str: str):
         """
         从输入字符串解析课程 ID。
-        
-        支持多种格式：
+
+        支持多种格式（单次输入可混合）：
         • 单个 ID: "137304"
         • 空格分隔: "137304 137305 137306"
         • 逗号分隔: "137304,137305,137306"
         • 完整 URL: "https://keats.kcl.ac.uk/course/view.php?id=137304"
         • URL 无协议: "keats.kcl.ac.uk/course/view.php?id=137304"
-        
+        • 多个 URL 混合逗号/空格分隔，以及与裸 ID 混用
+
         Returns:
             List[int]: 解析出的课程 ID 列表，或空列表如果解析失败
         """
         import re
-        
+
+        if not input_str or not input_str.strip():
+            return []
+
         course_ids = []
-        
-        # 检查是否是 URL（包含 ? 或 &）
-        url_match = re.search(r'[?&]id=(\d+)', input_str)
-        if url_match:
+
+        # 1) 提取所有 URL 中的 id=（?id= 或 &id=）。
+        #    re.findall 一次性拿到全部 URL 的 ID，按出现顺序。
+        url_ids = re.findall(r'[?&]id=(\d+)', input_str)
+        for raw in url_ids:
             try:
-                course_ids.append(int(url_match.group(1)))
-                return course_ids
+                course_ids.append(int(raw))
             except (ValueError, AttributeError):
-                pass
-        
-        # 如果输入中包含逗号，用逗号分隔；否则用空格分隔
-        if ',' in input_str:
-            id_strings = input_str.split(',')
+                return []
+
+        # 2) 把所有 URL 段从输入里剥掉：先去掉协议 + 域名 + 路径（到 ?/& 之前），
+        #    再把残留的 id=数字 也一并替换为空白，同时把 ? 和 & 引导的查询参数擦除。
+        residual = re.sub(
+            r'https?://[^\s,?&]+|(?:[A-Za-z0-9.-]+\.[A-Za-z]{2,})[^\s,?&]+',
+            ' ',
+            input_str,
+        )
+        # 把 ?id=数字 / &id=数字 以及 &foo=bar / ?bar=baz 等 URL 查询参数擦掉
+        residual = re.sub(r'[?&][^\s,&]+', ' ', residual)
+
+        # 3) 剩余部分按逗号 / 空白切，逐个尝试解析为正整数
+        if ',' in residual:
+            tokens = residual.split(',')
         else:
-            id_strings = input_str.split()
-        
-        # 解析每个 ID
-        for id_str in id_strings:
-            id_str = id_str.strip()
-            if id_str:
-                try:
-                    course_id = int(id_str)
-                    if course_id > 0:
-                        course_ids.append(course_id)
-                except ValueError:
-                    # 如果有一个无效的 ID，返回空列表
-                    return []
-        
+            tokens = residual.split()
+
+        for token in tokens:
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                course_id = int(token)
+            except ValueError:
+                return []
+            if course_id > 0:
+                course_ids.append(course_id)
+
         return course_ids
     
     def _select_modules_to_download(self):
