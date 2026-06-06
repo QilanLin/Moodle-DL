@@ -203,7 +203,13 @@ class ConfigHelper:
         self._whole_config: Dict[str, Any] = {}
         self.opts: MoodleDlOpts = opts
         self.config_path: str = str(Path(opts.path) / 'config.json')
-        self._auth_manager: Any = None  # AuthSessionManager
+        # _auth_manager is constructed lazily on first
+        # get_auth_manager() call. This is critical for the
+        # Task pipeline: Task._get_or_create_database() builds
+        # many ConfigHelper instances (one per completion) and
+        # we don't want to instantiate AuthSessionManager for
+        # each, since the Task itself never needs it.
+        self._auth_manager: Any = None
         self._db_file: str = None
 
         # 初始化认证管理器(用于存储 tokens 到数据库)
@@ -226,15 +232,30 @@ class ConfigHelper:
                     '这不是浏览器类型问题，而是 SQLite 当前无法在该目录完成初始化。\n'
                     '请检查目标目录/卷当前是否接受 SQLite 写入；如需继续排查，可先确认普通文件写入和 sqlite3 建表是否都正常。'
                 ) from e
-        
-        from moodle_dl.auth_session_manager import AuthSessionManager
-        self._auth_manager = AuthSessionManager(self._db_file)
 
-        if not self._auth_manager:
-            raise RuntimeError(
-                f'❌ 认证管理器初始化失败.数据库必须可用.\n'
-                f'检查 {self._db_file} 是否存在且可写.'
-            )
+        # When validate_db=True, eagerly construct the auth
+        # manager so the existing call sites keep their
+        # pre-refactor behavior. When validate_db=False, leave
+        # it None and construct lazily on get_auth_manager().
+        if validate_db:
+            from moodle_dl.auth_session_manager import AuthSessionManager
+            try:
+                am = AuthSessionManager(self._db_file)
+            except Exception as init_err:
+                raise RuntimeError(
+                    f'❌ 认证管理器初始化失败.数据库必须可用.\n'
+                    f'检查 {self._db_file} 是否存在且可写.'
+                ) from init_err
+            if not am:
+                # Defensive: AuthSessionManager could conceivably
+                # return None or empty in the future. We surface
+                # a clear error rather than silently passing None
+                # through to callers.
+                raise RuntimeError(
+                    f'❌ 认证管理器初始化失败.数据库必须可用.\n'
+                    f'检查 {self._db_file} 是否存在且可写.'
+                )
+            self._auth_manager = am
 
     def is_present(self) -> bool:
         # Tests if a configuration file exists
@@ -592,7 +613,14 @@ class ConfigHelper:
         return self._get_download_options_config().metadata_files
 
     def get_auth_manager(self):
-        """获取 AuthSessionManager 实例(用于数据库操作)"""
+        """获取 AuthSessionManager 实例(用于数据库操作)
+
+        Lazy: the first call constructs the manager; subsequent
+        calls return the same cached instance.
+        """
+        if self._auth_manager is None:
+            from moodle_dl.auth_session_manager import AuthSessionManager
+            self._auth_manager = AuthSessionManager(self._db_file)
         return self._auth_manager
 
     def get_userid_and_version(self) -> Tuple[str, int]:

@@ -40,16 +40,19 @@ class TestConfigHelperInit(unittest.TestCase):
         mock_auth_manager.assert_called_once()
 
     def test_auth_manager_init_failure_is_reported(self):
+        """If AuthSessionManager.__init__ raises (or returns
+        falsy), ConfigHelper.__init__ should raise RuntimeError."""
         opts = MoodleDlOpts()
 
         with tempfile.TemporaryDirectory() as temp_dir:
             opts.path = temp_dir
 
             with patch('moodle_dl.database.StateRecorder', return_value=MagicMock()):
+                # AuthSessionManager returns None → not am
+                # → RuntimeError("认证管理器初始化失败")
                 with patch('moodle_dl.auth_session_manager.AuthSessionManager', return_value=None):
                     with self.assertRaises(RuntimeError) as context:
                         ConfigHelper(opts)
-
         self.assertIn('认证管理器初始化失败', str(context.exception))
 
 
