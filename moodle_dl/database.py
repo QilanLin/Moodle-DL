@@ -696,53 +696,51 @@ class StateRecorder:
     def get_old_files(self) -> List[Course]:
         """
         获取所有有旧版本的文件
-        
+
         ✅ 优化：使用缓存和优化查询替代 N+1 查询
         """
         # 生成缓存键
         cache_key = self._get_cache_key('get_old_files')
-        
+
         # 使用缓存或执行优化查询
         def query_func():
             where_clause = "old_file_id IS NOT NULL"
             return self._query_files_optimized(where_clause)
-        
+
         result = self._get_cached(cache_key, query_func)
-        
+
         # 保留原始方法的返回值处理
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        stored_courses = result
-        
-        for course in stored_courses:
-            cursor.execute(
-                """SELECT *
-                FROM files
-                WHERE course_id = ?
-                AND old_file_id IS NOT NULL""",
-                (course.id,),
-            )
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
+            stored_courses = result
 
-            updated_files = cursor.fetchall()
-
-            course.files = []
-
-            for updated_file in updated_files:
+            for course in stored_courses:
                 cursor.execute(
                     """SELECT *
                     FROM files
-                    WHERE file_id = ?""",
-                    (updated_file['old_file_id'],),
+                    WHERE course_id = ?
+                    AND old_file_id IS NOT NULL""",
+                    (course.id,),
                 )
 
-                old_file = cursor.fetchone()
+                updated_files = cursor.fetchall()
 
-                if old_file is not None:
-                    notify_file = File.fromRow(old_file)
-                    course.files.append(notify_file)
+                course.files = []
 
-        conn.close()
+                for updated_file in updated_files:
+                    cursor.execute(
+                        """SELECT *
+                        FROM files
+                        WHERE file_id = ?""",
+                        (updated_file['old_file_id'],),
+                    )
+
+                    old_file = cursor.fetchone()
+
+                    if old_file is not None:
+                        notify_file = File.fromRow(old_file)
+                        course.files.append(notify_file)
+
         return stored_courses
 
     def get_modified_files(self, stored_courses: List[Course], current_courses: List[Course]) -> List[Course]:
@@ -937,117 +935,107 @@ class StateRecorder:
         }
         """
 
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        mod_forum_dict = {}
-        mod_calendar_dict = {}
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
+            mod_forum_dict = {}
+            mod_calendar_dict = {}
 
-        cursor.execute(
-            """SELECT module_id, max(content_timemodified) as content_timemodified
-            FROM files WHERE module_modname = 'forum' AND content_type = 'description'
-            GROUP BY module_id;"""
-        )
+            cursor.execute(
+                """SELECT module_id, max(content_timemodified) as content_timemodified
+                FROM files WHERE module_modname = 'forum' AND content_type = 'description'
+                GROUP BY module_id;"""
+            )
 
-        curse_rows = cursor.fetchall()
+            curse_rows = cursor.fetchall()
 
-        for course_row in curse_rows:
-            mod_forum_dict[course_row['module_id']] = course_row['content_timemodified']
+            for course_row in curse_rows:
+                mod_forum_dict[course_row['module_id']] = course_row['content_timemodified']
 
-        cursor.execute(
-            """SELECT module_id, max(content_timemodified) as content_timemodified
-            FROM files WHERE module_modname = 'calendar' AND content_type = 'html'
-            GROUP BY module_id;"""
-        )
+            cursor.execute(
+                """SELECT module_id, max(content_timemodified) as content_timemodified
+                FROM files WHERE module_modname = 'calendar' AND content_type = 'html'
+                GROUP BY module_id;"""
+            )
 
-        course_row = cursor.fetchone()
-        if course_row is not None:
-            mod_calendar_dict[course_row['module_id']] = course_row['content_timemodified']
-
-        conn.close()
+            course_row = cursor.fetchone()
+            if course_row is not None:
+                mod_calendar_dict[course_row['module_id']] = course_row['content_timemodified']
 
         return {'forum': mod_forum_dict, 'calendar': mod_calendar_dict}
 
     def changes_to_notify(self) -> List[Course]:
         changed_courses = []
 
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """SELECT course_id, course_fullname
-            FROM files WHERE notified = 0 GROUP BY course_id;"""
-        )
-
-        curse_rows = cursor.fetchall()
-
-        for course_row in curse_rows:
-            course = Course(course_row['course_id'], course_row['course_fullname'])
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
 
             cursor.execute(
-                """SELECT *
-                FROM files WHERE notified = 0 AND course_id = ?;""",
-                (course.id,),
+                """SELECT course_id, course_fullname
+                FROM files WHERE notified = 0 GROUP BY course_id;"""
             )
 
-            file_rows = cursor.fetchall()
+            curse_rows = cursor.fetchall()
 
-            course.files = []
+            for course_row in curse_rows:
+                course = Course(course_row['course_id'], course_row['course_fullname'])
 
-            for file_row in file_rows:
-                notify_file = File.fromRow(file_row)
-                if notify_file.modified or notify_file.moved:
-                    # add reference to new file
+                cursor.execute(
+                    """SELECT *
+                    FROM files WHERE notified = 0 AND course_id = ?;""",
+                    (course.id,),
+                )
 
-                    cursor.execute(
-                        """SELECT *
-                        FROM files
-                        WHERE old_file_id = ?;""",
-                        (notify_file.file_id,),
-                    )
+                file_rows = cursor.fetchall()
 
-                    file_row = cursor.fetchone()
-                    if file_row is not None:
-                        notify_file.new_file = File.fromRow(file_row)
+                course.files = []
 
-                course.files.append(notify_file)
+                for file_row in file_rows:
+                    notify_file = File.fromRow(file_row)
+                    if notify_file.modified or notify_file.moved:
+                        # add reference to new file
 
-            changed_courses.append(course)
+                        cursor.execute(
+                            """SELECT *
+                            FROM files
+                            WHERE old_file_id = ?;""",
+                            (notify_file.file_id,),
+                        )
 
-        conn.close()
+                        file_row = cursor.fetchone()
+                        if file_row is not None:
+                            notify_file.new_file = File.fromRow(file_row)
+
+                    course.files.append(notify_file)
+
+                changed_courses.append(course)
+
         return changed_courses
 
     def notified(self, courses: List[Course]):
         # saves that a notification with the changes where send
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+            for course in courses:
+                course_id = course.id
 
-        for course in courses:
-            course_id = course.id
+                for file in course.files:
+                    data = {'course_id': course_id}
+                    data.update(file.getMap())
 
-            for file in course.files:
-                data = {'course_id': course_id}
-                data.update(file.getMap())
-
-                cursor.execute(
-                    """UPDATE files
-                    SET notified = 1
-                    WHERE file_id = :file_id;
-                    """,
-                    data,
-                )
-
-        conn.commit()
-        conn.close()
+                    cursor.execute(
+                        """UPDATE files
+                        SET notified = 1
+                        WHERE file_id = :file_id;
+                        """,
+                        data,
+                    )
 
     def save_file(self, file: File, course_id: int, course_fullname: str):
         # 🆕 清除相关缓存（数据有变化）
         self._clear_cache('get_stored_files')
         self._clear_cache('get_old_files')
-        
+
         if file.deleted:
             self.delete_file(file, course_id, course_fullname)
         elif file.modified:
@@ -1088,205 +1076,184 @@ class StateRecorder:
     def new_file(self, file: File, course_id: int, course_fullname: str):
         """
         保存新文件到数据库索引
-        
+
         幂等性保证：如果文件已存在则跳过插入，避免创建重复记录。
         有 URL 的文件按 URL 匹配；没有 URL 的合成文件按类型、路径和文件名匹配。
-        
+
         @param file: 文件对象
         @param course_id: 课程 ID
         @param course_fullname: 课程全名
         @return: file_id（新插入的或已存在的）
         """
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
 
-        # 幂等性检查：查询活跃文件是否已存在
-        where_clause, params = self._active_file_identity(file, course_id)
-        cursor.execute(f"""SELECT file_id FROM files WHERE {where_clause}""", params)
-        existing = cursor.fetchone()
-        
-        if existing:
-            # 文件已存在，跳过插入
-            file_id = existing[0]
-            if file.saved_to:
-                cursor.execute(
-                    """UPDATE files
-                    SET saved_to = ?,
-                        position_in_section = ?
-                    WHERE file_id = ?
-                    """,
-                    (file.saved_to, file.position_in_section, file_id),
+            # 幂等性检查：查询活跃文件是否已存在
+            where_clause, params = self._active_file_identity(file, course_id)
+            cursor.execute(f"""SELECT file_id FROM files WHERE {where_clause}""", params)
+            existing = cursor.fetchone()
+
+            if existing:
+                # 文件已存在，跳过插入
+                file_id = existing[0]
+                if file.saved_to:
+                    cursor.execute(
+                        """UPDATE files
+                        SET saved_to = ?,
+                            position_in_section = ?
+                        WHERE file_id = ?
+                        """,
+                        (file.saved_to, file.position_in_section, file_id),
+                    )
+                logging.debug(
+                    f'文件已存在于数据库中，跳过插入: {file.content_filename} (file_id={file_id})'
                 )
-                conn.commit()
-            logging.debug(
-                f'文件已存在于数据库中，跳过插入: {file.content_filename} (file_id={file_id})'
-            )
-            conn.close()
-            return file_id
+                return file_id
 
-        # 文件不存在，执行插入
-        data = {'course_id': course_id, 'course_fullname': course_fullname}
-        data.update(file.getMap())
-        self._set_insert_defaults(data)
+            # 文件不存在，执行插入
+            data = {'course_id': course_id, 'course_fullname': course_fullname}
+            data.update(file.getMap())
+            self._set_insert_defaults(data)
 
-        cursor.execute(File.INSERT, data)
-        file_id = cursor.lastrowid
-        logging.debug(f'插入新文件记录: {file.content_filename} (file_id={file_id})')
+            cursor.execute(File.INSERT, data)
+            file_id = cursor.lastrowid
+            logging.debug(f'插入新文件记录: {file.content_filename} (file_id={file_id})')
 
-        conn.commit()
-        conn.close()
-        
         return file_id
 
     def batch_delete_files(self, courses: List[Course]):
         # 🆕 清除相关缓存（数据有变化）
         self._clear_cache('get_stored_files')
         self._clear_cache('get_old_files')
-        
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
 
-        for course in courses:
-            for file in course.files:
-                if file.deleted:
-                    data = {'course_id': course.id, 'course_fullname': course.fullname}
-                    data.update(file.getMap())
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-                    cursor.execute(
-                        """UPDATE files
-                        SET notified = 0, deleted = 1, time_stamp = :time_stamp
-                        WHERE file_id = :file_id;
-                        """,
-                        data,
-                    )
+            for course in courses:
+                for file in course.files:
+                    if file.deleted:
+                        data = {'course_id': course.id, 'course_fullname': course.fullname}
+                        data.update(file.getMap())
 
-        conn.commit()
-        conn.close()
+                        cursor.execute(
+                            """UPDATE files
+                            SET notified = 0, deleted = 1, time_stamp = :time_stamp
+                            WHERE file_id = :file_id;
+                            """,
+                            data,
+                        )
 
     def batch_delete_files_from_db(self, files: List[File]):
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        for file in files:
-            cursor.execute(
-                """UPDATE files
-                SET old_file_id = NULL
-                WHERE old_file_id = ?
-                """,
-                (file.file_id,),
-            )
+            for file in files:
+                cursor.execute(
+                    """UPDATE files
+                    SET old_file_id = NULL
+                    WHERE old_file_id = ?
+                    """,
+                    (file.file_id,),
+                )
 
-            data = {}
+                data = {}
+                data.update(file.getMap())
+
+                cursor.execute(
+                    """DELETE FROM files
+                    WHERE file_id = :file_id
+                    """,
+                    data,
+                )
+
+    def delete_file(self, file: File, course_id: int, course_fullname: str):
+        with self._conn() as conn:
+            cursor = conn.cursor()
+
+            data = {'course_id': course_id, 'course_fullname': course_fullname}
             data.update(file.getMap())
 
             cursor.execute(
-                """DELETE FROM files
-                WHERE file_id = :file_id
+                """UPDATE files
+                SET notified = 0, deleted = 1, time_stamp = :time_stamp
+                WHERE file_id = :file_id;
                 """,
                 data,
             )
 
-        conn.commit()
-        conn.close()
-
-    def delete_file(self, file: File, course_id: int, course_fullname: str):
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        data = {'course_id': course_id, 'course_fullname': course_fullname}
-        data.update(file.getMap())
-
-        cursor.execute(
-            """UPDATE files
-            SET notified = 0, deleted = 1, time_stamp = :time_stamp
-            WHERE file_id = :file_id;
-            """,
-            data,
-        )
-
-        conn.commit()
-        conn.close()
-
     def move_file(self, file: File, course_id: int, course_fullname: str):
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        data_new = {'course_id': course_id, 'course_fullname': course_fullname}
-        data_new.update(file.getMap())
-        self._set_insert_defaults(data_new)
+            data_new = {'course_id': course_id, 'course_fullname': course_fullname}
+            data_new.update(file.getMap())
+            self._set_insert_defaults(data_new)
 
-        if file.old_file is not None:
-            data_old = {'course_id': course_id, 'course_fullname': course_fullname}
-            data_old.update(file.old_file.getMap())
+            if file.old_file is not None:
+                data_old = {'course_id': course_id, 'course_fullname': course_fullname}
+                data_old.update(file.old_file.getMap())
 
-            cursor.execute(
-                """UPDATE files
-            SET notified = 0, moved = 1
-            WHERE file_id = :file_id;
-            """,
-                data_old,
-            )
+                cursor.execute(
+                    """UPDATE files
+                SET notified = 0, moved = 1
+                WHERE file_id = :file_id;
+                """,
+                    data_old,
+                )
 
-            # insert a new file, but it is already notified because the same file already exists as moved
-            data_new.update(
-                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
-            )
-            cursor.execute(File.INSERT, data_new)
-        else:
-            # this should never happen, but the old file is not saved in the
-            # file descriptor, so we need to inform about the new file notified = 0
-            data_new.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
-            cursor.execute(File.INSERT, data_new)
-
-        conn.commit()
-        conn.close()
+                # insert a new file, but it is already notified because the same file already exists as moved
+                data_new.update(
+                    {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
+                )
+                cursor.execute(File.INSERT, data_new)
+            else:
+                # this should never happen, but the old file is not saved in the
+                # file descriptor, so we need to inform about the new file notified = 0
+                data_new.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
+                cursor.execute(File.INSERT, data_new)
 
     def modify_file(self, file: File, course_id: int, course_fullname: str):
         """
         处理已修改的文件：更新旧文件状态并插入新文件记录
-        
+
         @param file: 修改后的文件对象
         @param course_id: 课程 ID
         @param course_fullname: 课程全名
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        data_new = {'course_id': course_id, 'course_fullname': course_fullname}
-        data_new.update(file.getMap())
-        self._set_insert_defaults(data_new)
+            data_new = {'course_id': course_id, 'course_fullname': course_fullname}
+            data_new.update(file.getMap())
+            self._set_insert_defaults(data_new)
 
-        if file.old_file is not None:
-            data_old = {'course_id': course_id, 'course_fullname': course_fullname}
-            data_old.update(file.old_file.getMap())
+            if file.old_file is not None:
+                data_old = {'course_id': course_id, 'course_fullname': course_fullname}
+                data_old.update(file.old_file.getMap())
 
-            cursor.execute(
-                """UPDATE files
+                cursor.execute(
+                    """UPDATE files
             SET notified = 0, modified = 1,
             saved_to = :saved_to
             WHERE file_id = :file_id;
             """,
-                data_old,
-            )
+                    data_old,
+                )
 
-            # insert a new file,
-            # but it is already notified because the same file already exists
-            # as modified
-            data_new.update(
-                {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
-            )
-            cursor.execute(File.INSERT, data_new)
-        else:
-            # this should never happen, but the old file is not saved in the
-            # file descriptor, so we need to inform about the new file
-            # notified = 0
+                # insert a new file,
+                # but it is already notified because the same file already exists
+                # as modified
+                data_new.update(
+                    {'old_file_id': file.old_file.file_id, 'modified': 0, 'moved': 0, 'deleted': 0, 'notified': 1}
+                )
+                cursor.execute(File.INSERT, data_new)
+            else:
+                # this should never happen, but the old file is not saved in the
+                # file descriptor, so we need to inform about the new file
+                # notified = 0
 
-            data_new.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
-            cursor.execute(File.INSERT, data_new)
-
-        conn.commit()
-        conn.close()
+                data_new.update({'modified': 0, 'deleted': 0, 'moved': 0, 'notified': 0})
+                cursor.execute(File.INSERT, data_new)
 
     def save_failed_file(self, file: File, course_id: int, course_fullname: str, error_message: str):
         """
@@ -1298,68 +1265,65 @@ class StateRecorder:
         @param error_message: 失败原因
         """
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        current_time = int(time.time())
+            current_time = int(time.time())
 
-        # 检查活跃文件是否已存在
-        where_clause, params = self._active_file_identity(file, course_id)
-        cursor.execute(
-            f"""SELECT file_id, download_attempts, consecutive_failures
-               FROM files
-               WHERE {where_clause}
-            """,
-            params,
-        )
-        existing = cursor.fetchone()
-
-        if existing:
-            # 文件已存在，更新失败记录
-            file_id, attempts, consecutive = existing
+            # 检查活跃文件是否已存在
+            where_clause, params = self._active_file_identity(file, course_id)
             cursor.execute(
-                """UPDATE files
-                SET download_status = 'failed',
-                    download_attempts = ?,
-                    last_download_at = ?,
-                    last_failed_at = ?,
-                    last_failed_reason = ?,
-                    consecutive_failures = ?,
-                    saved_to = ?,
-                    notified = 0
-                WHERE file_id = ?
+                f"""SELECT file_id, download_attempts, consecutive_failures
+                   FROM files
+                   WHERE {where_clause}
                 """,
-                (
-                    attempts + 1,
-                    current_time,
-                    current_time,
-                    error_message[:500] if error_message else None,  # 限制长度
-                    consecutive + 1,
-                    file.saved_to,
-                    file_id
-                )
+                params,
             )
-            logging.debug(f'更新失败文件记录: {file.content_filename} (尝试次数: {attempts + 1})')
-        else:
-            # 新文件，插入失败记录
-            data = {'course_id': course_id, 'course_fullname': course_fullname}
-            data.update(file.getMap())
-            self._set_insert_defaults(data)
-            # 覆盖失败相关的字段
-            data.update({
-                'download_status': 'failed',
-                'download_attempts': 1,
-                'last_download_at': current_time,
-                'last_failed_at': current_time,
-                'last_failed_reason': error_message[:500] if error_message else None,
-                'consecutive_failures': 1,
-            })
+            existing = cursor.fetchone()
 
-            cursor.execute(File.INSERT, data)
-            logging.debug(f'插入失败文件记录: {file.content_filename}')
+            if existing:
+                # 文件已存在，更新失败记录
+                file_id, attempts, consecutive = existing
+                cursor.execute(
+                    """UPDATE files
+                    SET download_status = 'failed',
+                        download_attempts = ?,
+                        last_download_at = ?,
+                        last_failed_at = ?,
+                        last_failed_reason = ?,
+                        consecutive_failures = ?,
+                        saved_to = ?,
+                        notified = 0
+                    WHERE file_id = ?
+                    """,
+                    (
+                        attempts + 1,
+                        current_time,
+                        current_time,
+                        error_message[:500] if error_message else None,  # 限制长度
+                        consecutive + 1,
+                        file.saved_to,
+                        file_id
+                    )
+                )
+                logging.debug(f'更新失败文件记录: {file.content_filename} (尝试次数: {attempts + 1})')
+            else:
+                # 新文件，插入失败记录
+                data = {'course_id': course_id, 'course_fullname': course_fullname}
+                data.update(file.getMap())
+                self._set_insert_defaults(data)
+                # 覆盖失败相关的字段
+                data.update({
+                    'download_status': 'failed',
+                    'download_attempts': 1,
+                    'last_download_at': current_time,
+                    'last_failed_at': current_time,
+                    'last_failed_reason': error_message[:500] if error_message else None,
+                    'consecutive_failures': 1,
+                })
 
-        conn.commit()
-        conn.close()
+                cursor.execute(File.INSERT, data)
+                logging.debug(f'插入失败文件记录: {file.content_filename}')
 
     def mark_download_success(self, file: File, course_id: int):
         """
@@ -1368,27 +1332,22 @@ class StateRecorder:
         @param file: 成功下载的文件对象
         @param course_id: 课程 ID
         """
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            current_time = int(time.time())
 
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-
-        current_time = int(time.time())
-
-        where_clause, params = self._active_file_identity(file, course_id)
-        cursor.execute(
-            f"""UPDATE files
-            SET download_status = 'success',
-                last_download_at = ?,
-                consecutive_failures = 0,
-                last_failed_reason = NULL,
-                saved_to = ?
-            WHERE {where_clause}
-            """,
-            (current_time, file.saved_to, *params),
-        )
-
-        conn.commit()
-        conn.close()
+            where_clause, params = self._active_file_identity(file, course_id)
+            cursor.execute(
+                f"""UPDATE files
+                SET download_status = 'success',
+                    last_download_at = ?,
+                    consecutive_failures = 0,
+                    last_failed_reason = NULL,
+                    saved_to = ?
+                WHERE {where_clause}
+                """,
+                (current_time, file.saved_to, *params),
+            )
 
     def get_failed_files(self, course_id: int = None, min_failures: int = 1) -> List[File]:
         """
@@ -1452,24 +1411,22 @@ class StateRecorder:
                             但它们仍需要被重试，所以也会被包含
         @return: 字典，键为 course_id，值为包含 course_fullname 和 files 列表的字典
         """
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """SELECT * FROM files
-            WHERE (
-                (download_status = 'failed' AND consecutive_failures >= ?)
-                OR download_status = 'retrying'
+            cursor.execute(
+                """SELECT * FROM files
+                WHERE (
+                    (download_status = 'failed' AND consecutive_failures >= ?)
+                    OR download_status = 'retrying'
+                )
+                AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
+                ORDER BY course_id, consecutive_failures DESC, last_failed_at DESC
+                """,
+                (min_failures,)
             )
-            AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
-            ORDER BY course_id, consecutive_failures DESC, last_failed_at DESC
-            """,
-            (min_failures,)
-        )
 
-        results = cursor.fetchall()
-        conn.close()
+            results = cursor.fetchall()
 
         # 按课程分组
         courses_dict = {}
@@ -1501,28 +1458,27 @@ class StateRecorder:
 
         @return: 字典，键为 course_id，值为统计信息
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        cursor.execute(
-            """SELECT
-                course_id,
-                course_fullname,
-                COUNT(*) as failed_count,
-                SUM(consecutive_failures) as total_failures,
-                MAX(consecutive_failures) as max_consecutive,
-                MIN(last_failed_at) as earliest_failure,
-                MAX(last_failed_at) as latest_failure
-            FROM files
-            WHERE download_status IN ('failed', 'retrying')
-            AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
-            GROUP BY course_id
-            ORDER BY failed_count DESC
-            """
-        )
+            cursor.execute(
+                """SELECT
+                    course_id,
+                    course_fullname,
+                    COUNT(*) as failed_count,
+                    SUM(consecutive_failures) as total_failures,
+                    MAX(consecutive_failures) as max_consecutive,
+                    MIN(last_failed_at) as earliest_failure,
+                    MAX(last_failed_at) as latest_failure
+                FROM files
+                WHERE download_status IN ('failed', 'retrying')
+                AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
+                GROUP BY course_id
+                ORDER BY failed_count DESC
+                """
+            )
 
-        results = cursor.fetchall()
-        conn.close()
+            results = cursor.fetchall()
 
         summary = {}
         for row in results:
@@ -1543,37 +1499,34 @@ class StateRecorder:
         重置失败文件状态，准备重试
         使用 'retrying' 状态而非 'pending'，这样如果中断后重新运行，
         这些文件仍然会被包含在重试列表中。
-        
+
         不重置 download_attempts（保留历史），但重置 consecutive_failures
 
         @param file: 要重试的文件
         @param course_id: 课程 ID
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
+        with self._conn() as conn:
+            cursor = conn.cursor()
 
-        where_clause, params = self._active_file_identity(file, course_id)
-        cursor.execute(
-            f"""UPDATE files
-            SET download_status = 'retrying',
-                consecutive_failures = 0,
-                last_failed_reason = NULL
-            WHERE {where_clause}
-            """,
-            params,
-        )
+            where_clause, params = self._active_file_identity(file, course_id)
+            cursor.execute(
+                f"""UPDATE files
+                SET download_status = 'retrying',
+                    consecutive_failures = 0,
+                    last_failed_reason = NULL
+                WHERE {where_clause}
+                """,
+                params,
+            )
+            logging.debug(f'重置失败文件状态用于重试: {file.content_filename}')
 
-        conn.commit()
-        conn.close()
-        logging.debug(f'重置失败文件状态用于重试: {file.content_filename}')
-
-    def save_incomplete_download(self, file_id: int, file_url: str, file_path: str, 
-                                  total_bytes: int, downloaded_bytes: int, 
-                                  server_supports_range: bool = False, 
+    def save_incomplete_download(self, file_id: int, file_url: str, file_path: str,
+                                  total_bytes: int, downloaded_bytes: int,
+                                  server_supports_range: bool = False,
                                   etag: str = None, last_modified: str = None):
         """
         保存未完成的下载信息，用于断点续传
-        
+
         @param file_id: 文件 ID
         @param file_url: 下载 URL
         @param file_path: 文件保存路径
@@ -1583,19 +1536,17 @@ class StateRecorder:
         @param etag: ETag（用于验证文件完整性）
         @param last_modified: Last-Modified 时间戳
         """
-        
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        current_time = int(time.time())
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            current_time = int(time.time())
+
             # 检查是否已存在该下载记录
             cursor.execute(
                 "SELECT download_id FROM incomplete_downloads WHERE file_id = ? AND file_path = ?",
                 (file_id, file_path)
             )
             existing = cursor.fetchone()
-            
+
             if existing:
                 # 更新现有记录
                 cursor.execute(
@@ -1618,7 +1569,7 @@ class StateRecorder:
                 # 插入新记录
                 cursor.execute(
                     """INSERT INTO incomplete_downloads
-                    (file_id, file_url, file_path, total_bytes, downloaded_bytes, 
+                    (file_id, file_url, file_path, total_bytes, downloaded_bytes,
                      server_supports_range, etag, last_modified, start_time, last_update_time, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
                     """,
@@ -1626,25 +1577,20 @@ class StateRecorder:
                      int(server_supports_range), etag, last_modified, current_time, current_time)
                 )
                 logging.debug(f'保存未完成下载记录 [file_id={file_id}]: {downloaded_bytes}/{total_bytes} 字节')
-            
-            conn.commit()
-        finally:
-            conn.close()
 
     def get_incomplete_download(self, file_id: int, file_path: str) -> Optional[Dict[str, Any]]:
         """
         获取未完成的下载信息
-        
+
         @param file_id: 文件 ID
         @param file_path: 文件路径
         @return: 下载信息字典或 None
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
+
             cursor.execute(
-                """SELECT download_id, file_url, total_bytes, downloaded_bytes, 
+                """SELECT download_id, file_url, total_bytes, downloaded_bytes,
                    server_supports_range, etag, last_modified, attempts, error_reason
                 FROM incomplete_downloads
                 WHERE file_id = ? AND file_path = ? AND status = 'pending'
@@ -1652,7 +1598,7 @@ class StateRecorder:
                 (file_id, file_path)
             )
             result = cursor.fetchone()
-            
+
             if result:
                 return {
                     'download_id': result[0],
@@ -1666,42 +1612,33 @@ class StateRecorder:
                     'error_reason': result[8],
                 }
             return None
-        finally:
-            conn.close()
 
     def mark_download_complete(self, file_id: int, file_path: str):
         """
         标记下载为完成状态（删除不完整下载记录）
-        
+
         @param file_id: 文件 ID
         @param file_path: 文件路径
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
             cursor.execute(
                 "DELETE FROM incomplete_downloads WHERE file_id = ? AND file_path = ?",
                 (file_id, file_path)
             )
-            conn.commit()
             logging.debug(f'删除完成的下载记录 [file_id={file_id}]')
-        finally:
-            conn.close()
 
     def increment_incomplete_download_attempt(self, download_id: int, error_reason: str = None):
         """
         增加未完成下载的尝试次数
-        
+
         @param download_id: 下载 ID
         @param error_reason: 错误原因
         """
-        
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        current_time = int(time.time())
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            current_time = int(time.time())
+
             cursor.execute(
                 """UPDATE incomplete_downloads
                 SET attempts = attempts + 1,
@@ -1711,23 +1648,19 @@ class StateRecorder:
                 """,
                 (current_time, error_reason[:500] if error_reason else None, download_id)
             )
-            conn.commit()
-        finally:
-            conn.close()
 
     def get_incomplete_downloads_for_retry(self, max_attempts: int = 5) -> List[Dict[str, Any]]:
         """
         获取可以重试的不完整下载列表（按最后更新时间排序）
-        
+
         @param max_attempts: 最大尝试次数
         @return: 未完成下载列表
         """
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
+
             cursor.execute(
-                """SELECT download_id, file_id, file_url, file_path, total_bytes, 
+                """SELECT download_id, file_id, file_url, file_path, total_bytes,
                    downloaded_bytes, server_supports_range, etag, last_modified, attempts
                 FROM incomplete_downloads
                 WHERE status = 'pending' AND attempts < ?
@@ -1735,7 +1668,7 @@ class StateRecorder:
                 """,
                 (max_attempts,)
             )
-            
+
             results = cursor.fetchall()
             downloads = []
             for row in results:
@@ -1751,10 +1684,8 @@ class StateRecorder:
                     'last_modified': row[8],
                     'attempts': row[9],
                 })
-            
+
             return downloads
-        finally:
-            conn.close()
 
     def get_incomplete_files_with_course_info(self, max_attempts: int = 5) -> Dict[int, Dict]:
         """
@@ -1763,11 +1694,9 @@ class StateRecorder:
         @param max_attempts: 最大尝试次数
         @return: 字典，键为 course_id，值为包含 course_fullname 和 files 列表的字典
         """
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
 
-        try:
             cursor.execute(
                 """SELECT f.*
                 FROM incomplete_downloads i
@@ -1790,37 +1719,29 @@ class StateRecorder:
                 courses_dict[course_id]['files'].append(File.fromRow(row))
 
             return courses_dict
-        finally:
-            conn.close()
 
     def cleanup_old_incomplete_downloads(self, days_old: int = 7):
         """
         清理超过指定天数的未完成下载记录
-        
+
         @param days_old: 超过多少天的记录会被删除
         @return: 删除的记录数
         """
-        
-        conn = sqlite3.connect(self.db_file)
-        cursor = conn.cursor()
-        
-        try:
+        with self._conn() as conn:
+            cursor = conn.cursor()
             cutoff_time = int(time.time()) - (days_old * 24 * 60 * 60)
             
             cursor.execute(
                 "DELETE FROM incomplete_downloads WHERE last_update_time < ?",
                 (cutoff_time,)
             )
-            
+
             deleted_count = cursor.rowcount
-            conn.commit()
-            
+
             if deleted_count > 0:
                 logging.debug(f'清理了 {deleted_count} 个超过 {days_old} 天的未完成下载记录')
-            
+
             return deleted_count
-        finally:
-            conn.close()
 
     # ========================================================================
     # 🆕 查询缓存和性能优化方法
@@ -1896,55 +1817,49 @@ class StateRecorder:
         @param where_params: WHERE 子句参数
         @return: Course 对象列表
         """
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        stored_courses = []
-        
-        try:
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
+            stored_courses = []
+
             # 🔍 优化查询：一次获取所有文件数据
             query = """
                 SELECT course_id, course_fullname, *
                 FROM files
                 WHERE 1=1
             """
-            
+
             if where_clause:
                 query += f" AND {where_clause}"
-            
+
             query += " ORDER BY course_id"
-            
+
             cursor.execute(query, where_params)
             file_rows = cursor.fetchall()
-            
+
             if not file_rows:
-                conn.close()
                 return []
-            
+
             # 🔄 内存中分组，避免多次数据库查询
             current_course_id = None
             current_course = None
-            
+
             for file_row in file_rows:
                 course_id = file_row['course_id']
-                
+
                 # 检测课程变更
                 if course_id != current_course_id:
                     if current_course is not None:
                         stored_courses.append(current_course)
-                    
+
                     current_course = Course(course_id, file_row['course_fullname'])
                     current_course_id = course_id
-                
+
                 # 添加文件到课程
                 notify_file = File.fromRow(file_row)
                 current_course.files.append(notify_file)
-            
+
             # 添加最后一个课程
             if current_course is not None:
                 stored_courses.append(current_course)
-        
-        finally:
-            conn.close()
-        
+
         return stored_courses
