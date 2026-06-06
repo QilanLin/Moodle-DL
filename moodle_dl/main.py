@@ -298,7 +298,7 @@ def _print_retry_results(new_failed_downloads: List[Task]) -> None:
 def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     """
     Retry all failed downloads.
-    
+
     Process pipeline:
     1. Initialize database
     2. Get failed download statistics
@@ -307,6 +307,14 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     5. Reset file status
     6. Create and run downloader
     7. Print results
+
+    Important: while the downloader is running, we temporarily clear
+    `manually_specified_course_ids` from the in-memory config so that
+    DownloadService.gen_all_tasks() does NOT re-enqueue all files from
+    the user's manually specified courses (which would otherwise cause
+    --retry-failed to re-download hundreds of already-successful files,
+    producing spurious `*_01`, `*_02` duplicates on disk). The original
+    list is restored even if the downloader raises.
     """
     logging.info('正在查询下载失败的文件...')
 
@@ -326,7 +334,7 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
 
     # Step 4: Load failed files as courses
     courses = _load_failed_files_as_courses(database)
-    
+
     if not courses:
         return
 
@@ -335,14 +343,29 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
 
     logging.info('开始重载失败的文件...')
 
-    # Step 6: Create downloader and run
-    downloader = _create_downloader(courses, config, opts, database, NetworkThrottle())
-    downloader.run()
+    # Step 6: Create downloader and run.
+    # The downloader's gen_all_tasks() walks config.get_manually_specified_course_ids()
+    # to also re-fetch those courses' files via the Web API. That is
+    # desirable for the default `./moodle-dl` run but it is *not* what
+    # users expect from `--retry-failed`. We therefore snapshot the
+    # current list, clear it for the duration of the run, and restore
+    # it afterwards (even on exception).
+    original_manually_specified_ids = list(config.get_manually_specified_course_ids())
+    needs_restore = bool(original_manually_specified_ids)
+    if needs_restore:
+        config.set_manually_specified_course_ids([])
 
-    new_failed_downloads = downloader.get_failed_tasks()
+    try:
+        downloader = _create_downloader(courses, config, opts, database, NetworkThrottle())
+        downloader.run()
 
-    # Step 7: Print results
-    _print_retry_results(new_failed_downloads)
+        new_failed_downloads = downloader.get_failed_tasks()
+
+        # Step 7: Print results
+        _print_retry_results(new_failed_downloads)
+    finally:
+        if needs_restore:
+            config.set_manually_specified_course_ids(original_manually_specified_ids)
 
 
 def resume_downloads(config: ConfigHelper, opts: MoodleDlOpts):
