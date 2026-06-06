@@ -199,7 +199,7 @@ class ConfigHelper:
         
         return result
 
-    def __init__(self, opts: MoodleDlOpts):
+    def __init__(self, opts: MoodleDlOpts, validate_db: bool = True):
         self._whole_config: Dict[str, Any] = {}
         self.opts: MoodleDlOpts = opts
         self.config_path: str = str(Path(opts.path) / 'config.json')
@@ -209,22 +209,23 @@ class ConfigHelper:
         # 初始化认证管理器(用于存储 tokens 到数据库)
         # 数据库必须初始化成功,否则抛出异常,不使用 fallback
         self._db_file = str(Path(opts.path) / 'moodle_state.db')
-        
+
         # 关键修复：先初始化数据库表，再初始化认证管理器
         # 这确保在 --init 等操作中，数据库表已被正确创建
-        try:
-            from moodle_dl.database import StateRecorder
-            # 创建 StateRecorder 以初始化数据库表（如果表不存在）
-            # 这是一个轻量级操作，只在首次运行时会创建表
-            StateRecorder(self, opts)
-        except Exception as e:
-            raise RuntimeError(
-                '❌ 数据库初始化失败，程序已中止。\n'
-                f'数据库文件: {self._db_file}\n'
-                f'原因: {e}\n'
-                '这不是浏览器类型问题，而是 SQLite 当前无法在该目录完成初始化。\n'
-                '请检查目标目录/卷当前是否接受 SQLite 写入；如需继续排查，可先确认普通文件写入和 sqlite3 建表是否都正常。'
-            ) from e
+        if validate_db:
+            try:
+                from moodle_dl.database import StateRecorder
+                # 创建 StateRecorder 以初始化数据库表（如果表不存在）
+                # 这是一个轻量级操作，只在首次运行时会创建表
+                StateRecorder(self, opts)
+            except Exception as e:
+                raise RuntimeError(
+                    '❌ 数据库初始化失败，程序已中止。\n'
+                    f'数据库文件: {self._db_file}\n'
+                    f'原因: {e}\n'
+                    '这不是浏览器类型问题，而是 SQLite 当前无法在该目录完成初始化。\n'
+                    '请检查目标目录/卷当前是否接受 SQLite 写入；如需继续排查，可先确认普通文件写入和 sqlite3 建表是否都正常。'
+                ) from e
         
         from moodle_dl.auth_session_manager import AuthSessionManager
         self._auth_manager = AuthSessionManager(self._db_file)

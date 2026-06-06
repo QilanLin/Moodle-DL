@@ -204,12 +204,18 @@ class Task:
         global_opts. The injection path is preferred (avoids
         per-completion schema validation and ensures workspace
         isolation); the fallback path preserves compatibility with
-        callers that haven't been refactored yet."""
+        callers that haven't been refactored yet.
+
+        When constructing the fallback ConfigHelper, we pass
+        validate_db=False to skip the full StateRecorder init
+        in ConfigHelper.__init__ — we want a StateRecorder of
+        our own choosing, not a side-effect-init one.
+        """
         if self.database is not None:
             return self.database
         from moodle_dl.config import ConfigHelper
         from moodle_dl.database import StateRecorder
-        config = ConfigHelper(self.opts.global_opts)
+        config = ConfigHelper(self.opts.global_opts, validate_db=False)
         return StateRecorder(config, self.opts)
 
     def _get_cached_mozilla_cookie_jar(self):

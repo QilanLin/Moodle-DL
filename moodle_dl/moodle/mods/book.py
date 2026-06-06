@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import time
 import urllib.parse
 from typing import Dict, List, Tuple
@@ -836,8 +837,12 @@ class BookMod(MoodleMod):
                         logging.debug(f'✅ 课程主页访问成功: {page.url}')
 
                         # 🔍 DEBUG: 保存HTML用于调试
+                        # 🆕 Per-process path (was /tmp/playwright_course_page_<id>.html)
                         init_html = await page.content()
-                        debug_path = f'/tmp/playwright_course_page_{course_id}.html'
+                        debug_path = os.path.join(
+                            tempfile.gettempdir(),
+                            f'playwright_course_page_{course_id}.{os.getpid()}.{int(time.time())}.html',
+                        )
                         with open(debug_path, 'w', encoding='utf-8') as f:
                             f.write(init_html)
                         logging.debug(f'📝 已保存课程页面HTML到: {debug_path}')
@@ -939,7 +944,11 @@ class BookMod(MoodleMod):
                         logging.debug(f'HTML start: {html_content[:500]}...')
                         logging.debug(f'Current URL after load: {current_url}')
                         # Save HTML for debugging
-                        debug_path = f'/tmp/playwright_debug_{module_id}.html'
+                        # 🆕 Per-process path (was /tmp/playwright_debug_<id>.html)
+                        debug_path = os.path.join(
+                            tempfile.gettempdir(),
+                            f'playwright_debug_{module_id}.{os.getpid()}.{int(time.time())}.html',
+                        )
                         try:
                             with open(debug_path, 'w', encoding='utf-8') as f:
                                 f.write(html_content)

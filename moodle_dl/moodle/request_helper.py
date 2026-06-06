@@ -108,7 +108,24 @@ class RequestHelper:
             for cookie in session.cookies:
                 cookie.expires = 2147483647
 
-            session.cookies.save(ignore_discard=True, ignore_expires=True)
+            # 🆕 Cross-process safe cookie save. We hold an
+            # exclusive flock on a sidecar lock file (next to the
+            # cookie file) so that two moodle-dl processes (or
+            # tasks) writing the same cookie file don't truncate
+            # each other. The cookie file itself is already
+            # written atomically by MoodleDLCookieJar.save() (it
+            # uses temp + rename), but without the lock a
+            # process could read+truncate+write in between
+            # another process's read and write.
+            import fcntl
+            lock_path = cookie_jar_path + ".lock"
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                session.cookies.save(ignore_discard=True, ignore_expires=True)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
 
         return response, session
 
@@ -138,7 +155,17 @@ class RequestHelper:
             raise MoodleNetworkError(f"网络连接错误: {str(error)}") from None
 
         if cookie_jar_path is not None:
-            session.cookies.save(ignore_discard=True, ignore_expires=True)
+            # 🆕 Cross-process safe cookie save. See comment in
+            # post_URL for the rationale.
+            import fcntl
+            lock_path = cookie_jar_path + ".lock"
+            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                session.cookies.save(ignore_discard=True, ignore_expires=True)
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
 
         return response, session
 

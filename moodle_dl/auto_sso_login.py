@@ -20,6 +20,7 @@ import asyncio
 import glob
 import logging
 import os
+import time
 import re
 import urllib.parse
 from typing import Tuple, List, Dict, Optional
@@ -1065,8 +1066,16 @@ async def _handle_uncertain_login_status(current_url: str, page_content: str):
     logging.info(_('   页面中未找到 logout 链接', '   No logout link was found on the page'))
     logging.info(_('   未检测到 SSO 重定向', '   No SSO redirect was detected'))
 
-    # 保存调试信息
-    debug_path = '/tmp/moodle_login_uncertain.html'
+    # 🆕 保存调试信息到 per-process 路径
+    # Old: /tmp/moodle_login_uncertain.html (shared across all
+    # users + processes on the system, race-prone).
+    # New: per-process, per-user temp file. Also includes the
+    # PID and a timestamp suffix to disambiguate.
+    import tempfile as _tempfile
+    debug_path = os.path.join(
+        _tempfile.gettempdir(),
+        f'moodle_login_uncertain.{os.getpid()}.{int(time.time())}.html',
+    )
     try:
         with open(debug_path, 'w', encoding='utf-8') as f:
             f.write(page_content)
@@ -1135,7 +1144,12 @@ async def _is_on_login_page(current_url: str, page) -> bool:
             logging.info(_('   原因：SSO cookies 可能已过期，或需要重新验证', '   Reason: SSO cookies may be expired or re-verification may be required'))
 
         # 保存当前页面截图（调试用）
-        screenshot_path = '/tmp/moodle_sso_login_failed.png'
+        # 🆕 Per-process path (was /tmp/moodle_sso_login_failed.png)
+        import tempfile as _tempfile2
+        screenshot_path = os.path.join(
+            _tempfile2.gettempdir(),
+            f'moodle_sso_login_failed.{os.getpid()}.{int(time.time())}.png',
+        )
         try:
             await page.screenshot(path=screenshot_path)
             logging.debug(_('📸 已保存截图到: {path}', '📸 Saved screenshot to: {path}', path=screenshot_path))
