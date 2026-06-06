@@ -314,10 +314,26 @@ def float_or_none(v, scale=1, invscale=1, default=None):
 def format_decimal_suffix(num, fmt='%d%s', *, factor=1000):
     """Formats numbers with decimal suffixes like K, M, etc"""
     num, factor = float_or_none(num), float(factor)
-    if num is None or num < 0:
+    # Treat NaN, None, and negatives as no-output.
+    if num is None or num < 0 or num != num or math.isinf(num):  # num != num is the NaN check
         return None
     POSSIBLE_SUFFIXES = 'kMGTPEZY'
-    exponent = 0 if num == 0 else min(int(math.log(num, factor)), len(POSSIBLE_SUFFIXES))
+    if num == 0:
+        exponent = 0
+    else:
+        # math.log() returns a negative value for very small positive
+        # inputs. Clamp to a safe range so the suffix lookup never
+        # raises OverflowError / IndexError.
+        try:
+            log_value = math.log(num, factor)
+        except (ValueError, OverflowError):
+            log_value = 0
+        if log_value >= len(POSSIBLE_SUFFIXES):
+            exponent = len(POSSIBLE_SUFFIXES)
+        elif log_value < 0:
+            exponent = 0
+        else:
+            exponent = int(log_value)
     suffix = ['', *POSSIBLE_SUFFIXES][exponent]
     if factor == 1024:
         suffix = {'k': 'Ki', '': ''}.get(suffix, f'{suffix}i')
