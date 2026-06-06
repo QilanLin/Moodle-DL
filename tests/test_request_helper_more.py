@@ -1,4 +1,5 @@
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -78,7 +79,12 @@ def test_init_creates_response_log_and_log_response_appends_entries(tmp_path):
     helper = make_helper(tmp_path, log_responses=True)
 
     log_file = tmp_path / "responses.log"
-    assert log_file.read_text(encoding="utf-8") == "JSON Log:\n\n"
+    # The new append-only log writes a session header on init
+    # (PID + timestamp) so concurrent sessions don't truncate
+    # each other's data.
+    content = log_file.read_text(encoding="utf-8")
+    assert "session start (PID:" in content
+    assert str(os.getpid()) in content
 
     helper.log_response("core_test", {"wstoken": "secret"}, "https://example.test", {"ok": True})
     content = log_file.read_text(encoding="utf-8")

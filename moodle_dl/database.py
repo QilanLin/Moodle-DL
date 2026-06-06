@@ -90,11 +90,23 @@ class StateRecorder:
     # 🆕 查询缓存配置
     CACHE_TTL_SECONDS = 300  # 缓存 5 分钟
 
+    # 🆕 retry 配置
+    DEFAULT_MAX_RETRIES = 5
+    DEFAULT_INITIAL_DELAY = 0.05  # 50ms
+    DEFAULT_BACKOFF = 2.0
+    DEFAULT_RETRY_ERRORS = ('database is locked',)
+
     @contextmanager
-    def _conn(self, row_factory: bool = False):
+    def _conn(self, row_factory: bool = False, _retry: bool = True):
         """Context manager that opens a SQLite connection, optionally
         sets a Row factory, commits on clean exit, rolls back on
         exception, and always closes the connection.
+
+        When _retry=True (the default), the context manager
+        internally retries the open-on-locked operation. This is
+        critical for exFAT filesystems where WAL checkpoints
+        can be slow: a transient 'database is locked' is
+        normally fatal, but here we wait and try again.
 
         Use this in place of the legacy pattern of
             conn = sqlite3.connect(self.db_file)
@@ -107,18 +119,162 @@ class StateRecorder:
 
         @param row_factory: if True, set sqlite3.Row so callers can
         use column-name access (e.g. row['module_id']).
+        @param _retry: internal flag. Most callers should leave
+        this default. Tests that want raw, non-retrying behavior
+        (e.g. to assert exact error semantics) can pass _retry=False.
         """
-        conn = sqlite3.connect(self.db_file)
-        try:
-            if row_factory:
-                conn.row_factory = sqlite3.Row
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        if not _retry:
+            # Non-retrying path. Bypasses the retry wrapper below
+            # for tests that pin exact error semantics.
+            conn = sqlite3.connect(self.db_file)
+            try:
+                if row_factory:
+                    conn.row_factory = sqlite3.Row
+                yield conn
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+            return
+
+        # Default path: retry on transient lock errors.
+        # We delegate to _execute_with_retry using a small
+        # helper that yields the connection through a local
+        # "with" block, so the caller's business code remains
+        # written as "with self._conn() as conn:".
+        import time as _time
+
+        delay = self.DEFAULT_INITIAL_DELAY
+        last_exc = None
+        for attempt in range(self.DEFAULT_MAX_RETRIES):
+            conn = sqlite3.connect(self.db_file)
+            try:
+                if row_factory:
+                    conn.row_factory = sqlite3.Row
+                yield conn
+                conn.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                # Always close the conn on error, regardless of
+                # whether we retry.
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+                msg = str(exc)
+                if not any(needle in msg for needle in self.DEFAULT_RETRY_ERRORS):
+                    raise
+                last_exc = exc
+                if attempt < self.DEFAULT_MAX_RETRIES - 1:
+                    _time.sleep(delay)
+                    delay *= self.DEFAULT_BACKOFF
+                # Otherwise, loop to retry.
+            except Exception:
+                # Non-OperationalError: rollback + close, propagate.
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+                raise
+            else:
+                # The yield above returned normally; we already
+                # committed + closed. Suppress any UnboundLocalError.
+                pass
+        # All retries exhausted.
+        if last_exc is not None:
+            raise last_exc
+
+    def _execute_with_retry(
+        self,
+        callback,
+        max_attempts: Optional[int] = None,
+        initial_delay: Optional[float] = None,
+        backoff: Optional[float] = None,
+        retry_errors: Optional[tuple] = None,
+    ):
+        """Execute a callback with automatic retry on transient
+        'database is locked' errors.
+
+        @param callback: a callable taking a sqlite3.Connection
+        that does the actual work.
+        @param max_attempts: total number of attempts before
+        giving up. Default 5.
+        @param initial_delay: seconds to wait before the first
+        retry. Default 0.05.
+        @param backoff: multiplier applied to the delay between
+        successive retries. Default 2.0 (exponential).
+        @param retry_errors: tuple of error-message substrings
+        that trigger a retry. Default ('database is locked',).
+
+        Each attempt opens its own fresh connection (via
+        sqlite3.connect), runs the callback, and either commits
+        on success or rolls back + closes on error. The retry
+        loop does NOT use the _conn() context manager (because
+        a retried callback's prior failure leaves the generator
+        in an inconsistent state, causing "generator didn't
+        stop after throw()" errors).
+
+        A successful call commits its work. A retry that succeeds
+        commits its own work — there is no carry-over from a
+        prior failed attempt.
+        """
+        import time
+
+        if max_attempts is None:
+            max_attempts = self.DEFAULT_MAX_RETRIES
+        if initial_delay is None:
+            initial_delay = self.DEFAULT_INITIAL_DELAY
+        if backoff is None:
+            backoff = self.DEFAULT_BACKOFF
+        if retry_errors is None:
+            retry_errors = self.DEFAULT_RETRY_ERRORS
+
+        delay = initial_delay
+        last_exc = None
+        for attempt in range(max_attempts):
+            conn = sqlite3.connect(self.db_file)
+            try:
+                callback(conn)
+                conn.commit()
+                return  # success
+            except sqlite3.OperationalError as exc:
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+                msg = str(exc)
+                if not any(needle in msg for needle in retry_errors):
+                    # Not a retriable error — propagate.
+                    raise
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    # Don't sleep after the final attempt.
+                    time.sleep(delay)
+                    delay *= backoff
+            except Exception:
+                # Non-OperationalError: rollback + close, propagate.
+                try:
+                    conn.rollback()
+                except sqlite3.Error:
+                    pass
+                finally:
+                    conn.close()
+                raise
+            else:
+                # Unreachable: the return/raise above would have
+                # exited the loop. Belt-and-suspenders.
+                pass
+        # All retries exhausted.
+        if last_exc is not None:
+            raise last_exc
 
     def __init__(self, config: ConfigHelper, opts: MoodleDlOpts):
         """
@@ -131,7 +287,6 @@ class StateRecorder:
         
         # 🆕 查询缓存存储
         self._query_cache: Dict[str, tuple] = {}  # {cache_key: (data, timestamp)}
-        self._cache_locks: Dict[str, bool] = {}  # 防止缓存击穿
 
         try:
             conn = sqlite3.connect(self.db_file)
@@ -1085,6 +1240,10 @@ class StateRecorder:
         @param course_fullname: 课程全名
         @return: file_id（新插入的或已存在的）
         """
+        # 🆕 缓存失效：新文件影响 get_stored_files / get_old_files
+        self._clear_cache('get_stored_files')
+        self._clear_cache('get_old_files')
+
         with self._conn(row_factory=True) as conn:
             cursor = conn.cursor()
 
@@ -1750,14 +1909,23 @@ class StateRecorder:
     def _get_cache_key(self, method_name: str, *args, **kwargs) -> str:
         """
         生成缓存键
-        
+
         @param method_name: 方法名称
         @param args: 位置参数
         @param kwargs: 关键字参数
         @return: 缓存键
         """
         import hashlib
-        key_parts = [method_name] + [str(arg) for arg in args] + [f"{k}={v}" for k, v in kwargs.items()]
+        # Include self.db_file in the key so different workspaces
+        # (different DB files) cannot share cache entries. This
+        # is critical: without it, rec_a and rec_b (pointing at
+        # two different DB files) would return identical cache
+        # hits, leading to silent cross-workspace data leakage.
+        key_parts = (
+            [self.db_file, method_name]
+            + [str(arg) for arg in args]
+            + [f"{k}={v}" for k, v in kwargs.items()]
+        )
         key_str = "|".join(key_parts)
         return f'{method_name}:{hashlib.md5(key_str.encode()).hexdigest()}'
     

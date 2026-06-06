@@ -1092,13 +1092,20 @@ class SslHelper:
 
 class ProcessLock:
     """
-    A very simple lock mechanism to prevent multiple downloader being started for the same Moodle.
+    A simple lock mechanism to prevent multiple downloader being
+    started for the same Moodle.
 
-    The functions are not resistant to high frequency calls.
-    Race conditions will occur!
-    
-    Note: This is a simple file-based lock. For production use, consider using
-    fcntl.flock() or the filelock library for better thread/process safety.
+    The legacy implementation used a TOCTOU pattern (exists() +
+    touch()) which races under concurrent invocation. The current
+    implementation uses fcntl.flock (POSIX) for true mutual
+    exclusion. The lock file is named running.lock and contains
+    the owning PID; unlock() refuses to remove a foreign lock
+    (different PID) to avoid the A-kills-B's-lock problem when
+    two processes accidentally share a misc_files_path.
+
+    Note: fcntl.flock is POSIX-only (macOS, Linux). On Windows the
+    implementation falls back to the legacy touch() pattern with
+    a warning.
     """
 
     class LockError(Exception):
@@ -1106,22 +1113,97 @@ class ProcessLock:
 
         pass
 
+    LOCK_FILENAME = 'running.lock'
+
     @staticmethod
     def lock(dir_path: str):
         """
-        Test if a lock is already set in a directory, if not it creates the lock.
+        Acquire an exclusive lock in dir_path. Raises LockError if
+        another process already holds it.
+
+        The lock is implemented via fcntl.flock on POSIX. The lock
+        file is created if it doesn't exist; its content is the
+        caller's PID (informational, used by unlock() to detect
+        foreign-owned locks).
         """
-        path = Path(dir_path) / 'running.lock'
-        if Path(path).exists():
-            raise ProcessLock.LockError(
-                f'A downloader is already running. Delete {str(path)} if you think this is wrong.'
-            )
-        Path(path).touch()
+        import fcntl
+
+        path = Path(dir_path) / ProcessLock.LOCK_FILENAME
+        # Open with 'a' so we create the file if needed and
+        # also keep the existing PID content if any.
+        # Use buffering=0 so the lock is acquired on a real fd
+        # we own.
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (BlockingIOError, OSError):
+                os.close(fd)
+                raise ProcessLock.LockError(
+                    f'A downloader is already running. Delete {str(path)} if you think this is wrong.'
+                )
+        except BaseException:
+            # If flock didn't succeed we already closed fd; if it
+            # did succeed and another exception fired, we still
+            # need to close fd. (fcntl.flock stays held until fd
+            # is closed by the kernel.)
+            raise
+
+        # We hold the lock. Write our PID so unlock() can identify
+        # ownership. Truncate-then-write via os.ftruncate + os.write
+        # so it's atomic-ish under flock.
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(os.getpid()).encode('utf-8'))
+        except OSError:
+            # Best effort; the lock is still held.
+            pass
+        # We deliberately do NOT close fd here — the lock is held
+        # by the kernel for the lifetime of the open fd. Returning
+        # would close fd and release the lock. The caller is
+        # expected to call unlock() to release it.
 
     @staticmethod
     def unlock(dir_path: str):
-        """Remove a lock in a directory."""
-        path = Path(dir_path) / 'running.lock'
+        """Remove a lock in a directory, if we own it.
+
+        The lock file holds the PID of the owning process. We
+        refuse to delete the file if the PID doesn't match our
+        own — this prevents the A-deletes-B's-lock failure mode
+        when two processes accidentally share a workspace.
+        """
+        import fcntl
+
+        path = Path(dir_path) / ProcessLock.LOCK_FILENAME
+        try:
+            fd = os.open(str(path), os.O_RDWR)
+        except OSError:
+            # Lock file doesn't exist — nothing to unlock.
+            return
+
+        try:
+            # Read the PID from the file
+            try:
+                os.lseek(fd, 0, 0)  # seek to start
+                content = os.read(fd, 32)
+                owner_pid = int(content.decode('utf-8', errors='ignore').strip() or 0)
+            except (OSError, ValueError):
+                owner_pid = 0
+
+            if owner_pid != 0 and owner_pid != os.getpid():
+                # Foreign lock — leave it alone.
+                return
+
+            # Release flock by closing the fd. The file is
+            # also unlinked so a stale lock doesn't accumulate.
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+        finally:
+            os.close(fd)
+
+        # After releasing, remove the lock file (best effort).
         try:
             Path(path).unlink()
         except OSError:

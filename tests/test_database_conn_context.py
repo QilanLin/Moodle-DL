@@ -23,6 +23,7 @@ If a future refactor regresses any of these, the suite goes red.
 """
 import os
 import sqlite3
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -224,6 +225,121 @@ class TestStateRecorderMethodsUseConn(unittest.TestCase):
             # Confirm cleared
             failed2 = rec.get_failed_files(course_id=86124, min_failures=1)
             self.assertEqual(len(failed2), 0)
+
+
+class TestConnRetriesOnDatabaseIsLocked(unittest.TestCase):
+    """_conn() should automatically retry when SQLite raises
+    'database is locked' (SQLITE_BUSY). This is critical for
+    exFAT filesystems where WAL checkpoints can be slow, and
+    for any filesystem where concurrent readers + a single
+    writer cause transient lock contention.
+
+    Pin points:
+      1. OperationalError with "locked" triggers automatic retry
+      2. Retry succeeds within max_attempts if the lock clears
+      3. OperationalError with non-locked reason is NOT retried
+      4. max_attempts exhausted → OperationalError propagates
+      5. Default max_attempts is >= 3 (so transient spikes are tolerated)
+    """
+
+    def test_retry_on_database_is_locked(self):
+        """A method that raises database-locked on first attempt
+        but succeeds on second is retried transparently."""
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            call_count = [0]
+
+            def flaky_business_logic(conn):
+                # First call: fail with database locked.
+                # Second call: succeed.
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                conn.execute("CREATE TABLE IF NOT EXISTS retry_test (x INTEGER)")
+                conn.execute("INSERT INTO retry_test VALUES (1)")
+
+            rec._execute_with_retry(flaky_business_logic)
+
+            self.assertEqual(call_count[0], 2)
+            with sqlite3.connect(rec.db_file) as conn:
+                row = conn.execute("SELECT x FROM retry_test").fetchone()
+            self.assertEqual(row, (1,))
+
+    def test_retry_exhausts_max_attempts(self):
+        """If the lock never clears, _conn() raises after max_attempts."""
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            call_count = [0]
+
+            def always_locked(conn):
+                call_count[0] += 1
+                raise sqlite3.OperationalError("database is locked")
+
+            with self.assertRaises(sqlite3.OperationalError) as cm:
+                rec._execute_with_retry(always_locked, max_attempts=3)
+            self.assertGreaterEqual(call_count[0], 3)
+            self.assertIn("locked", str(cm.exception))
+
+    def test_non_locked_operational_error_not_retried(self):
+        """An OperationalError that is NOT 'database is locked'
+        must propagate immediately without retry."""
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            call_count = [0]
+
+            def other_error(conn):
+                call_count[0] += 1
+                raise sqlite3.OperationalError("no such table: nope")
+
+            with self.assertRaises(sqlite3.OperationalError) as cm:
+                rec._execute_with_retry(other_error)
+            self.assertEqual(call_count[0], 1)
+            self.assertIn("no such table", str(cm.exception))
+
+    def test_max_attempts_default_at_least_3(self):
+        """The default max_attempts should be >= 3 so transient
+        filesystem-level lock spikes are tolerated."""
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            self.assertGreaterEqual(rec.DEFAULT_MAX_RETRIES, 3)
+
+    def test_exponential_backoff_actually_waits(self):
+        """Each retry should sleep with exponential backoff so
+        we don't busy-loop a busy filesystem."""
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            start = time.time()
+            with self.assertRaises(sqlite3.OperationalError):
+                rec._execute_with_retry(
+                    lambda conn: (_ for _ in ()).throw(
+                        sqlite3.OperationalError("database is locked")
+                    ),
+                    max_attempts=3,
+                    initial_delay=0.05,
+                    backoff=2.0,
+                )
+            elapsed = time.time() - start
+            self.assertGreaterEqual(elapsed, 0.10)
+
+    def test_commit_after_successful_retry(self):
+        """A successful retry should commit its work, not be
+        rolled back."""
+        with tempfile.TemporaryDirectory() as td:
+            rec = make_recorder(td)
+            call_count = [0]
+
+            def write_on_retry(conn):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise sqlite3.OperationalError("database is locked")
+                conn.execute("CREATE TABLE IF NOT EXISTS t2 (x INTEGER)")
+                conn.execute("INSERT INTO t2 VALUES (42)")
+
+            rec._execute_with_retry(write_on_retry)
+            with sqlite3.connect(rec.db_file) as conn:
+                row = conn.execute("SELECT x FROM t2").fetchone()
+            self.assertEqual(row, (42,))
 
 
 if __name__ == "__main__":

@@ -175,6 +175,7 @@ class Task:
         options: DownloadOptions,
         thread_pool: ThreadPoolExecutor,
         callback: Callable[[], None],
+        database: Optional["StateRecorder"] = None,
     ):
         self.task_id = task_id
         self.file = file
@@ -182,13 +183,34 @@ class Task:
         self.opts = options
         self.thread_pool = thread_pool
         self.callback = callback
-        
+        # The main flow may inject a pre-built StateRecorder. If
+        # not provided, the Task falls back to creating its own
+        # (preserving backward compatibility). The main flow's
+        # use of database= avoids the per-completion schema
+        # validation that the legacy code triggered, and ensures
+        # that completion writes land in the correct DB when
+        # global_opts is being reused across workspaces.
+        self.database = database
+
         # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
         self.api_source = 'mobile'  # 默认为 mobile API
 
         self.destination = self.gen_path(options.download_path, course, file)
         self.filename = self._generate_filename_with_index(file)
         self.status = TaskStatus()
+
+    def _get_or_create_database(self) -> "StateRecorder":
+        """Return the injected database, or build a one-off from
+        global_opts. The injection path is preferred (avoids
+        per-completion schema validation and ensures workspace
+        isolation); the fallback path preserves compatibility with
+        callers that haven't been refactored yet."""
+        if self.database is not None:
+            return self.database
+        from moodle_dl.config import ConfigHelper
+        from moodle_dl.database import StateRecorder
+        config = ConfigHelper(self.opts.global_opts)
+        return StateRecorder(config, self.opts)
 
     def _get_cached_mozilla_cookie_jar(self):
         if self.opts.cookies_text is None:
@@ -201,7 +223,13 @@ class Task:
             cookie_jar.load(ignore_discard=True, ignore_expires=True)
             setattr(self.opts, text_key, self.opts.cookies_text)
             setattr(self.opts, cache_key, cookie_jar)
-            setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
+            # Note: do NOT clear the aiohttp cache here. The
+            # original code did
+            #     setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
+            # but that name doesn't match the cache_key variable
+            # above (this method populates the *mozilla* jar
+            # cache, not the aiohttp one), so the line was a
+            # self-defeating typo. We leave both caches alone.
 
         return getattr(self.opts, cache_key)
 
@@ -2403,16 +2431,12 @@ class Task:
                         
                         # 🆕 清理完成的下载记录
                         try:
-                            from moodle_dl.database import StateRecorder
-                            from moodle_dl.config import ConfigHelper
-                            
                             if self.file.file_id is not None:
-                                config = ConfigHelper(self.opts.global_opts)
-                                database = StateRecorder(config, self.opts)
+                                database = self._get_or_create_database()
                                 database.mark_download_complete(self.file.file_id, dest_path)
                         except Exception as cleanup_err:
                             logging.debug('[%d] 清理下载记录时出错: %s', self.task_id, cleanup_err)
-                        
+
                         break
 
                     except (aiohttp.ClientError, OSError, ValueError, ContentRangeError) as err:
@@ -2498,12 +2522,8 @@ class Task:
         """
         try:
             # 获取数据库连接
-            from moodle_dl.database import StateRecorder
-            from moodle_dl.config import ConfigHelper
-            
-            config = ConfigHelper(self.opts.global_opts)
-            database = StateRecorder(config, self.opts)
-            
+            database = self._get_or_create_database()
+
             # 获取或创建 file_id
             file_id = self.file.file_id
             if file_id is None:
@@ -2563,9 +2583,8 @@ class Task:
             from moodle_dl.database import StateRecorder
             from moodle_dl.config import ConfigHelper
             
-            config = ConfigHelper(self.opts.global_opts)
-            database = StateRecorder(config, self.opts)
-            
+            database = self._get_or_create_database()
+
             file_id = self.file.file_id
             if file_id is None:
                 return 0, None

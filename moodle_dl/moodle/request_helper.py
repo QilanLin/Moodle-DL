@@ -52,8 +52,18 @@ class RequestHelper:
         self.log_responses_to = None
         if opts.log_responses:
             self.log_responses_to = PT.make_path(config.get_misc_files_path(), 'responses.log')
-            with open(self.log_responses_to, 'w', encoding='utf-8') as response_log_file:
-                response_log_file.write('JSON Log:\n\n')
+            # 🆕 Append-only: never truncate. Write a session
+            # header so a user can see where one moodle-dl
+            # session ends and the next begins. Concurrent
+            # sessions pointing at the same workspace will all
+            # have their data preserved (under POSIX O_APPEND
+            # semantics, individual write() calls are atomic up
+            # to PIPE_BUF, which is 4096 on Linux/macOS).
+            with open(self.log_responses_to, 'a', encoding='utf-8') as response_log_file:
+                import datetime as _dt
+                response_log_file.write(
+                    f'\n--- session start (PID: {os.getpid()}) at {_dt.datetime.now().isoformat()} ---\n'
+                )
 
     def set_network_throttle(self, throttle: Optional[NetworkThrottle]) -> None:
         self.network_throttle = throttle
