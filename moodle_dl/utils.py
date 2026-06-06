@@ -27,7 +27,7 @@ import requests
 import urllib3
 from aiohttp.cookiejar import CookieJar
 from requests.utils import DEFAULT_CA_BUNDLE_PATH, extract_zipped_paths
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 
 def check_verbose() -> bool:
@@ -490,6 +490,21 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
                 file.truncate(0)
             yield file
 
+    def _resolve_filename(self, filename):
+        """Resolve which filename to use for save/load.
+
+        Preference order:
+          1. The explicit `filename` argument, if non-None.
+          2. self.filename, if it was set at construction.
+          3. Otherwise raise ValueError (mirrors the stdlib
+             http.cookiejar.MISSING_FILENAME_TEXT contract).
+        """
+        if filename is not None:
+            return filename
+        if self.filename is not None:
+            return self.filename
+        raise ValueError(http.cookiejar.MISSING_FILENAME_TEXT)
+
     def _really_save(self, f, ignore_discard=False, ignore_expires=False):
         now = time.time()
         for cookie in self:
@@ -522,12 +537,7 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
         Code is taken from CPython 3.6
         https://github.com/python/cpython/blob/8d999cbf4adea053be6dbb612b9844635c4dfb8e/Lib/http/cookiejar.py#L2091-L2117
         """
-
-        if filename is None:
-            if self.filename is not None:
-                filename = self.filename
-            else:
-                raise ValueError(http.cookiejar.MISSING_FILENAME_TEXT)
+        filename = self._resolve_filename(filename)
 
         # Store session cookies with `expires` set to 0 instead of an empty string
         for cookie in self:
@@ -540,11 +550,7 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
 
     def load(self, filename=None, ignore_discard=False, ignore_expires=False):
         """Load cookies from a file."""
-        if filename is None:
-            if self.filename is not None:
-                filename = self.filename
-            else:
-                raise ValueError(http.cookiejar.MISSING_FILENAME_TEXT)
+        filename = self._resolve_filename(filename)
 
         def prepare_line(line):
             if line.startswith(self._HTTPONLY_PREFIX):
@@ -1790,8 +1796,6 @@ class UrlHelper:
             >>> "/webservice/pluginfile.php" in fixed and "token=mytoken" in fixed
             True
         """
-        import urllib.parse as urlparse
-
         if not url:
             return ''
 
@@ -1817,8 +1821,8 @@ class UrlHelper:
             url = url.replace('/pluginfile.php', '/webservice/pluginfile.php')
 
         # 6. 添加必要参数
-        url_parts = list(urlparse.urlparse(url))
-        query = dict(urlparse.parse_qsl(url_parts[4]))
+        url_parts = list(urlparse(url))
+        query = dict(parse_qsl(url_parts[4]))
 
         # 复用已存在的 token，避免重复添加
         token_to_use = query.get('token', token)
@@ -1834,9 +1838,9 @@ class UrlHelper:
         if add_lang and lang:
             query['lang'] = lang
 
-        url_parts[4] = urlparse.urlencode(query)
+        url_parts[4] = urlencode(query)
 
-        return urlparse.urlunparse(url_parts)
+        return urlunparse(url_parts)
 
     @staticmethod
     def is_pluginfile_url(url: str) -> bool:

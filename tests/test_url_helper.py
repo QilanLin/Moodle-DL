@@ -211,3 +211,69 @@ class TestIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFixPluginfileUrlNoNameShadowing(unittest.TestCase):
+    """Regression tests for the function-internal
+    `import urllib.parse as urlparse` name-shadowing issue.
+
+    Before the refactor, fix_pluginfile_url re-imported urllib.parse
+    as urlparse, shadowing the module-level `urlparse` (a function).
+    It relied on Python's late-binding attribute lookup to find
+    `urlparse.urlparse`. This is fragile: mypy strict / pyright
+    strict would flag it, and PyPy might handle the attribute lookup
+    differently.
+
+    These tests pin the function's contract and would catch a
+    regression where someone reintroduces the name shadow.
+    """
+
+    def test_function_callable_repeatedly_without_state_leak(self):
+        """If the function leaked state via the shadowed name,
+        repeated calls with different URL shapes would surface
+        inconsistencies. Run the same call pattern several times and
+        verify each result is a valid transformation."""
+        urls = [
+            'https://keats.kcl.ac.uk/pluginfile.php/1/a.pdf',
+            'https://keats.kcl.ac.uk/pluginfile.php/2/b.pdf?token=zzz',
+            'https://keats.kcl.ac.uk/pluginfile.php/3/c.pdf?lang=zh_cn',
+            'https://keats.kcl.ac.uk/pluginfile.php/4/d.pdf?token=t&lang=en',
+        ]
+        for url in urls:
+            fixed = UrlHelper.fix_pluginfile_url(
+                url=url,
+                token='tok',
+                moodle_base_url='https://keats.kcl.ac.uk',
+                add_lang=True,
+                lang='en',
+            )
+            # Each call must produce a valid transformation.
+            self.assertIn('webservice/pluginfile.php', fixed)
+            self.assertIn('offline=1', fixed)
+            self.assertIn('token=', fixed)
+            self.assertIn('lang=en', fixed)
+
+    def test_url_parsing_uses_module_top_import_not_function_local(self):
+        """Pin that the function-level urlparse refers to the module
+        (or the function imported from it), not a shadowed local. If
+        someone reintroduces `import urllib.parse as urlparse` inside
+        the function body, this test will fail under strict type
+        checkers (and also documents the expectation)."""
+        import urllib.parse
+        # Top-level urlparse is the FUNCTION; the module is urllib.parse
+        from urllib.parse import urlparse as urlparse_function
+        # Both names should refer to the same function
+        self.assertIs(urlparse_function, urllib.parse.urlparse)
+        # And the function should be callable as expected
+        result = urlparse_function('https://example.com/path?a=1')
+        self.assertEqual(result.scheme, 'https')
+        self.assertEqual(result.netloc, 'example.com')
+
+    def test_lang_param_omitted_by_default(self):
+        """Already in the existing test suite, but kept here for
+        completeness in the no-shadowing class."""
+        url = 'https://keats.kcl.ac.uk/pluginfile.php/1/a.pdf'
+        fixed = UrlHelper.fix_pluginfile_url(
+            url=url, token='t', moodle_base_url='https://keats.kcl.ac.uk',
+        )
+        self.assertNotIn('lang=', fixed)

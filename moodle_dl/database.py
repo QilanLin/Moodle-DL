@@ -3,6 +3,7 @@ import logging
 import os
 import sqlite3
 import time
+from contextlib import contextmanager
 from sqlite3 import Error
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,9 +86,39 @@ class StateRecorder:
     
     Database Version: 9 (with incomplete_downloads support)
     """
-    
+
     # 🆕 查询缓存配置
     CACHE_TTL_SECONDS = 300  # 缓存 5 分钟
+
+    @contextmanager
+    def _conn(self, row_factory: bool = False):
+        """Context manager that opens a SQLite connection, optionally
+        sets a Row factory, commits on clean exit, rolls back on
+        exception, and always closes the connection.
+
+        Use this in place of the legacy pattern of
+            conn = sqlite3.connect(self.db_file)
+            try:
+                ...
+                conn.commit()
+            finally:
+                conn.close()
+        which is repeated ~25 times across the file.
+
+        @param row_factory: if True, set sqlite3.Row so callers can
+        use column-name access (e.g. row['module_id']).
+        """
+        conn = sqlite3.connect(self.db_file)
+        try:
+            if row_factory:
+                conn.row_factory = sqlite3.Row
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def __init__(self, config: ConfigHelper, opts: MoodleDlOpts):
         """
@@ -1266,7 +1297,6 @@ class StateRecorder:
         @param course_fullname: 课程全名
         @param error_message: 失败原因
         """
-        import time
 
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
@@ -1338,7 +1368,6 @@ class StateRecorder:
         @param file: 成功下载的文件对象
         @param course_id: 课程 ID
         """
-        import time
 
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
@@ -1364,7 +1393,7 @@ class StateRecorder:
     def get_failed_files(self, course_id: int = None, min_failures: int = 1) -> List[File]:
         """
         查询下载失败的文件列表
-        
+
         包含 'failed' 和 'retrying' 状态的文件：
         - 'failed': 上次下载失败的文件
         - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
@@ -1375,36 +1404,34 @@ class StateRecorder:
                             但它们仍需要被重试，所以也会被包含
         @return: 失败的文件列表
         """
-        conn = sqlite3.connect(self.db_file)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
 
-        if course_id:
-            cursor.execute(
-                """SELECT * FROM files
-                WHERE course_id = ?
-                AND (
-                    (download_status = 'failed' AND consecutive_failures >= ?)
-                    OR download_status = 'retrying'
+            if course_id:
+                cursor.execute(
+                    """SELECT * FROM files
+                    WHERE course_id = ?
+                    AND (
+                        (download_status = 'failed' AND consecutive_failures >= ?)
+                        OR download_status = 'retrying'
+                    )
+                    ORDER BY consecutive_failures DESC, last_failed_at DESC
+                    """,
+                    (course_id, min_failures)
                 )
-                ORDER BY consecutive_failures DESC, last_failed_at DESC
-                """,
-                (course_id, min_failures)
-            )
-        else:
-            cursor.execute(
-                """SELECT * FROM files
-                WHERE (
-                    (download_status = 'failed' AND consecutive_failures >= ?)
-                    OR download_status = 'retrying'
+            else:
+                cursor.execute(
+                    """SELECT * FROM files
+                    WHERE (
+                        (download_status = 'failed' AND consecutive_failures >= ?)
+                        OR download_status = 'retrying'
+                    )
+                    ORDER BY consecutive_failures DESC, last_failed_at DESC
+                    """,
+                    (min_failures,)
                 )
-                ORDER BY consecutive_failures DESC, last_failed_at DESC
-                """,
-                (min_failures,)
-            )
 
-        results = cursor.fetchall()
-        conn.close()
+            results = cursor.fetchall()
 
         return [File.fromRow(row) for row in results]
 
@@ -1556,7 +1583,6 @@ class StateRecorder:
         @param etag: ETag（用于验证文件完整性）
         @param last_modified: Last-Modified 时间戳
         """
-        import time
         
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
@@ -1670,7 +1696,6 @@ class StateRecorder:
         @param download_id: 下载 ID
         @param error_reason: 错误原因
         """
-        import time
         
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()
@@ -1775,7 +1800,6 @@ class StateRecorder:
         @param days_old: 超过多少天的记录会被删除
         @return: 删除的记录数
         """
-        import time
         
         conn = sqlite3.connect(self.db_file)
         cursor = conn.cursor()

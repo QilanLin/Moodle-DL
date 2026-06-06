@@ -52,6 +52,14 @@ setup(
         'xmpppy>=0.7.1',
         'yt_dlp>=2024.3.10',  # Re-enabled for cookie_mod files (kalvidres, helixmedia, lti)
     ],
+    extras_require={
+        'test': [
+            'pytest>=8.0',
+            'pytest-asyncio>=0.21',
+            'pytest-randomly>=4.0',
+            'hypothesis>=6.0',
+        ],
+    },
     classifiers=[
         'Development Status :: 5 - Production/Stable',
         'Environment :: Console',
