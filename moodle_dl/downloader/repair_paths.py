@@ -101,16 +101,20 @@ def main(argv=None):
         print('No buggy files found. Nothing to do.')
         return 0
 
-    # Group by (course, section, module)
+    # Group by (course, section, module_id) — not module_name,
+    # because two modules in the same section can share the
+    # same module_name (moodle has a stable id but the
+    # name can be reused after a teacher edits).
     groups = defaultdict(list)
     for f in buggy:
-        key = (f['course_fullname'], f['section_name'], f['module_name'])
+        key = (f['course_fullname'], f['section_name'],
+               f['module_id'], f['module_name'])
         groups[key].append(f)
-
     print(f'Found {len(buggy)} buggy files in {len(groups)} (course, section, module) groups.')
     for key, files in groups.items():
-        cname, sname, mname = key
-        sample = sorted(set(os.path.basename(f['saved_to']) for f in files))[:5]
+        cname, sname, module_id, mname = key
+        # Show only first 3 file basenames per group
+        sample = sorted(set(os.path.basename(f['saved_to']) for f in files))[:3]
         print(f'  [{cname[:50]}] / [{sname[:50]}] / [{mname[:50]}] - {len(files)} files')
         for s in sample:
             print(f'    - {s}')
@@ -128,7 +132,7 @@ def main(argv=None):
     total_moves = 0
     total_rewrites = 0
     db_updates = 0
-    for (cname, sname, mname), files in groups.items():
+    for (cname, sname, module_id, mname), files in groups.items():
         # Step 1: Scan HTMLs at section root to learn which
         # subdir (if any) each buggy basename is referenced
         # from.
@@ -141,11 +145,16 @@ def main(argv=None):
         # For each buggy file, determine the target subdir.
         # If HTML doesn't reference it, we just move it to
         # the module root (subdir='').
+        # We also need the file's content_filepath to find
+        # its current on-disk location (it may be at
+        # <section>/<cf>/<basename> rather than flat).
         moves_spec = []
+        filenames_to_filepath = {}
         for f in files:
             fname = os.path.basename(f['saved_to'])
             subdir = _infer_target_subdir(html_refs, fname) or ''
             moves_spec.append((fname, subdir))
+            filenames_to_filepath[fname] = f.get('content_filepath') or '/'
 
         # Step 2: Move files
         moves = move_buggy_files(
@@ -154,6 +163,7 @@ def main(argv=None):
             section_name=sname,
             module_name=mname,
             buggy_filenames_with_subdir=moves_spec,
+            filenames_to_filepath=filenames_to_filepath,
         )
         total_moves += len(moves)
         print(f'  [{mname[:50]}] moved {len(moves)} files')

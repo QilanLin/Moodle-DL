@@ -105,15 +105,27 @@ def move_buggy_files(
     section_name: str,
     module_name: str,
     buggy_filenames_with_subdir: Iterable[Tuple[str, str]],
+    # Maps buggy_filename -> its current content_filepath
+    # (e.g. '/', '/images/', '/styles/'). We need this to
+    # find the file's CURRENT location on disk because the
+    # buggy state may have the file at
+    # <section>/<content_filepath>/<basename> rather than
+    # flat at <section>/<basename>.
+    filenames_to_filepath: dict = None,
 ) -> List[Tuple[str, str, str]]:
-    """Move a set of buggy files from the section root to
-    their correct module-folder location.
+    """Move a set of buggy files from their buggy on-disk
+    location to the correct module-folder location.
 
     @param buggy_filenames_with_subdir: iterable of
        (buggy_basename, subdir_within_module) tuples.
        The subdir is prepended to the module folder; e.g.
        'assets/css' means the file should land at
        <ws>/<course>/<section>/<module_name>/assets/css/<basename>.
+    @param filenames_to_filepath: optional dict mapping
+       buggy_filename -> content_filepath. When set, we
+       compute the on-disk buggy path as
+       <section_dir>/<content_filepath>/<basename>. When
+       not set, we assume flat at the section root.
     @return: list of (old_path, new_path, subdir) tuples that
              were successfully moved.
     """
@@ -123,10 +135,29 @@ def move_buggy_files(
         PathTools.to_valid_name(course_fullname, is_file=False),
         PathTools.to_valid_name(section_name, is_file=False),
     )
+    if filenames_to_filepath is None:
+        filenames_to_filepath = {}
     for entry in buggy_filenames_with_subdir:
         fname, subdir = entry
-        old = os.path.join(section_dir, fname)
-        if not os.path.exists(old):
+        # Find the buggy file's current on-disk location.
+        # It could be at:
+        #   <section>/<basename>           (flat)
+        #   <section>/<cf>/<basename>      (in subdir)
+        # where <cf> is the file's content_filepath.
+        # We try flat first, then probe common subdirs.
+        cfp = filenames_to_filepath.get(fname, '/')
+        candidates = []
+        if cfp and cfp != '/':
+            candidates.append(
+                os.path.join(section_dir, cfp.strip('/'), fname)
+            )
+        candidates.append(os.path.join(section_dir, fname))
+        old = None
+        for c in candidates:
+            if os.path.exists(c):
+                old = c
+                break
+        if old is None:
             continue
         # Build the content_filepath the file should have had.
         # '/assets/css/' + basename → content_filepath='/assets/css/'
@@ -192,6 +223,7 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
     'label' files that were saved at the section root (i.e.
     their saved_to path does not include the module_name as a
     directory component)."""
+    from moodle_dl.utils import PathTools
     cur = conn.cursor()
     cur.execute("""
         SELECT
@@ -200,7 +232,12 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
           content_filepath, content_filename,
           download_status, saved_to
         FROM files
-        WHERE module_modname IN ('resource', 'page', 'url', 'label')
+        WHERE (
+            module_modname IN ('resource', 'page', 'url', 'label')
+            OR module_modname LIKE '%url%'
+            OR module_modname LIKE '%label%'
+            OR module_modname LIKE '%description%'
+        )
           AND download_status = 'success'
           AND module_name IS NOT NULL
           AND module_name != ''
@@ -210,7 +247,46 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
     for r in rows:
         (file_id, course_id, cname, section_id, section_name,
          module_id, mname, mmname, cfp, cfname, status, saved) = r
-        if mname and mname not in (saved or ''):
+        # Normalize the module_name through to_valid_name
+        # (used as a directory name) so we can compare
+        # against saved_to which is the result of joining
+        # the to_valid_name'd name into a path.
+        norm_mname = PathTools.to_valid_name(mname, is_file=False) if mname else mname
+        # The check needs to match a directory component
+        # (e.g. '<section>/<module_name>/<filename>'), not
+        # a substring match (e.g. '<module_name>.png' inside
+        # a basename). The normalized module_name is used as
+        # a directory; the next character after it in
+        # saved_to should be a path separator.
+        if not norm_mname:
+            continue
+        idx = (saved or '').find(norm_mname)
+        if idx < 0:
+            buggy.append({
+                'file_id': file_id,
+                'course_id': course_id,
+                'course_fullname': cname,
+                'section_id': section_id,
+                'section_name': section_name,
+                'module_id': module_id,
+                'module_name': mname,
+                'module_modname': mmname,
+                'content_filepath': cfp,
+                'content_filename': cfname,
+                'download_status': status,
+                'saved_to': saved,
+            })
+            continue
+        # Verify the match is a directory component:
+        # the character after the match must be '/' (or the
+        # match is at end of string, which means it's a file
+        # whose basename starts with the module_name — not
+        # a directory).
+        after_idx = idx + len(norm_mname)
+        if after_idx < len(saved or '') and (saved or '')[after_idx] != '/':
+            # Substring match but not a directory: treat as
+            # buggy (file is in section root, not in the
+            # module folder).
             buggy.append({
                 'file_id': file_id,
                 'course_id': course_id,

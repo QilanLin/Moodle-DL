@@ -385,6 +385,114 @@ class TestIdempotency(unittest.TestCase):
             conn.close()
             self.assertEqual(len(buggy_second), 0)
 
+    def test_find_buggy_files_excludes_substring_filename_match(self):
+        """Pin the contract that a file in a subdir (e.g.
+        <section>/images/foo.png) is NOT considered buggy
+        just because the module_name is a substring of the
+        filename. The check must verify that module_name
+        appears as a directory component (followed by '/').
+
+        Specifically: a file with
+        content_filename='Isoenzymes in Medicine Practical
+        Simulation.png' whose saved_to is at
+        <section>/images/*01* Isoenzymes in Medicine Practical
+        Simulation.png should still be flagged buggy because
+        the directory path doesn't include the module_name."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, 'moodle_state.db')
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE files (
+                  file_id INTEGER PRIMARY KEY,
+                  course_id INTEGER,
+                  course_fullname TEXT,
+                  section_name TEXT,
+                  section_id INTEGER,
+                  module_id INTEGER,
+                  module_name TEXT,
+                  module_modname TEXT,
+                  content_filepath TEXT,
+                  content_filename TEXT,
+                  download_status TEXT,
+                  saved_to TEXT
+                )
+            """)
+            cur.execute("""
+                INSERT INTO files
+                  (file_id, course_id, course_fullname, section_name,
+                   section_id, module_id, module_name, module_modname,
+                   content_filepath, content_filename, download_status,
+                   saved_to)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                1, 86122, 'Course A', 'Section A', 100,
+                1, 'Module A', 'resource',
+                '/', 'Module A.png', 'success',
+                # filename contains 'Module A' but the path
+                # does NOT include 'Module A/' as a directory.
+                '/ws/Course A/Section A/images/*01* Module A.png',
+            ))
+            conn.commit()
+            conn.close()
+            conn = sqlite3.connect(db_path)
+            buggy = find_buggy_files(conn)
+            conn.close()
+            self.assertEqual(
+                len(buggy), 1,
+                f'file with module_name substring in basename but '
+                f'no module_name dir should still be buggy: {buggy}',
+            )
+
+    def test_find_buggy_files_does_not_flag_in_module_dir(self):
+        """Pin the contract that a file at
+        <section>/<module_name>/<basename> is NOT buggy."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, 'moodle_state.db')
+            conn = sqlite3.connect(db_path)
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE files (
+                  file_id INTEGER PRIMARY KEY,
+                  course_id INTEGER,
+                  course_fullname TEXT,
+                  section_name TEXT,
+                  section_id INTEGER,
+                  module_id INTEGER,
+                  module_name TEXT,
+                  module_modname TEXT,
+                  content_filepath TEXT,
+                  content_filename TEXT,
+                  download_status TEXT,
+                  saved_to TEXT
+                )
+            """)
+            cur.execute("""
+                INSERT INTO files
+                  (file_id, course_id, course_fullname, section_name,
+                   section_id, module_id, module_name, module_modname,
+                   content_filepath, content_filename, download_status,
+                   saved_to)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                1, 86122, 'Course A', 'Section A', 100,
+                1, 'Module A', 'resource',
+                '/', 'main.css', 'success',
+                # Correctly in module_name subdir
+                '/ws/Course A/Section A/Module A/*01* main.css',
+            ))
+            conn.commit()
+            conn.close()
+            conn = sqlite3.connect(db_path)
+            buggy = find_buggy_files(conn)
+            conn.close()
+            self.assertEqual(
+                len(buggy), 0,
+                f'file in module_name dir should NOT be buggy: {buggy}',
+            )
+
 
 if __name__ == '__main__':
     unittest.main()
