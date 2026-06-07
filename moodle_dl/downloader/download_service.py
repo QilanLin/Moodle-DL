@@ -578,6 +578,21 @@ class DownloadService:
 
         # 🆕 显示下载总结
         if self.status.files_to_download > 0:
+            # Pin the bug where the summary lagged behind the last
+            # status update: the async status_logger_task is
+            # cancelled in the finally above and may not have a
+            # chance to flush the final counter values into
+            # progress_tracker. Re-sync the progress tracker
+            # directly from the authoritative source (DownloadStatus)
+            # before reading the summary.
+            self.progress_tracker.update(
+                downloaded_bytes=self.status.bytes_downloaded,
+                total_bytes=self.status.bytes_to_download,
+                completed=self.status.files_downloaded,
+                failed=self.status.files_failed,
+                total=self.status.files_to_download,
+                skipped=0,
+            )
             self._display_download_summary()
 
     def _iter_known_files(self):
