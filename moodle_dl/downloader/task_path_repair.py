@@ -1,0 +1,280 @@
+# -*- coding: utf-8 -*-
+"""
+On-disk path repair for files affected by the workspace-isolation bug.
+
+Background
+----------
+Before commit d1ae09d, 'resource', 'page', 'url', and 'label'
+module files were saved flat at the section root (no
+module_name subfolder). As a result, HTML files referencing
+relative assets like 'assets/css/main.css' broke in the
+browser — the browser resolved them relative to the HTML's
+location and looked for a file in a non-existent 'assets/css/'
+subfolder of the section root.
+
+This tool repairs already-downloaded content in three steps:
+  1. compute_correct_saved_to() — compute the path that
+     gen_path() with the fix would have produced.
+  2. move_buggy_files() — atomically move files from the
+     buggy location to the corrected one (preserving content
+     via shutil.move).
+  3. rewrite_html_references() — update HTML's relative
+     href/src to point to the new location.
+
+It also has find_buggy_files() for DB-driven discovery of
+which files need to be repaired.
+"""
+import os
+import re
+import shutil
+import sqlite3
+from typing import Iterable, List, Tuple
+
+from moodle_dl.downloader.task import Task
+from moodle_dl.types import Course, File
+from moodle_dl.utils import PathTools
+
+
+# Match <tag attr="..."> where the attribute is one of
+# href/src/poster/data. We keep this conservative to match
+# the same attribute set moodle_dl already understands.
+_HTML_REF_PATTERN = re.compile(
+    r'(\b(?:href|src|poster|data)\s*=\s*)(["\'])([^"\']*?)\2',
+    flags=re.IGNORECASE,
+)
+
+
+def _build_file_for_gen_path(
+    module_name: str,
+    content_filepath: str,
+    content_filename: str,
+    module_modname: str = 'resource',
+    section_name: str = 'Section',
+    module_id: int = 1,
+) -> File:
+    """Build a minimal File object for use with Task.gen_path()."""
+    return File(
+        module_id=module_id,
+        section_name=section_name,
+        section_id=1,
+        module_name=module_name,
+        content_filepath=content_filepath,
+        content_filename=content_filename,
+        content_fileurl='https://example.com/' + content_filename,
+        content_filesize=1,
+        content_timemodified=1,
+        module_modname=module_modname,
+        content_type='file',
+        content_isexternalfile=False,
+    )
+
+
+def compute_correct_saved_to(
+    ws: str,
+    course_fullname: str,
+    section_name: str,
+    module_name: str,
+    content_filepath: str,
+    buggy_filename: str,
+) -> str:
+    """Compute the path that gen_path() (with the d1ae09d fix)
+    would have produced for this file.
+
+    @param ws: workspace root (e.g. /Volumes/Untitled/...)
+    @param course_fullname: course full name
+    @param section_name: section name
+    @param module_name: module name
+    @param content_filepath: original file path within the module
+    @param buggy_filename: file basename to attach to the path
+    @return: absolute path the file SHOULD have been saved to
+    """
+    f = _build_file_for_gen_path(
+        module_name=module_name,
+        content_filepath=content_filepath,
+        content_filename=buggy_filename,
+        section_name=section_name,
+    )
+    course = Course(_id=0, fullname=course_fullname, files=[f])
+    dest = Task.gen_path(ws, course, f)
+    return os.path.join(dest, buggy_filename)
+
+
+def move_buggy_files(
+    ws: str,
+    course_fullname: str,
+    section_name: str,
+    module_name: str,
+    buggy_filenames_with_subdir: Iterable[Tuple[str, str]],
+) -> List[Tuple[str, str, str]]:
+    """Move a set of buggy files from the section root to
+    their correct module-folder location.
+
+    @param buggy_filenames_with_subdir: iterable of
+       (buggy_basename, subdir_within_module) tuples.
+       The subdir is prepended to the module folder; e.g.
+       'assets/css' means the file should land at
+       <ws>/<course>/<section>/<module_name>/assets/css/<basename>.
+    @return: list of (old_path, new_path, subdir) tuples that
+             were successfully moved.
+    """
+    moves = []
+    section_dir = os.path.join(
+        ws,
+        PathTools.to_valid_name(course_fullname, is_file=False),
+        PathTools.to_valid_name(section_name, is_file=False),
+    )
+    for entry in buggy_filenames_with_subdir:
+        fname, subdir = entry
+        old = os.path.join(section_dir, fname)
+        if not os.path.exists(old):
+            continue
+        # Build the content_filepath the file should have had.
+        # '/assets/css/' + basename → content_filepath='/assets/css/'
+        cf = '/' + subdir.strip('/') + '/' if subdir else '/'
+        new = compute_correct_saved_to(
+            ws=ws,
+            course_fullname=course_fullname,
+            section_name=section_name,
+            module_name=module_name,
+            content_filepath=cf,
+            buggy_filename=fname,
+        )
+        new_dir = os.path.dirname(new)
+        if not os.path.isdir(new_dir):
+            os.makedirs(new_dir, exist_ok=True)
+        if os.path.exists(new):
+            # Already correct; just remove the buggy duplicate
+            os.remove(old)
+        else:
+            shutil.move(old, new)
+        moves.append((old, new, subdir))
+    return moves
+
+
+def rewrite_html_references(
+    html_path: str,
+    old_relative_paths: Iterable[str],
+    new_relative_paths: Iterable[str],
+) -> int:
+    """Update an HTML file's <link href='...'> / <script src='...'>
+    / <img src='...'> attributes from the old relative path to
+    the new one.
+
+    @param html_path: path to the HTML file
+    @param old_relative_paths: list of relative paths to find
+    @param new_relative_paths: list of new relative paths (same order)
+    @return: number of replacements made
+    """
+    old_to_new = dict(zip(old_relative_paths, new_relative_paths))
+    with open(html_path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+
+    replacements = 0
+
+    def repl(m):
+        nonlocal replacements
+        prefix, quote, url = m.group(1), m.group(2), m.group(3)
+        if url in old_to_new:
+            new_url = old_to_new[url]
+            replacements += 1
+            return f'{prefix}{quote}{new_url}{quote}'
+        return m.group(0)
+
+    new_content = _HTML_REF_PATTERN.sub(repl, content)
+    if replacements:
+        with open(html_path, 'w', encoding='utf-8', errors='replace', newline='') as f:
+            f.write(new_content)
+    return replacements
+
+
+def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
+    """Query the DB and return all 'resource' / 'page' / 'url' /
+    'label' files that were saved at the section root (i.e.
+    their saved_to path does not include the module_name as a
+    directory component)."""
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT
+          file_id, course_id, course_fullname, section_id, section_name,
+          module_id, module_name, module_modname,
+          content_filepath, content_filename,
+          download_status, saved_to
+        FROM files
+        WHERE module_modname IN ('resource', 'page', 'url', 'label')
+          AND download_status = 'success'
+          AND module_name IS NOT NULL
+          AND module_name != ''
+    """)
+    rows = cur.fetchall()
+    buggy = []
+    for r in rows:
+        (file_id, course_id, cname, section_id, section_name,
+         module_id, mname, mmname, cfp, cfname, status, saved) = r
+        if mname and mname not in (saved or ''):
+            buggy.append({
+                'file_id': file_id,
+                'course_id': course_id,
+                'course_fullname': cname,
+                'section_id': section_id,
+                'section_name': section_name,
+                'module_id': module_id,
+                'module_name': mname,
+                'module_modname': mmname,
+                'content_filepath': cfp,
+                'content_filename': cfname,
+                'download_status': status,
+                'saved_to': saved,
+            })
+    return buggy
+
+
+def scan_html_references_in_section(
+    ws: str,
+    course_fullname: str,
+    section_name: str,
+) -> List[dict]:
+    """For each HTML file at the buggy section root, scan its
+    href/src attributes and return the list of (html_path,
+    old_relative_ref) pairs that need to be rewritten.
+
+    @return: list of dicts:
+       {'html_path': ..., 'old_ref': 'assets/css/main.css',
+        'filename': 'main.css'}
+    """
+    section_dir = os.path.join(
+        ws,
+        PathTools.to_valid_name(course_fullname, is_file=False),
+        PathTools.to_valid_name(section_name, is_file=False),
+    )
+    if not os.path.isdir(section_dir):
+        return []
+    refs = []
+    ref_pattern = re.compile(
+        r'\b(?:href|src|poster|data)\s*=\s*(["\'])([^\"\']*?)\1',
+        flags=re.IGNORECASE,
+    )
+    for entry in os.listdir(section_dir):
+        if not entry.lower().endswith(('.html', '.htm')):
+            continue
+        html_path = os.path.join(section_dir, entry)
+        if not os.path.isfile(html_path):
+            continue
+        with open(html_path, 'r', encoding='utf-8', errors='replace') as fp:
+            html = fp.read()
+        for m in ref_pattern.finditer(html):
+            ref = m.group(2)
+            # Skip absolute URLs and anchors
+            if (ref.startswith(('#', 'http://', 'https://',
+                                'data:', 'mailto:', 'javascript:'))
+                    or not ref):
+                continue
+            # Get just the basename
+            basename = ref.rsplit('/', 1)[-1]
+            if not basename:
+                continue
+            refs.append({
+                'html_path': html_path,
+                'old_ref': ref,
+                'basename': basename,
+            })
+    return refs
