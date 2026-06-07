@@ -218,11 +218,34 @@ def rewrite_html_references(
     return replacements
 
 
-def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
+def find_buggy_files(conn: sqlite3.Connection,
+                     workspace: str = None) -> List[dict]:
     """Query the DB and return all 'resource' / 'page' / 'url' /
-    'label' files that were saved at the section root (i.e.
-    their saved_to path does not include the module_name as a
-    directory component)."""
+    'label' files that are saved at a non-module-dir location
+    on disk (i.e. saved_to does not contain the module_name
+    as a directory component).
+
+    If workspace is provided, ALSO cross-check disk: a file
+    whose saved_to says 'section root' but whose content_filename
+    (or any extension variant like .html vs .html.md) is found
+    in the module dir on disk is NOT flagged as buggy (it has
+    already been moved on disk; only the DB row needs updating).
+    Files whose content_filename does not exist on disk
+    anywhere are still buggy (likely 404).
+
+    'Single-run completeness' contract: every file flagged
+    as buggy must be either:
+      - At a location that repair_paths can move
+        (e.g. <section>/<basename> or <section>/<cf>/<basename>),
+        OR
+      - The DB row references a basename that does not exist
+        anywhere on disk (i.e. the file was never downloaded,
+        e.g. 404 from Moodle).
+    The tool is NOT allowed to flag files as buggy that
+    are already correctly placed on disk in the module
+    dir (even with extension variation like .html vs
+    .html.md).
+    """
     from moodle_dl.utils import PathTools
     cur = conn.cursor()
     cur.execute("""
@@ -245,6 +268,19 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
     """)
     rows = cur.fetchall()
     buggy = []
+    # Common file extensions on disk that moodle-dl may
+    # append to the content_filename.
+    extensions = ['.html.md', '.html', '.md', '.pdf', '.txt', '.zip',
+                  '.css', '.js', '.gif', '.png', '.jpg', '.mp3',
+                  '.mp4', '.webloc', '.json', '.docx', '.xlsx',
+                  '.pptx', '.epub', '.csv', '.tsv']
+
+    def _strip_ext(name):
+        for ext in extensions:
+            if name.endswith(ext):
+                return name[:-len(ext)]
+        return name
+
     for r in rows:
         (file_id, course_id, cname, section_id, section_name,
          module_id, mname, mmname, cfp, cfname, status, saved) = r
@@ -269,35 +305,64 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
         # such match) means the file is correctly in module
         # dir; otherwise, the file is at a non-module-dir
         # location and is buggy.
+        #
+        # We do this case-INSENSITIVELY because some courses
+        # use 'Title Case' for section/module names and
+        # 'UPPER CASE' for content_filename (e.g. module
+        # 'INTRODUCTION TO PART 2' with dir 'Introduction
+        # to Part 2'). A case-sensitive check would
+        # false-positive those files as buggy.
         if not norm_mname:
             continue
+        saved_lower = (saved or '').lower()
+        norm_mname_lower = norm_mname.lower()
         is_in_module_dir = False
         i = 0
         while True:
-            idx = (saved or '').find(norm_mname, i)
+            idx = saved_lower.find(norm_mname_lower, i)
             if idx < 0:
                 break
-            after_idx = idx + len(norm_mname)
-            saved_s = saved or ''
-            if after_idx == len(saved_s) or (after_idx < len(saved_s) and saved_s[after_idx] == '/'):
+            after_idx = idx + len(norm_mname_lower)
+            saved_l = saved or ''
+            if after_idx == len(saved_l) or (after_idx < len(saved_l) and saved_l[after_idx] == '/'):
                 is_in_module_dir = True
                 break
             i = idx + 1
-        if not is_in_module_dir:
-            buggy.append({
-                'file_id': file_id,
-                'course_id': course_id,
-                'course_fullname': cname,
-                'section_id': section_id,
-                'section_name': section_name,
-                'module_id': module_id,
-                'module_name': mname,
-                'module_modname': mmname,
-                'content_filepath': cfp,
-                'content_filename': cfname,
-                'download_status': status,
-                'saved_to': saved,
-            })
+        if is_in_module_dir:
+            continue
+
+        # Cross-check disk: if the file is actually on disk
+        # in the module dir (with any extension variation),
+        # the file is correctly placed; only the DB row
+        # needs updating. Not buggy.
+        if workspace:
+            module_dir = os.path.join(workspace, cname, section_name, mname)
+            if os.path.isdir(module_dir):
+                cfname_stripped = _strip_ext(cfname)
+                for root, dirs, files in os.walk(module_dir):
+                    for f in files:
+                        if f == cfname or _strip_ext(f) == cfname_stripped:
+                            is_in_module_dir = True
+                            break
+                    if is_in_module_dir:
+                        break
+                if is_in_module_dir:
+                    continue
+
+        buggy.append({
+            'file_id': file_id,
+            'course_id': course_id,
+            'course_fullname': cname,
+            'section_id': section_id,
+            'section_name': section_name,
+            'module_id': module_id,
+            'module_name': mname,
+            'module_modname': mmname,
+            'content_filepath': cfp,
+            'content_filename': cfname,
+            'download_status': status,
+            'saved_to': saved,
+        })
     return buggy
 
 
