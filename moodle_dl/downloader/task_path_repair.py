@@ -336,12 +336,32 @@ def find_buggy_files(conn: sqlite3.Connection,
         # the file is correctly placed; only the DB row
         # needs updating. Not buggy.
         if workspace:
-            module_dir = os.path.join(workspace, cname, section_name, mname)
+            # The disk paths are created using to_valid_name()
+            # which converts '/' to '⧸' (U+29F8) and ':' to
+            # '：' (fullwidth). The raw DB values keep the
+            # original chars, so we must normalize the
+            # course/section/module names AND the
+            # content_filename the same way before comparing.
+            from moodle_dl.utils import PathTools
+            norm_cname = PathTools.to_valid_name(cname, is_file=False)
+            norm_sname = PathTools.to_valid_name(section_name, is_file=False)
+            norm_mname_dir = PathTools.to_valid_name(mname, is_file=False)
+            norm_cfname = PathTools.to_valid_name(cfname, is_file=True)
+            module_dir = os.path.join(
+                workspace, norm_cname, norm_sname, norm_mname_dir,
+            )
             if os.path.isdir(module_dir):
-                cfname_stripped = _strip_ext(cfname)
+                cfname_stripped = _strip_ext(norm_cfname)
                 for root, dirs, files in os.walk(module_dir):
                     for f in files:
-                        if f == cfname or _strip_ext(f) == cfname_stripped:
+                        # Strip the '*NN* ' position prefix that
+                        # moodle-dl prepends to file basenames.
+                        # e.g. '*01* main.css' -> 'main.css'.
+                        f_stripped = _strip_ext(f)
+                        if f_stripped.startswith('*') and ' ' in f_stripped:
+                            f_stripped = f_stripped.split(' ', 1)[1]
+                        if f == norm_cfname or f == cfname \
+                                or f_stripped == cfname_stripped:
                             is_in_module_dir = True
                             break
                     if is_in_module_dir:
