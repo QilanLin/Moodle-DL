@@ -241,6 +241,7 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
           AND download_status = 'success'
           AND module_name IS NOT NULL
           AND module_name != ''
+          AND module_id != 0
     """)
     rows = cur.fetchall()
     buggy = []
@@ -258,35 +259,31 @@ def find_buggy_files(conn: sqlite3.Connection) -> List[dict]:
         # a basename). The normalized module_name is used as
         # a directory; the next character after it in
         # saved_to should be a path separator.
+        #
+        # We need a true directory-component match. A
+        # module_name can appear in the path in multiple
+        # places (e.g. section="...Lecture 1..." and
+        # module="Lecture 1" both contain the substring), so
+        # we search for ALL occurrences and check which one
+        # is followed by '/'. The first such match (or any
+        # such match) means the file is correctly in module
+        # dir; otherwise, the file is at a non-module-dir
+        # location and is buggy.
         if not norm_mname:
             continue
-        idx = (saved or '').find(norm_mname)
-        if idx < 0:
-            buggy.append({
-                'file_id': file_id,
-                'course_id': course_id,
-                'course_fullname': cname,
-                'section_id': section_id,
-                'section_name': section_name,
-                'module_id': module_id,
-                'module_name': mname,
-                'module_modname': mmname,
-                'content_filepath': cfp,
-                'content_filename': cfname,
-                'download_status': status,
-                'saved_to': saved,
-            })
-            continue
-        # Verify the match is a directory component:
-        # the character after the match must be '/' (or the
-        # match is at end of string, which means it's a file
-        # whose basename starts with the module_name — not
-        # a directory).
-        after_idx = idx + len(norm_mname)
-        if after_idx < len(saved or '') and (saved or '')[after_idx] != '/':
-            # Substring match but not a directory: treat as
-            # buggy (file is in section root, not in the
-            # module folder).
+        is_in_module_dir = False
+        i = 0
+        while True:
+            idx = (saved or '').find(norm_mname, i)
+            if idx < 0:
+                break
+            after_idx = idx + len(norm_mname)
+            saved_s = saved or ''
+            if after_idx == len(saved_s) or (after_idx < len(saved_s) and saved_s[after_idx] == '/'):
+                is_in_module_dir = True
+                break
+            i = idx + 1
+        if not is_in_module_dir:
             buggy.append({
                 'file_id': file_id,
                 'course_id': course_id,
