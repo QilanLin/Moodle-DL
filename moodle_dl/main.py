@@ -3,6 +3,7 @@ import argparse
 import asyncio
 import logging
 import os
+import sqlite3
 import sys
 import traceback
 from logging.handlers import RotatingFileHandler
@@ -482,6 +483,70 @@ def connect_sentry(config: ConfigHelper) -> bool:
     return False
 
 
+def _warn_if_buggy_files(database, config, opts):
+    """Detect files affected by the workspace-isolation bug
+    (commit d1ae09d) that were downloaded before the fix
+    and are at a non-module-dir location. Print a one-line
+    warning so the user knows they can run the
+    repair_paths tool to fix the on-disk layout.
+
+    This is purely informational. The downloader itself
+    (post-d1ae09d) puts new downloads in the correct
+    location automatically, so the user can keep using
+    moodle-dl without any intervention. The warning is
+    only useful for cleaning up legacy buggy files.
+    """
+    try:
+        from moodle_dl.downloader.task_path_repair import find_buggy_files
+    except ImportError:
+        return  # task_path_repair is in moodle_dl/ but may not import
+
+    try:
+        workspace = config.get_workspace()
+    except (AttributeError, Exception):
+        return  # no workspace configured
+
+    if not workspace or not os.path.isdir(workspace):
+        return
+
+    try:
+        conn = sqlite3.connect(str(database.db_path))
+    except (AttributeError, Exception):
+        return
+
+    try:
+        buggy = find_buggy_files(conn, workspace=workspace)
+    except Exception:
+        return
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if buggy:
+        # Categorize: how many exist on disk, how many are
+        # truly unfixable (404 from Moodle).
+        from collections import Counter
+        buggy_by_course = Counter()
+        for b in buggy:
+            key = (b['course_fullname'], b['section_name'])
+            buggy_by_course[key] += 1
+
+        n_chapters = len(buggy_by_course)
+        logging.warning(
+            'Detected %d files affected by the workspace-isolation '
+            'bug in %d (course, section) groups. These are files '
+            'downloaded before commit d1ae09d and are at a '
+            'non-module-dir location on disk; HTML referencing '
+            'them will not render in the browser. New downloads '
+            'are unaffected. To fix the on-disk layout, run:\n'
+            '    python -m moodle_dl.downloader.repair_paths '
+            '--db <path-to-moodle_state.db> --workspace <workspace>',
+            len(buggy), n_chapters,
+        )
+
+
 def run_main(config: ConfigHelper, opts: MoodleDlOpts):
     sentry_connected = connect_sentry(config)
     notify_services = get_all_notify_services(config)
@@ -493,6 +558,12 @@ def run_main(config: ConfigHelper, opts: MoodleDlOpts):
         logging.debug('Checking for changes for the configured Moodle-Account....')
         database = StateRecorder(config, opts)
         changed_courses = asyncio.run(moodle.fetch_state(database))
+
+        # Check for buggy files from the workspace-isolation bug
+        # (commit d1ae09d fixed the downloader, but files downloaded
+        # before that commit may be at the wrong path on disk).
+        # Warn the user if any are found.
+        _warn_if_buggy_files(database, config, opts)
 
         if opts.resume:
             incomplete_courses = _load_incomplete_download_files_as_courses(database)
