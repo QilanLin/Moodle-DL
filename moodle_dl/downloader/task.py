@@ -449,8 +449,22 @@ class Task:
         # TODO: Get mod names automated; all mods should be in a sub-folder
         # If the file is located in a folder or in an assignment,
         # it should be saved in a sub-folder (with the name of the module).
+        #
+        # 🆕 We also route 'resource' and 'page' module files through
+        # path_of_file_in_module(). These modules frequently embed
+        # inner assets (e.g. an HTML page referencing assets/css/main.css,
+        # assets/js/jquery.min.js, etc.). The HTML's relative href
+        # like "assets/css/main.css" only resolves correctly when the
+        # asset is saved under the same module folder as the HTML.
+        # Without this routing, inner assets get saved flat at the
+        # section root and the relative href returns 404.
         if file.module_modname.endswith(
-            ('assign', 'book', 'data', 'folder', 'forum', 'lesson', 'page', 'quiz', 'workshop')
+            (
+                'assign', 'book', 'data', 'folder', 'forum', 'lesson',
+                'page', 'quiz', 'resource', 'workshop',
+            )
+        ) or file.module_modname in (
+            'resource', 'page', 'url', 'label',
         ):
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath

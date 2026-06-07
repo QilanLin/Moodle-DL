@@ -91,13 +91,18 @@ class TestHTMLConversionMethods(unittest.TestCase):
         # 创建一个 Task 实例来测试实例方法
         opts = MoodleDlOpts()
         course = Course(1, "Test Course")
-        file = MagicMock()
-        file.content_filepath = "/"
-        file.content_filename = "test.pdf"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="test.pdf",
+            content_fileurl=f"https://example.com/test.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         options = DownloadOptions(
             token="test_token",
             moodle_url="https://example.com",
@@ -134,12 +139,18 @@ class TestDRMErrorDetection(unittest.TestCase):
 
         # 创建实际的 Course 对象
         self.course = Course(1, "Test Course")
-        self.file = MagicMock()
-        self.file.content_filepath = "/"
-        self.file.content_filename = "test.pdf"
-        self.file.module_modname = "resource"
-        self.file.section_name = "Week 1"
-        self.file.position_in_section = None
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        self.file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="test.pdf",
+            content_fileurl="https://example.com/test.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
 
         # 创建 DownloadOptions
         self.options = DownloadOptions(
@@ -212,12 +223,18 @@ class TestKalturaExtraction(unittest.TestCase):
 
         # 创建实际的 Course 对象
         self.course = Course(1, "Test Course")
-        self.file = MagicMock()
-        self.file.content_filepath = "/"
-        self.file.content_filename = "test.pdf"
-        self.file.module_modname = "resource"
-        self.file.section_name = "Week 1"
-        self.file.position_in_section = None
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        self.file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="test.pdf",
+            content_fileurl="https://example.com/test.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
 
         # 创建 DownloadOptions
         self.options = DownloadOptions(
@@ -389,52 +406,75 @@ class TestFilenameGeneration(unittest.TestCase):
 
     def test_generate_filename_with_index_single_digit(self):
         """测试生成单位数索引的文件名"""
-        file = MagicMock()
-        file.content_filename = "lecture.pdf"
-        file.position_in_section = 0
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="lecture.pdf",
+            content_fileurl=f"https://example.com/lecture.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+            position_in_section=0,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._generate_filename_with_index(file)
         self.assertEqual(result, "*01* lecture.pdf")
 
     def test_generate_filename_with_index_double_digit(self):
         """测试生成两位数索引的文件名"""
-        file = MagicMock()
-        file.content_filename = "video.mp4"
-        file.position_in_section = 9
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="video.mp4",
+            content_fileurl=f"https://example.com/video.mp4",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+            position_in_section=9,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._generate_filename_with_index(file)
         self.assertEqual(result, "*10* video.mp4")
 
     def test_generate_filename_with_index_preserves_original(self):
         """测试保留原始文件名中的数字"""
-        file = MagicMock()
-        file.content_filename = "01-introduction.pdf"
-        file.position_in_section = 4
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="01-introduction.pdf",
+            content_fileurl=f"https://example.com/01-introduction.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+            position_in_section=4,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._generate_filename_with_index(file)
         self.assertEqual(result, "*05* 01-introduction.pdf")
 
     def test_generate_filename_without_index(self):
         """测试没有索引的文件名生成"""
-        file = MagicMock()
-        file.content_filename = "readme.txt"
-        file.position_in_section = None
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="readme.txt",
+            content_fileurl=f"https://example.com/readme.txt",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._generate_filename_with_index(file)
         self.assertEqual(result, "readme.txt")
@@ -475,65 +515,90 @@ class TestMetadataFileDetection(unittest.TestCase):
 
     def test_is_metadata_file_json(self):
         """测试 JSON 文件检测"""
-        file = MagicMock()
-        file.content_filename = "metadata.json"
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="metadata.json",
+            content_fileurl=f"https://example.com/metadata.json",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._is_metadata_file()
         self.assertTrue(result)
 
     def test_is_metadata_file_info(self):
         """测试 _info 文件检测"""
-        file = MagicMock()
-        file.content_filename = "homework_info"
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="homework_info",
+            content_fileurl=f"https://example.com/homework_info",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._is_metadata_file()
         self.assertTrue(result)
 
     def test_is_metadata_file_notes(self):
         """测试 _notes.md 文件检测"""
-        file = MagicMock()
-        file.content_filename = "lecture_notes.md"
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="lecture_notes.md",
+            content_fileurl=f"https://example.com/lecture_notes.md",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._is_metadata_file()
         self.assertTrue(result)
 
     def test_is_metadata_file_case_insensitive(self):
         """测试大小写不敏感"""
-        file = MagicMock()
-        file.content_filename = "METADATA.JSON"
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="METADATA.JSON",
+            content_fileurl=f"https://example.com/METADATA.JSON",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._is_metadata_file()
         self.assertTrue(result)
 
     def test_is_metadata_file_negative(self):
         """测试非元数据文件"""
-        file = MagicMock()
-        file.content_filename = "lecture.pdf"
-        file.content_filepath = "/"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="lecture.pdf",
+            content_fileurl=f"https://example.com/lecture.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
         result = task._is_metadata_file()
         self.assertFalse(result)
@@ -604,12 +669,18 @@ class TestBuildKalturaUrl(unittest.TestCase):
 
         # 创建实际的 Course 对象
         self.course = Course(1, "Test Course")
-        self.file = MagicMock()
-        self.file.content_filepath = "/"
-        self.file.content_filename = "test.pdf"
-        self.file.module_modname = "resource"
-        self.file.section_name = "Week 1"
-        self.file.position_in_section = None
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        self.file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="test.pdf",
+            content_fileurl="https://example.com/test.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
 
         # 创建 DownloadOptions
         self.options = DownloadOptions(
@@ -678,16 +749,19 @@ class TestNoneHandlingInTask(unittest.TestCase):
 
     def test_task_with_none_content_fileurl(self):
         """测试 content_fileurl 为 None 时 Task 不会崩溃"""
-        file = MagicMock()
-        file.content_filepath = "/"
-        file.content_filename = "test.pdf"
-        file.module_modname = "resource"
-        file.section_name = "Week 1"
-        file.position_in_section = None
-        file.section_id = None
-        file.content_fileurl = None  # 设置为 None
-        file.saved_to = "/tmp/test.pdf"
-
+        # Use a real File so gen_path can read module_name
+        # (which would otherwise be a MagicMock instance).
+        from moodle_dl.types import File
+        file = File(
+            module_id=1, section_name="Week 1", section_id=1,
+            module_name="Test Module", content_filepath="/",
+            content_filename="test.pdf",
+            content_fileurl="https://example.com/test.pdf",
+            content_filesize=1, content_timemodified=1,
+            module_modname="resource", content_type="file",
+            content_isexternalfile=False,
+        )
+        file.content_fileurl = None
         download_options = DownloadOptions(
             token="test_token",
             moodle_url="https://example.com",
