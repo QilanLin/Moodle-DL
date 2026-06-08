@@ -141,7 +141,42 @@ def build_local_resource_map(files: Iterable[File]) -> Dict[str, str]:
 
         _add_local_resource_aliases(local_resources, saved_to)
 
+        # 🆕 When moodle-dl renames a file to the module display
+        # name (e.g. 'main.css' → 'Interactive Virtual...css'),
+        # the HTML still references the original filename
+        # (e.g. 'assets/css/main.css'). Add an alias that maps
+        # the original filename at the expected path to the
+        # actual disk path so the HTML rewrite can find it.
+        content_fileurl = getattr(file, 'content_fileurl', '') or ''
+        original_filename = _extract_original_filename_from_url(content_fileurl)
+        if original_filename:
+            original_path = os.path.join(
+                os.path.dirname(os.path.abspath(saved_to)),
+                original_filename,
+            )
+            if original_path != os.path.abspath(saved_to):
+                _add_local_resource_alias(local_resources, original_path, saved_to)
+
     return local_resources
+
+
+def _extract_original_filename_from_url(url: str) -> str:
+    """Extract the last path component (original filename) from a
+    KCL pluginfile URL, ignoring query parameters.
+
+    Example:
+        '.../pluginfile.php/.../content/0/assets/css/main.css?forcedownload=1'
+        → 'main.css'
+    """
+    if not url:
+        return ''
+    # Strip query string and fragment
+    parsed = urllib.parse.urlsplit(url)
+    path = urllib.parse.unquote(parsed.path or '')
+    if not path:
+        return ''
+    filename = os.path.basename(path)
+    return filename if filename else ''
 
 
 def rewrite_html_links_to_local_paths(
