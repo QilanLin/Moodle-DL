@@ -46,8 +46,11 @@ from moodle_dl.downloader.task_path_repair import (
     compute_correct_saved_to,
     find_buggy_files,
     move_buggy_files,
-    rewrite_html_references,
     scan_html_references_in_section,
+)
+from moodle_dl.downloader.html_localizer import (
+    build_local_resource_map,
+    rewrite_html_links_to_local_paths,
 )
 
 
@@ -293,46 +296,56 @@ def main(argv=None):
         conn.close()
 
         # Step 4: Rewrite HTML references. After the move, the
-        # HTML is in <module>/<basename>. The new relative
-        # path from there to the asset is just '<subdir>/<basename>'
-        # or '<basename>' if subdir is empty.
-        section_dir = os.path.join(
-            args.workspace,
-            cname,
-            sname,
-        )
-        # Group refs by HTML path
-        refs_by_html = defaultdict(list)
-        for ref in html_refs:
-            refs_by_html[ref['html_path']].append(ref)
-
-        for html_path, refs in refs_by_html.items():
-            old_to_new = {}
-            for ref in refs:
-                basename = ref['basename']
-                # Find the move for this basename
-                matching_move = None
-                for (old, new, subdir) in moves:
-                    if os.path.basename(old) == basename:
-                        matching_move = (old, new, subdir)
-                        break
-                if not matching_move:
+        # HTML is in <module>/<basename>. We use the same
+        # rewrite_html_links_to_local_paths + build_local_resource_map
+        # pipeline that the downloader uses (DRY principle).
+        #
+        # build_local_resource_map builds a lookup from
+        # canonical KCL URLs → disk paths for all files in
+        # the workspace. rewrite_html_links_to_local_paths
+        # then scans each HTML file and replaces remote
+        # URLs with local relative paths.
+        if html_refs:
+            # Collect all HTML paths that need rewriting
+            html_paths = set(ref['html_path'] for ref in html_refs)
+            # Build the resource map from ALL files in the workspace
+            # (not just the moved ones — the HTML may reference
+            # files that were already correctly placed).
+            conn = sqlite3.connect(args.db)
+            cur = conn.cursor()
+            cur.execute(
+                'SELECT * FROM files WHERE download_status = ?',
+                ('success',),
+            )
+            all_files = []
+            for row in cur.fetchall():
+                # Build minimal File objects for build_local_resource_map
+                # We only need saved_to and content_fileurl
+                class _MinimalFile:
+                    pass
+                f = _MinimalFile()
+                f.saved_to = row[10]  # saved_to column
+                f.content_fileurl = row[9]  # content_fileurl column
+                all_files.append(f)
+            conn.close()
+            local_resources = build_local_resource_map(all_files)
+            for html_path in sorted(html_paths):
+                if not os.path.isfile(html_path):
                     continue
-                # New relative path from the HTML (in module dir) to the file
-                old, new, subdir = matching_move
-                if subdir:
-                    new_rel = f'{subdir}/{basename}'
-                else:
-                    new_rel = basename
-                old_to_new[ref['old_ref']] = new_rel
-            if old_to_new:
-                n = rewrite_html_references(
-                    html_path=html_path,
-                    old_relative_paths=old_to_new.keys(),
-                    new_relative_paths=old_to_new.values(),
+                try:
+                    with open(html_path, 'r', encoding='utf-8', errors='replace') as fh:
+                        html_content = fh.read()
+                except (OSError, UnicodeDecodeError):
+                    continue
+                rewritten_html, n = rewrite_html_links_to_local_paths(
+                    html_content,
+                    html_path,
+                    local_resources,
                 )
-                total_rewrites += n
                 if n:
+                    with open(html_path, 'w', encoding='utf-8', errors='replace', newline='') as fh:
+                        fh.write(rewritten_html)
+                    total_rewrites += n
                     print(f'    rewrote {n} refs in {os.path.basename(html_path)[:60]}',
                           flush=True)
 

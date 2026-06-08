@@ -18,8 +18,12 @@ This tool repairs already-downloaded content in three steps:
   2. move_buggy_files() — atomically move files from the
      buggy location to the corrected one (preserving content
      via shutil.move).
-  3. rewrite_html_references() — update HTML's relative
-     href/src to point to the new location.
+  3. (HTML rewriting is delegated to
+     moodle_dl.downloader.html_localizer — same pipeline
+     the downloader uses, see rewrite_html_links_to_local_paths
+     + build_local_resource_map. This keeps the repair
+     and download code paths DRY: a single bug fix
+     benefits both flows.)
 
 It also has find_buggy_files() for DB-driven discovery of
 which files need to be repaired.
@@ -33,15 +37,6 @@ from typing import Iterable, List, Tuple
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools
-
-
-# Match <tag attr="..."> where the attribute is one of
-# href/src/poster/data. We keep this conservative to match
-# the same attribute set moodle_dl already understands.
-_HTML_REF_PATTERN = re.compile(
-    r'(\b(?:href|src|poster|data)\s*=\s*)(["\'])([^"\']*?)\2',
-    flags=re.IGNORECASE,
-)
 
 
 def _build_file_for_gen_path(
@@ -180,42 +175,6 @@ def move_buggy_files(
             shutil.move(old, new)
         moves.append((old, new, subdir))
     return moves
-
-
-def rewrite_html_references(
-    html_path: str,
-    old_relative_paths: Iterable[str],
-    new_relative_paths: Iterable[str],
-) -> int:
-    """Update an HTML file's <link href='...'> / <script src='...'>
-    / <img src='...'> attributes from the old relative path to
-    the new one.
-
-    @param html_path: path to the HTML file
-    @param old_relative_paths: list of relative paths to find
-    @param new_relative_paths: list of new relative paths (same order)
-    @return: number of replacements made
-    """
-    old_to_new = dict(zip(old_relative_paths, new_relative_paths))
-    with open(html_path, 'r', encoding='utf-8', errors='replace') as f:
-        content = f.read()
-
-    replacements = 0
-
-    def repl(m):
-        nonlocal replacements
-        prefix, quote, url = m.group(1), m.group(2), m.group(3)
-        if url in old_to_new:
-            new_url = old_to_new[url]
-            replacements += 1
-            return f'{prefix}{quote}{new_url}{quote}'
-        return m.group(0)
-
-    new_content = _HTML_REF_PATTERN.sub(repl, content)
-    if replacements:
-        with open(html_path, 'w', encoding='utf-8', errors='replace', newline='') as f:
-            f.write(new_content)
-    return replacements
 
 
 def find_buggy_files(conn: sqlite3.Connection,
