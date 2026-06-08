@@ -70,7 +70,14 @@ def extract_kaltura_entry_id(iframe_src: str) -> str:
 def find_kaltura_iframes(html_content: str) -> List[dict]:
     """Return list of {'iframe_src': str, 'entry_id': str,
     'iframe_tag': str, 'position': int} for each Kaltura
-    iframe found in html_content."""
+    iframe found in html_content.
+
+    Also detects iframes that have already been replaced
+    with a <video> tag pointing to a local kaltura_video
+    file. For already-replaced iframes, the iframe_src is
+    reconstructed from the entry_id (since the original
+    Kaltura URL was discarded during replacement).
+    """
     results = []
     for m in IFRAME_RE.finditer(html_content):
         iframe_src = m.group('url')
@@ -82,6 +89,22 @@ def find_kaltura_iframes(html_content: str) -> List[dict]:
                 'iframe_tag': m.group(0),
                 'position': m.start(),
             })
+
+    # Detect already-replaced iframes: <video>...<source src="kaltura_video_<entry_id>.mp4">
+    replaced_re = re.compile(
+        r'<video[^>]*>\s*<source\s+src="kaltura_video_([^."]+)\.mp4"[^>]*>',
+        re.IGNORECASE,
+    )
+    for m in replaced_re.finditer(html_content):
+        entry_id = m.group(1)
+        results.append({
+            'iframe_src': None,  # Was discarded on previous run
+            'entry_id': entry_id,
+            'iframe_tag': m.group(0),
+            'position': m.start(),
+            'already_replaced': True,
+        })
+
     return results
 
 
@@ -142,23 +165,44 @@ def main():
         if not iframes:
             continue
 
-        # Get the module_id for this HTML file
-        cur.execute('SELECT module_id, module_name FROM files WHERE saved_to = ?',
-                    (html_path,))
+        # Get the module_id, course_id, and other context for this HTML file.
+        # We need course_id to be set (not 0) so that when the downloader
+        # sees this row, it correctly associates the video with the
+        # course. Without course_id, the downloader might skip it.
+        cur.execute(
+            'SELECT module_id, module_name, course_id, course_fullname, '
+            '       section_id, section_name '
+            'FROM files WHERE saved_to = ? LIMIT 1',
+            (html_path,),
+        )
         row = cur.fetchone()
         if not row:
             continue
-        module_id, module_name = row
+        (orig_module_id, orig_module_name, orig_course_id,
+         orig_course_fullname, orig_section_id, orig_section_name) = row
 
         print(f'\n[{html_files.index(html_path) + 1}/{len(html_files)}] {os.path.basename(html_path)[:60]}',
               flush=True)
-        print(f'  module_id={module_id}  module_name="{module_name[:50]}"', flush=True)
+        print(f'  module_id={orig_module_id}  module_name="{orig_module_name[:50]}"',
+              flush=True)
         print(f'  found {len(iframes)} Kaltura iframe(s)', flush=True)
 
         new_html = c
         for i, info in enumerate(iframes, 1):
             entry_id = info['entry_id']
-            iframe_src = info['iframe_src']
+            iframe_src = info.get('iframe_src')
+            if not iframe_src:
+                # The Kaltura URL was already discarded on a
+                # previous run. We need to reconstruct it so the
+                # downloader can fetch it. We use the standard
+                # KCL Kaltura CDN URL format that yt-dlp can
+                # parse directly.
+                iframe_src = (
+                    f'https://cdnapisec.kaltura.com/p/2368101/'
+                    f'sp/236810100/embedIframeJs/'
+                    f'uiconf_id/42864872/partner_id/2368101'
+                    f'?entry_id={entry_id}'
+                )
             # Use the lti_launch URL (preferred for cookie_mod processing)
             # or the direct embed URL as the fileurl
             video_filename = f'kaltura_video_{entry_id}.mp4'
@@ -168,7 +212,7 @@ def main():
                 'SELECT file_id FROM files '
                 'WHERE module_id = ? AND content_fileurl = ? '
                 'LIMIT 1',
-                (module_id, iframe_src),
+                (orig_module_id, iframe_src),
             )
             existing = cur.fetchone()
             if existing:
@@ -177,6 +221,11 @@ def main():
                 continue
 
             max_file_id += 1
+            # 🆕 Set module_modname to 'cookie_mod-kalvidres' so the
+            # downloader (task.py:475) routes the file through the
+            # yt-dlp path. The existing 'resource' module_modname
+            # would treat the file as a regular resource (HTML download
+            # path) and miss the Kaltura extraction.
             cur.execute(
                 '''INSERT INTO files (
                     file_id, course_id, course_fullname, section_name,
@@ -185,12 +234,14 @@ def main():
                     content_filesize, content_timemodified, content_type,
                     content_isexternalfile, saved_to, time_stamp, modified,
                     moved, deleted, notified, hash
-                ) VALUES (?, 0, '', '', 0, ?, ?, 'resource',
-                          '/', ?, ?, 0, ?, 'kalvidres_embedded',
-                          0, '', 0, 0, 0, 0, 0, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'cookie_mod-kalvidres',
+                          '/', ?, ?, 0, ?, 'cookie_mod',
+                          1, '', 0, 0, 0, 0, 0, NULL)
                 ''',
-                (max_file_id, module_id, module_name[:200], video_filename,
-                 iframe_src, int(0)),
+                (max_file_id, orig_course_id, orig_course_fullname,
+                 orig_section_name, orig_section_id, orig_module_id,
+                 orig_module_name[:200], video_filename, iframe_src,
+                 int(0)),
             )
             total_inserts += 1
 
