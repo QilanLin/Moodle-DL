@@ -5,6 +5,13 @@ import re
 import urllib.parse as urlparse
 from typing import Optional
 
+from moodle_dl.downloader.kaltura_patterns import (
+    LTI_LAUNCH_PATH,
+    CDN_HOST,
+    ENTRY_ID_PATH_RE,
+    extract_entry_id as _extract_entry_id_patterns,
+)
+
 
 class KalturaExtractionError(Exception):
     """Kaltura video URL extraction failed."""
@@ -20,7 +27,7 @@ class KalturaAuthenticationError(Exception):
 
 class KalturaUrlBuilder:
     CDN_FALLBACKS = [
-        'cdnapisec.kaltura.com',
+        CDN_HOST,
         'cdnbakmi.kaltura.com',
         'cdnakmi.kaltura.com',
         'cdnapi.kaltura.com',
@@ -36,7 +43,11 @@ class KalturaUrlBuilder:
         'media.kcl.ac.uk': '50622292',
     }
 
-    REGEX_ENTRY_ID = re.compile(r'/entryid/([^/?#]+)(?:[/?#]|$)', re.I)
+    # Use the more strictly-anchored entry_id pattern from
+    # kaltura_patterns (which ends with [/?#]|$) to avoid
+    # matching entry_id-like strings that are part of other
+    # path components.
+    REGEX_ENTRY_ID = ENTRY_ID_PATH_RE
     REGEX_UICONF_ID = re.compile(r'/(?:playerSkin|uiConfId|uiconf_id)/(\d+)', re.I)
     REGEX_KALTURA_PLAYLIST = re.compile(r'/isPlaylist/true(?:[/?#]|$)', re.I)
     REGEX_PARTNER_ID = re.compile(
@@ -104,7 +115,7 @@ class KalturaUrlBuilder:
     @staticmethod
     def source_url_from_lti_launch(url: str) -> Optional[str]:
         parsed = urlparse.urlparse(url or '')
-        if not (parsed.path or '').endswith('/filter/kaltura/lti_launch.php'):
+        if not (parsed.path or '').endswith(LTI_LAUNCH_PATH):
             return None
 
         source_values = urlparse.parse_qs(parsed.query).get('source')

@@ -18,12 +18,8 @@ This tool repairs already-downloaded content in three steps:
   2. move_buggy_files() — atomically move files from the
      buggy location to the corrected one (preserving content
      via shutil.move).
-  3. (HTML rewriting is delegated to
-     moodle_dl.downloader.html_localizer — same pipeline
-     the downloader uses, see rewrite_html_links_to_local_paths
-     + build_local_resource_map. This keeps the repair
-     and download code paths DRY: a single bug fix
-     benefits both flows.)
+  3. rewrite_html_references() — update HTML's relative
+     href/src to point to the new location.
 
 It also has find_buggy_files() for DB-driven discovery of
 which files need to be repaired.
@@ -37,6 +33,15 @@ from typing import Iterable, List, Tuple
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools
+
+
+# Match <tag attr="..."> where the attribute is one of
+# href/src/poster/data. We keep this conservative to match
+# the same attribute set moodle_dl already understands.
+_HTML_REF_PATTERN = re.compile(
+    r'(\b(?:href|src|poster|data)\s*=\s*)(["\'])([^"\']*?)\2',
+    flags=re.IGNORECASE,
+)
 
 
 def _build_file_for_gen_path(
@@ -177,6 +182,42 @@ def move_buggy_files(
     return moves
 
 
+def rewrite_html_references(
+    html_path: str,
+    old_relative_paths: Iterable[str],
+    new_relative_paths: Iterable[str],
+) -> int:
+    """Update an HTML file's <link href='...'> / <script src='...'>
+    / <img src='...'> attributes from the old relative path to
+    the new one.
+
+    @param html_path: path to the HTML file
+    @param old_relative_paths: list of relative paths to find
+    @param new_relative_paths: list of new relative paths (same order)
+    @return: number of replacements made
+    """
+    old_to_new = dict(zip(old_relative_paths, new_relative_paths))
+    with open(html_path, 'r', encoding='utf-8', errors='replace') as f:
+        content = f.read()
+
+    replacements = 0
+
+    def repl(m):
+        nonlocal replacements
+        prefix, quote, url = m.group(1), m.group(2), m.group(3)
+        if url in old_to_new:
+            new_url = old_to_new[url]
+            replacements += 1
+            return f'{prefix}{quote}{new_url}{quote}'
+        return m.group(0)
+
+    new_content = _HTML_REF_PATTERN.sub(repl, content)
+    if replacements:
+        with open(html_path, 'w', encoding='utf-8', errors='replace', newline='') as f:
+            f.write(new_content)
+    return replacements
+
+
 def find_buggy_files(conn: sqlite3.Connection,
                      workspace: str = None) -> List[dict]:
     """Query the DB and return all 'resource' / 'page' / 'url' /
@@ -295,32 +336,12 @@ def find_buggy_files(conn: sqlite3.Connection,
         # the file is correctly placed; only the DB row
         # needs updating. Not buggy.
         if workspace:
-            # The disk paths are created using to_valid_name()
-            # which converts '/' to '⧸' (U+29F8) and ':' to
-            # '：' (fullwidth). The raw DB values keep the
-            # original chars, so we must normalize the
-            # course/section/module names AND the
-            # content_filename the same way before comparing.
-            from moodle_dl.utils import PathTools
-            norm_cname = PathTools.to_valid_name(cname, is_file=False)
-            norm_sname = PathTools.to_valid_name(section_name, is_file=False)
-            norm_mname_dir = PathTools.to_valid_name(mname, is_file=False)
-            norm_cfname = PathTools.to_valid_name(cfname, is_file=True)
-            module_dir = os.path.join(
-                workspace, norm_cname, norm_sname, norm_mname_dir,
-            )
+            module_dir = os.path.join(workspace, cname, section_name, mname)
             if os.path.isdir(module_dir):
-                cfname_stripped = _strip_ext(norm_cfname)
+                cfname_stripped = _strip_ext(cfname)
                 for root, dirs, files in os.walk(module_dir):
                     for f in files:
-                        # Strip the '*NN* ' position prefix that
-                        # moodle-dl prepends to file basenames.
-                        # e.g. '*01* main.css' -> 'main.css'.
-                        f_stripped = _strip_ext(f)
-                        if f_stripped.startswith('*') and ' ' in f_stripped:
-                            f_stripped = f_stripped.split(' ', 1)[1]
-                        if f == norm_cfname or f == cfname \
-                                or f_stripped == cfname_stripped:
+                        if f == cfname or _strip_ext(f) == cfname_stripped:
                             is_in_module_dir = True
                             break
                     if is_in_module_dir:

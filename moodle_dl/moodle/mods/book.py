@@ -11,6 +11,14 @@ import urllib.parse
 from typing import Dict, List, Tuple
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.downloader.kaltura_patterns import (
+    IFRAME_RE,
+    IFRAME_WITH_CLASS_RE,
+    LTI_LAUNCH_PATH,
+    ENTRY_ID_PATH_RE,
+    extract_entry_id,
+    is_lti_launch_url,
+)
 from moodle_dl.moodle.mods import MoodleMod
 from moodle_dl.moodle.request_helper import RequestRejectedError
 from moodle_dl.types import Course, File
@@ -248,9 +256,8 @@ class BookMod(MoodleMod):
                     chapter_html_content = chapter_content.get('html', '')
                     kaltura_videos = []
                     if chapter_html_content:
-                        # 查找章节HTML中的Kaltura iframe
-                        kaltura_pattern = r'<iframe[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"'
-                        matches = re.findall(kaltura_pattern, chapter_html_content, re.IGNORECASE)
+                        # Use the centralized IFRAME_RE pattern.
+                        matches = IFRAME_RE.findall(chapter_html_content)
                         for idx, iframe_src in enumerate(matches, 1):
                             iframe_src = html.unescape(iframe_src)
                             # 转换URL到标准格式
@@ -580,59 +587,19 @@ class BookMod(MoodleMod):
         """
         video_files = []
 
-        # Pattern to match Kaltura iframe with lti_launch.php
-        # Example: src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?...&source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_er5gtb0g%2F..."
-        #
-        # 🆕 The alternative pattern handles direct Kaltura embed
-        # URLs (cdnapisec.kaltura.com/.../embedIframeJs/...) which include
-        # the entry_id directly in the URL query string. Some book
-        # chapters (and the PCR practical HTML) use this direct
-        # embed form instead of the lti_launch wrapper. The path
-        # between the host and /embedIframeJs can be one or more
-        # segments (e.g. /p/{partner}/sp/{partner}00/embedIframeJs).
-        kaltura_pattern = (
-            r'<iframe[^>]+src="'
-            r'('
-            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
-            r'|'
-            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
-            r')'
-            r'"'
-        )
-
-        matches = re.findall(kaltura_pattern, chapter_html, re.IGNORECASE)
+        # Use the centralized Kaltura pattern module — see
+        # kaltura_patterns.IFRAME_RE for the full URL form
+        # documentation. We support both the lti_launch.php
+        # wrapper form (e.g. KCL Moodle pages) and the direct
+        # cdnapisec.kaltura.com embed form (e.g. PCR chapters).
+        matches = IFRAME_RE.findall(chapter_html)
 
         for idx, iframe_src in enumerate(matches, 1):
             # Unescape HTML entities
             iframe_src = html.unescape(iframe_src)
 
-            # Two URL shapes are supported:
-            #
-            # (A) KCL Moodle LTI wrapper:
-            #     https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?...
-            #         &source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2F...
-            #         %2Fentryid%2F<entry_id>%2F...
-            #     The entry_id is in the URL-encoded 'source' parameter.
-            #
-            # (B) Direct Kaltura embed (used in some chapters, e.g. PCR):
-            #     https://cdnapisec.kaltura.com/.../embedIframeJs/...&entry_id=<entry_id>&...
-            #     The entry_id is in the URL query string directly.
-            entry_id = ''
-            if 'filter/kaltura/lti_launch.php' in iframe_src:
-                # Path A: extract from URL-encoded 'source' param
-                source_match = re.search(r'[?&]source=([^&]+)', iframe_src)
-                if not source_match:
-                    continue
-                kaltura_source = urllib.parse.unquote(source_match.group(1))
-                entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-                if entry_id_match:
-                    entry_id = entry_id_match.group(1)
-            else:
-                # Path B: extract 'entry_id' query param directly
-                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src)
-                if entry_id_match:
-                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
-
+            # Extract entry_id (handles both URL forms)
+            entry_id = extract_entry_id(iframe_src)
             if not entry_id:
                 continue
 
@@ -1074,19 +1041,10 @@ class BookMod(MoodleMod):
         """
         video_list = []
 
-        # Pattern to match Kaltura iframe with lti_launch.php
-        # 🆕 Also matches cdnapisec.kaltura.com direct embeds
-        kaltura_pattern = (
-            r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="'
-            r'('
-            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
-            r'|'
-            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
-            r')'
-            r'[^>]*>'
-        )
-
-        matches = re.findall(kaltura_pattern, html_content, re.IGNORECASE | re.DOTALL)
+        # Use the centralized IFRAME_WITH_CLASS_RE pattern (see
+        # kaltura_patterns). Print book iframes always have the
+        # CSS class 'kaltura-player-iframe'.
+        matches = IFRAME_WITH_CLASS_RE.findall(html_content)
 
         logging.info(f'🎬 Found {len(matches)} Kaltura video(s) in print book')
 
@@ -1094,22 +1052,8 @@ class BookMod(MoodleMod):
             # Unescape HTML entities
             iframe_src_unescaped = html.unescape(iframe_src)
 
-            # Two URL shapes are supported: (A) lti_launch.php wrapper,
-            # (B) direct cdnapisec.kaltura.com embed. Extract entry_id
-            # from the matching shape.
-            entry_id = ''
-            if 'filter/kaltura/lti_launch.php' in iframe_src_unescaped:
-                source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
-                if source_match:
-                    kaltura_source = urllib.parse.unquote(source_match.group(1))
-                    entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-                    if entry_id_match:
-                        entry_id = entry_id_match.group(1)
-            else:
-                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src_unescaped)
-                if entry_id_match:
-                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
-
+            # Extract entry_id (handles both URL forms)
+            entry_id = extract_entry_id(iframe_src_unescaped)
             if not entry_id:
                 logging.warning(f'⚠️  Could not extract entry ID from Kaltura source {idx}')
                 continue
@@ -1214,39 +1158,16 @@ class BookMod(MoodleMod):
         """
         video_list = []
 
-        # Pattern to match Kaltura iframe
-        # 🆕 Also matches cdnapisec.kaltura.com direct embeds (not just
-        # the lti_launch.php wrapper)
-        kaltura_pattern = (
-            r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="'
-            r'('
-            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
-            r'|'
-            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
-            r')'
-            r'[^>]*>'
-        )
-        matches = re.findall(kaltura_pattern, chapter_html, re.IGNORECASE | re.DOTALL)
+        # Use the centralized IFRAME_WITH_CLASS_RE pattern (see
+        # kaltura_patterns). Mobile API chapter iframes always
+        # have the CSS class 'kaltura-player-iframe'.
+        matches = IFRAME_WITH_CLASS_RE.findall(chapter_html)
 
         for idx, iframe_src in enumerate(matches, 1):
             iframe_src_unescaped = html.unescape(iframe_src)
 
-            # Two URL shapes are supported: (A) lti_launch.php wrapper,
-            # (B) direct cdnapisec.kaltura.com embed. Extract entry_id
-            # from the matching shape.
-            entry_id = ''
-            if 'filter/kaltura/lti_launch.php' in iframe_src_unescaped:
-                source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
-                if source_match:
-                    kaltura_source = urllib.parse.unquote(source_match.group(1))
-                    entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-                    if entry_id_match:
-                        entry_id = entry_id_match.group(1)
-            else:
-                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src_unescaped)
-                if entry_id_match:
-                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
-
+            # Extract entry_id (handles both URL forms)
+            entry_id = extract_entry_id(iframe_src_unescaped)
             if not entry_id:
                 continue
 
@@ -1388,8 +1309,8 @@ class BookMod(MoodleMod):
             import urllib.parse
             chapter_html_decoded = urllib.parse.unquote(chapter_html)
 
-            video_pattern = r'/entryid/([^/"\s]+)'
-            video_entry_ids = re.findall(video_pattern, chapter_html_decoded)
+            # Use the centralized ENTRY_ID_PATH_RE pattern.
+            video_entry_ids = ENTRY_ID_PATH_RE.findall(chapter_html_decoded)
 
             if video_entry_ids:
                 chapter_video_mapping[chapter_id] = video_entry_ids
@@ -1455,25 +1376,18 @@ class BookMod(MoodleMod):
         @param url: 原始 LTI launch URL
         @return: Tuple of (原始 URL, entry_id) 或 (原始url, '') 如果提取失败
         """
-        # 检测Kaltura URL
-        if '/filter/kaltura/lti_launch.php' not in url:
+        # Use the centralized is_lti_launch_url check.
+        if not is_lti_launch_url(url):
             return url, ''
 
         # URL 解码并提取 entry_id（仅用于文件命名）
         # URL 可能包含 %2F (/) 等编码字符
-        decoded_url = urllib.parse.unquote(url)
-        # After decoding, match '/' only (not '%' which would match encoded slashes)
-        # But also handle cases where URL might still contain encoded characters (double encoding)
-        entry_id_match = re.search(r'entryid/([^/&?]+)', decoded_url) or re.search(r'entryid%2F([^/%&?]+)', decoded_url)
-        entry_id = entry_id_match.group(1) if entry_id_match else ''
-        # Additional decode if entry_id contains encoded characters (double encoding)
-        if entry_id:
-            entry_id = urllib.parse.unquote(entry_id)
+        entry_id = extract_entry_id(url)
 
         if entry_id:
             logging.debug(f'✅ Extracted entry_id from Kaltura URL: {entry_id}')
         else:
-            logging.warning(f'⚠️  Cannot extract entry_id from URL: {decoded_url[:100]}')
+            logging.warning(f'⚠️  Cannot extract entry_id from URL: {url[:100]}')
 
         # ✅ 返回原始 LTI launch URL，不转换
         # 这与 book6 分支的方法一致，让 task.py 处理完整的下载流程
@@ -1504,25 +1418,20 @@ class BookMod(MoodleMod):
                     entry_id_to_path[entry_id] = f'{folder_name}/{filename}'
 
         # 提取Print Book中的所有Kaltura iframe
-        kaltura_pattern = r'<iframe[^>]*class="kaltura-player-iframe"[^>]*src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"[^>]*>'
-        matches = list(re.finditer(kaltura_pattern, modified_html, re.IGNORECASE | re.DOTALL))
+        # Use the centralized IFRAME_WITH_CLASS_RE (already handles
+        # both lti_launch and direct embed forms)
+        matches = list(IFRAME_WITH_CLASS_RE.finditer(modified_html))
 
         logging.info(f'🎬 Found {len(matches)} Kaltura iframe(s) in print book to link')
 
         for match in matches:
             iframe_src = match.group(1)
 
-            # URL 解码后再提取 entry_id（修复 %2F 编码问题）
-            # 例如：entryid%2F1_xxx → entryid/1_xxx
-            decoded_src = urllib.parse.unquote(iframe_src)
-            # After decoding, match '/' only (not '%' which would match encoded slashes)
-            # But also handle cases where URL might still contain encoded characters (double encoding)
-            entry_id_match = re.search(r'entryid/([^/&?]+)', decoded_src) or re.search(r'entryid%2F([^/%&?]+)', decoded_src)
-            if not entry_id_match:
+            # Extract entry_id via centralized helper (handles both
+            # URL forms and double-encoding of %2F in source URLs)
+            entry_id = extract_entry_id(iframe_src)
+            if not entry_id:
                 continue
-            entry_id = entry_id_match.group(1)
-            # Additional decode if entry_id contains encoded characters (double encoding)
-            entry_id = urllib.parse.unquote(entry_id)
 
             # 查找相对路径
             if entry_id not in entry_id_to_path:

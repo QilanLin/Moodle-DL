@@ -7,6 +7,13 @@ import urllib.parse
 from yt_dlp.extractor.common import InfoExtractor
 from yt_dlp.utils import ExtractorError
 
+from moodle_dl.downloader.kaltura_patterns import (
+    LTI_LAUNCH_PATH,
+    ENTRY_ID_PATH_RE,
+    LTI_SOURCE_RE,
+    is_lti_launch_url,
+)
+
 
 class KalvidresEmbeddedIE(InfoExtractor):
     """
@@ -17,11 +24,18 @@ class KalvidresEmbeddedIE(InfoExtractor):
     so we can extract it without making HTTP requests.
     """
     IE_NAME = 'kalvidresEmbedded'
-    _VALID_URL = r'(?P<scheme>https?://)(?P<host>[^/]+)(?P<path>.*)?/filter/kaltura/lti_launch\.php\?.*'
+    _VALID_URL = (
+        r'(?P<scheme>https?://)(?P<host>[^/]+)(?P<path>.*)?'
+        + re.escape(LTI_LAUNCH_PATH)
+        + r'\?.*'
+    )
 
     def _real_extract(self, url):
-        # Parse the URL to extract the 'source' parameter
-        # The source parameter contains the actual Kaltura browse/embed URL
+        if not is_lti_launch_url(url):
+            raise ExtractorError(f'URL is not a Kaltura lti_launch URL: {url}')
+
+        # Parse the URL to extract the 'source' parameter.
+        # The source parameter contains the actual Kaltura browse/embed URL.
         parsed_url = urllib.parse.urlparse(url)
         params = urllib.parse.parse_qs(parsed_url.query)
 
@@ -32,11 +46,13 @@ class KalvidresEmbeddedIE(InfoExtractor):
 
         kaltura_source = source_list[0]  # source is the Kaltura browse/embed URL
 
-        # Extract entry ID from the Kaltura URL
+        # Extract entry ID from the Kaltura URL.
         # Example: https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_er5gtb0g/...
-        entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+        entry_id_match = ENTRY_ID_PATH_RE.search(kaltura_source)
         if not entry_id_match:
-            raise ExtractorError(f'Unable to extract entry ID from Kaltura source URL: {kaltura_source}')
+            raise ExtractorError(
+                f'Unable to extract entry ID from Kaltura source URL: {kaltura_source}'
+            )
 
         entry_id = entry_id_match.group(1)
 

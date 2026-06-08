@@ -20,9 +20,9 @@ This tool:
      local file path
 
 Usage:
-  python -m moodle_dl.downloader.extract_kaltura_from_html \
-      --db /path/to/moodle_state.db \
-      --workspace /path/to/workspace \
+  python -m moodle_dl.downloader.extract_kaltura_from_html \\
+      --db /path/to/moodle_state.db \\
+      --workspace /path/to/workspace \\
       --yes
 """
 import argparse
@@ -30,41 +30,23 @@ import os
 import re
 import sqlite3
 import sys
-import urllib.parse
 from typing import List
 
-from moodle_dl.moodle.mods.book import BookMod
-
-
-# Reuse the patterns from book.py
-KALTURA_LAUNCH_RE = re.compile(
-    r'[^"]*filter/kaltura/lti_launch\.php[^"]*',
-    re.IGNORECASE,
-)
-KALTURA_DIRECT_RE = re.compile(
-    r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*',
-    re.IGNORECASE,
-)
-IFRAME_RE = re.compile(
-    r'<iframe[^>]+src="(?P<url>[^"]*(?:filter/kaltura/lti_launch\.php|cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/)[^"]*)"[^>]*>',
-    re.IGNORECASE,
+from moodle_dl.downloader.kaltura_patterns import (
+    IFRAME_RE,
+    extract_entry_id,
+    reconstruct_url_from_entry_id,
 )
 
 
-def extract_kaltura_entry_id(iframe_src: str) -> str:
-    """Extract Kaltura entry_id from either URL form."""
-    if 'filter/kaltura/lti_launch.php' in iframe_src:
-        source_match = re.search(r'[?&]source=([^&]+)', iframe_src)
-        if not source_match:
-            return ''
-        kaltura_source = urllib.parse.unquote(source_match.group(1))
-        m = re.search(r'/entryid/([^/]+)', kaltura_source)
-        return m.group(1) if m else ''
-    else:
-        m = re.search(r'[?&]entry_id=([^&]+)', iframe_src)
-        if m:
-            return urllib.parse.unquote(m.group(1))
-        return ''
+# Pattern that matches <video> tags that this tool already
+# inserted on a previous run (with the local kaltura_video_*.mp4
+# filename). Used to re-discover videos that had their original
+# Kaltura URL discarded during replacement.
+REPLACED_VIDEO_RE = re.compile(
+    r'<video[^>]*>\s*<source\s+src="kaltura_video_([^."]+)\.mp4"[^>]*>',
+    re.IGNORECASE,
+)
 
 
 def find_kaltura_iframes(html_content: str) -> List[dict]:
@@ -80,8 +62,8 @@ def find_kaltura_iframes(html_content: str) -> List[dict]:
     """
     results = []
     for m in IFRAME_RE.finditer(html_content):
-        iframe_src = m.group('url')
-        entry_id = extract_kaltura_entry_id(iframe_src)
+        iframe_src = m.group(1)
+        entry_id = extract_entry_id(iframe_src)
         if entry_id:
             results.append({
                 'iframe_src': iframe_src,
@@ -90,12 +72,8 @@ def find_kaltura_iframes(html_content: str) -> List[dict]:
                 'position': m.start(),
             })
 
-    # Detect already-replaced iframes: <video>...<source src="kaltura_video_<entry_id>.mp4">
-    replaced_re = re.compile(
-        r'<video[^>]*>\s*<source\s+src="kaltura_video_([^."]+)\.mp4"[^>]*>',
-        re.IGNORECASE,
-    )
-    for m in replaced_re.finditer(html_content):
+    # Detect already-replaced iframes (from previous run)
+    for m in REPLACED_VIDEO_RE.finditer(html_content):
         entry_id = m.group(1)
         results.append({
             'iframe_src': None,  # Was discarded on previous run
@@ -194,15 +172,9 @@ def main():
             if not iframe_src:
                 # The Kaltura URL was already discarded on a
                 # previous run. We need to reconstruct it so the
-                # downloader can fetch it. We use the standard
-                # KCL Kaltura CDN URL format that yt-dlp can
-                # parse directly.
-                iframe_src = (
-                    f'https://cdnapisec.kaltura.com/p/2368101/'
-                    f'sp/236810100/embedIframeJs/'
-                    f'uiconf_id/42864872/partner_id/2368101'
-                    f'?entry_id={entry_id}'
-                )
+                # downloader can fetch it. See
+                # kaltura_patterns.reconstruct_url_from_entry_id.
+                iframe_src = reconstruct_url_from_entry_id(entry_id)
             # Use the lti_launch URL (preferred for cookie_mod processing)
             # or the direct embed URL as the fileurl
             video_filename = f'kaltura_video_{entry_id}.mp4'
