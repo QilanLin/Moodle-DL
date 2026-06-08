@@ -582,7 +582,23 @@ class BookMod(MoodleMod):
 
         # Pattern to match Kaltura iframe with lti_launch.php
         # Example: src="https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?...&source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_er5gtb0g%2F..."
-        kaltura_pattern = r'<iframe[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"'
+        #
+        # 🆕 The alternative pattern handles direct Kaltura embed
+        # URLs (cdnapisec.kaltura.com/.../embedIframeJs/...) which include
+        # the entry_id directly in the URL query string. Some book
+        # chapters (and the PCR practical HTML) use this direct
+        # embed form instead of the lti_launch wrapper. The path
+        # between the host and /embedIframeJs can be one or more
+        # segments (e.g. /p/{partner}/sp/{partner}00/embedIframeJs).
+        kaltura_pattern = (
+            r'<iframe[^>]+src="'
+            r'('
+            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
+            r'|'
+            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
+            r')'
+            r'"'
+        )
 
         matches = re.findall(kaltura_pattern, chapter_html, re.IGNORECASE)
 
@@ -590,21 +606,35 @@ class BookMod(MoodleMod):
             # Unescape HTML entities
             iframe_src = html.unescape(iframe_src)
 
-            # Extract the source parameter which contains the actual Kaltura URL
-            source_match = re.search(r'[?&]source=([^&]+)', iframe_src)
-            if not source_match:
+            # Two URL shapes are supported:
+            #
+            # (A) KCL Moodle LTI wrapper:
+            #     https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?...
+            #         &source=https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2F...
+            #         %2Fentryid%2F<entry_id>%2F...
+            #     The entry_id is in the URL-encoded 'source' parameter.
+            #
+            # (B) Direct Kaltura embed (used in some chapters, e.g. PCR):
+            #     https://cdnapisec.kaltura.com/.../embedIframeJs/...&entry_id=<entry_id>&...
+            #     The entry_id is in the URL query string directly.
+            entry_id = ''
+            if 'filter/kaltura/lti_launch.php' in iframe_src:
+                # Path A: extract from URL-encoded 'source' param
+                source_match = re.search(r'[?&]source=([^&]+)', iframe_src)
+                if not source_match:
+                    continue
+                kaltura_source = urllib.parse.unquote(source_match.group(1))
+                entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+                if entry_id_match:
+                    entry_id = entry_id_match.group(1)
+            else:
+                # Path B: extract 'entry_id' query param directly
+                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src)
+                if entry_id_match:
+                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
+
+            if not entry_id:
                 continue
-
-            # Decode the URL-encoded source parameter
-            kaltura_source = urllib.parse.unquote(source_match.group(1))
-
-            # Extract entry ID from the Kaltura URL
-            # Example: https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/1_er5gtb0g/...
-            entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-            if not entry_id_match:
-                continue
-
-            entry_id = entry_id_match.group(1)
 
             # Construct the Kaltura video module URL (similar to standalone kalvidres modules)
             # We use the lti_launch.php URL as the module URL for cookie_mod processing
@@ -1045,7 +1075,16 @@ class BookMod(MoodleMod):
         video_list = []
 
         # Pattern to match Kaltura iframe with lti_launch.php
-        kaltura_pattern = r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"[^>]*>'
+        # 🆕 Also matches cdnapisec.kaltura.com direct embeds
+        kaltura_pattern = (
+            r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="'
+            r'('
+            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
+            r'|'
+            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
+            r')'
+            r'[^>]*>'
+        )
 
         matches = re.findall(kaltura_pattern, html_content, re.IGNORECASE | re.DOTALL)
 
@@ -1055,22 +1094,25 @@ class BookMod(MoodleMod):
             # Unescape HTML entities
             iframe_src_unescaped = html.unescape(iframe_src)
 
-            # Extract the source parameter which contains the actual Kaltura URL
-            source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
-            if not source_match:
-                logging.warning(f'⚠️  Could not extract source parameter from iframe {idx}')
-                continue
+            # Two URL shapes are supported: (A) lti_launch.php wrapper,
+            # (B) direct cdnapisec.kaltura.com embed. Extract entry_id
+            # from the matching shape.
+            entry_id = ''
+            if 'filter/kaltura/lti_launch.php' in iframe_src_unescaped:
+                source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
+                if source_match:
+                    kaltura_source = urllib.parse.unquote(source_match.group(1))
+                    entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+                    if entry_id_match:
+                        entry_id = entry_id_match.group(1)
+            else:
+                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src_unescaped)
+                if entry_id_match:
+                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
 
-            # Decode the URL-encoded source parameter
-            kaltura_source = urllib.parse.unquote(source_match.group(1))
-
-            # Extract entry ID from the Kaltura URL
-            entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-            if not entry_id_match:
+            if not entry_id:
                 logging.warning(f'⚠️  Could not extract entry ID from Kaltura source {idx}')
                 continue
-
-            entry_id = entry_id_match.group(1)
 
             # Generate video filename
             video_name = f"{book_name} - Video {idx:02d}" if len(matches) > 1 else f"{book_name} - Video"
@@ -1173,25 +1215,40 @@ class BookMod(MoodleMod):
         video_list = []
 
         # Pattern to match Kaltura iframe
-        kaltura_pattern = r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="([^"]*filter/kaltura/lti_launch\.php[^"]*)"[^>]*>'
+        # 🆕 Also matches cdnapisec.kaltura.com direct embeds (not just
+        # the lti_launch.php wrapper)
+        kaltura_pattern = (
+            r'<iframe[^>]+class="kaltura-player-iframe"[^>]+src="'
+            r'('
+            r'[^"]*filter/kaltura/lti_launch\.php[^"]*'
+            r'|'
+            r'[^"]*cdnapisec\.kaltura\.com/[^"]*?/embedIframeJs/[^"]*'
+            r')'
+            r'[^>]*>'
+        )
         matches = re.findall(kaltura_pattern, chapter_html, re.IGNORECASE | re.DOTALL)
 
         for idx, iframe_src in enumerate(matches, 1):
             iframe_src_unescaped = html.unescape(iframe_src)
 
-            # Extract source parameter
-            source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
-            if not source_match:
+            # Two URL shapes are supported: (A) lti_launch.php wrapper,
+            # (B) direct cdnapisec.kaltura.com embed. Extract entry_id
+            # from the matching shape.
+            entry_id = ''
+            if 'filter/kaltura/lti_launch.php' in iframe_src_unescaped:
+                source_match = re.search(r'[?&]source=([^&]+)', iframe_src_unescaped)
+                if source_match:
+                    kaltura_source = urllib.parse.unquote(source_match.group(1))
+                    entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
+                    if entry_id_match:
+                        entry_id = entry_id_match.group(1)
+            else:
+                entry_id_match = re.search(r'[?&]entry_id=([^&]+)', iframe_src_unescaped)
+                if entry_id_match:
+                    entry_id = urllib.parse.unquote(entry_id_match.group(1))
+
+            if not entry_id:
                 continue
-
-            kaltura_source = urllib.parse.unquote(source_match.group(1))
-
-            # Extract entry ID
-            entry_id_match = re.search(r'/entryid/([^/]+)', kaltura_source)
-            if not entry_id_match:
-                continue
-
-            entry_id = entry_id_match.group(1)
 
             # Generate video filename (简洁格式，不包含章节ID)
             if len(matches) > 1:
