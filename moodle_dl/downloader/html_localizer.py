@@ -24,7 +24,14 @@ FILENAME_INDEX_PREFIX_PATTERN = re.compile(r'^\*\d+\*\s*')
 IGNORED_HTML_URL_PREFIXES = ('#', 'data:', 'mailto:', 'javascript:', 'tel:')
 EMBEDDED_RESOURCE_ATTRS = {
     'src': {'audio', 'embed', 'iframe', 'img', 'input', 'script', 'source', 'track', 'video'},
-    'href': {'link'},
+    # 🆕 'a' is added so that <a href="..."> navigation links
+    # pointing to other pages in the workspace get rewritten
+    # to the actual disk path (with *NN* prefix if present).
+    # Without this, clicking "Next Page" on PCR goes to
+    # a non-existent file because the <a href> was never
+    # rewritten (the file is at *11* Introduction.html but
+    # the link says Introduction.html).
+    'href': {'a', 'link', 'area'},
     'poster': {'video'},
     'data': {'object'},
 }

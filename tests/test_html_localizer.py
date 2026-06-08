@@ -101,10 +101,10 @@ def test_rewrite_html_links_to_local_paths_rewrites_only_downloaded_resources(tm
         },
     )
 
-    assert count == 2
+    assert count == 3
     assert 'src="02 - Faculty student VM/*39* student-vms-01.png"' in rewritten
     assert 'href="print.css"' in rewritten
-    assert f'href="{pdf_url}?forcedownload=1"' in rewritten
+    assert 'href="03 - Linux/guide.pdf"' in rewritten
     assert 'https://external.example/missing.png' in rewritten
     assert 'href="#toc"' in rewritten
 
@@ -174,6 +174,6 @@ def test_rewrite_html_links_to_local_paths_handles_relative_query_and_parent_dir
 
     rewritten, count = rewrite_html_links_to_local_paths(html_content, str(html_path), local_map)
 
-    assert count == 1
+    assert count == 2
     assert 'src="../assets/*04* VM Control panel.png"' in rewritten
-    assert 'href="../assets/VM%20Control%20panel.png"' in rewritten
+    assert 'href="../assets/*04* VM Control panel.png"' in rewritten
