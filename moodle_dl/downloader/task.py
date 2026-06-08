@@ -31,6 +31,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from moodle_dl.downloader.extractors import add_additional_extractors
+from moodle_dl.downloader.kaltura_patterns import (
+    COOKIE_MOD_MODNAMES,
+    MODULE_COOKIE_KALVIDRES,
+)
 from moodle_dl.downloader.kaltura_url import (
     KalturaAuthenticationError,
     KalturaCDNError,
@@ -472,7 +476,7 @@ class Task:
 
         # 🆕 Special handling for embedded videos (kalvidres, helixmedia, etc.)
         # These are embedded in book/page/etc modules and should be saved in the module folder
-        if file.module_modname in ('cookie_mod-kalvidres', 'cookie_mod-helixmedia'):
+        if file.module_modname in COOKIE_MOD_MODNAMES:
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath
             )
@@ -1971,7 +1975,7 @@ class Task:
         
         对于 kalvidres：先提取文本内容和视频 URL，然后下载视频。
         """
-        if self.file.module_modname == 'cookie_mod-kalvidres':
+        if self.file.module_modname == MODULE_COOKIE_KALVIDRES:
             await self._handle_kalvidres_download()
         else:
             # 其他 cookie_mod 类型的视频

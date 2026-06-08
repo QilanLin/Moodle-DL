@@ -14,8 +14,8 @@ This tool:
   1. Scans the workspace for .html files
   2. Detects Kaltura iframes (both lti_launch and direct embed)
   3. Inserts synthetic file rows into the DB with type
-     'kalvidres_embedded' so the downloader picks them up
-     via the same yt-dlp path as real kalvidres modules
+     CONTENT_TYPE_KALVIDRES_EMBEDDED so the downloader picks
+     them up via the same yt-dlp path as real kalvidres modules
   4. Replaces the iframe with a <video> tag pointing to the
      local file path
 
@@ -34,7 +34,12 @@ from typing import List
 
 from moodle_dl.downloader.kaltura_patterns import (
     IFRAME_RE,
+    KALTURA_VIDEO_FILENAME_RE,
+    KALTURA_VIDEO_FILENAME_PREFIX,
+    CONTENT_TYPE_COOKIE_MOD,
+    MODULE_COOKIE_KALVIDRES,
     extract_entry_id,
+    kaltura_video_filename,
     reconstruct_url_from_entry_id,
 )
 
@@ -42,11 +47,10 @@ from moodle_dl.downloader.kaltura_patterns import (
 # Pattern that matches <video> tags that this tool already
 # inserted on a previous run (with the local kaltura_video_*.mp4
 # filename). Used to re-discover videos that had their original
-# Kaltura URL discarded during replacement.
-REPLACED_VIDEO_RE = re.compile(
-    r'<video[^>]*>\s*<source\s+src="kaltura_video_([^."]+)\.mp4"[^>]*>',
-    re.IGNORECASE,
-)
+# Kaltura URL discarded during replacement. See
+# kaltura_patterns.KALTURA_VIDEO_FILENAME_RE for the
+# centralized version.
+REPLACED_VIDEO_RE = KALTURA_VIDEO_FILENAME_RE
 
 
 def find_kaltura_iframes(html_content: str) -> List[dict]:
@@ -177,7 +181,7 @@ def main():
                 iframe_src = reconstruct_url_from_entry_id(entry_id)
             # Use the lti_launch URL (preferred for cookie_mod processing)
             # or the direct embed URL as the fileurl
-            video_filename = f'kaltura_video_{entry_id}.mp4'
+            video_filename = kaltura_video_filename(entry_id)
 
             # Check if this iframe_src is already registered (idempotent).
             cur.execute(
@@ -193,8 +197,8 @@ def main():
                 continue
 
             max_file_id += 1
-            # 🆕 Set module_modname to 'cookie_mod-kalvidres' so the
-            # downloader (task.py:475) routes the file through the
+            # 🆕 Set module_modname to cookie_mod-kalvidres so the
+            # downloader (task.py:475) routes them through the
             # yt-dlp path. The existing 'resource' module_modname
             # would treat the file as a regular resource (HTML download
             # path) and miss the Kaltura extraction.
@@ -206,14 +210,18 @@ def main():
                     content_filesize, content_timemodified, content_type,
                     content_isexternalfile, saved_to, time_stamp, modified,
                     moved, deleted, notified, hash
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'cookie_mod-kalvidres',
-                          '/', ?, ?, 0, ?, 'cookie_mod',
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?,
+                          '/', ?, ?, 0, ?, ?,
                           1, '', 0, 0, 0, 0, 0, NULL)
                 ''',
                 (max_file_id, orig_course_id, orig_course_fullname,
                  orig_section_name, orig_section_id, orig_module_id,
-                 orig_module_name[:200], video_filename, iframe_src,
-                 int(0)),
+                 orig_module_name[:200],
+                 MODULE_COOKIE_KALVIDRES,  # module_modname
+                 video_filename, iframe_src,
+                 int(0),                    # timemodified (unused)
+                 CONTENT_TYPE_COOKIE_MOD,   # content_type
+                 ),
             )
             total_inserts += 1
 

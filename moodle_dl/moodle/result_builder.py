@@ -7,6 +7,12 @@ import re
 import urllib.parse as urlparse
 from typing import Dict, List, Optional
 
+from moodle_dl.downloader.kaltura_patterns import (
+    CONTENT_TYPE_KALVIDRES_EMBEDDED,
+    COOKIE_MOD_MODNAMES,
+    MODULE_COOKIE_HELIXMEDIA,
+    MODULE_COOKIE_KALVIDRES,
+)
 from moodle_dl.types import Course, File, MoodleURL
 from moodle_dl.utils import PathTools as PT, UrlHelper
 
@@ -26,7 +32,7 @@ class ResultBuilder:
         'quiz',
         'workshop',
     )
-    MODULE_DIRECTORY_MODNAMES = ('cookie_mod-kalvidres', 'cookie_mod-helixmedia')
+    MODULE_DIRECTORY_MODNAMES = COOKIE_MOD_MODNAMES
 
     def __init__(self, moodle_url: MoodleURL, version: int, mod_plurals: Dict, token: str = ''):
         self.version = version
@@ -71,7 +77,7 @@ class ResultBuilder:
         files += self._get_files_not_on_main_page(fetched_mods)
 
         import logging
-        kalvidres_total = len([f for f in files if f.module_modname == 'cookie_mod-kalvidres'])
+        kalvidres_total = len([f for f in files if f.module_modname == MODULE_COOKIE_KALVIDRES])
         if kalvidres_total > 0:
             logging.info(f'🌐 get_files_in_sections() returning {kalvidres_total} Kaltura videos total')
 
@@ -270,7 +276,7 @@ class ResultBuilder:
         total_files_count = len(files)
         kalvidres_in_section = 0
         for f in files:
-            if hasattr(f, 'module_modname') and f.module_modname == 'cookie_mod-kalvidres':
+            if hasattr(f, 'module_modname') and f.module_modname == MODULE_COOKIE_KALVIDRES:
                 kalvidres_in_section += 1
                 logging.debug(f'Found kalvidres file: {f.content_filename}')
 
@@ -547,9 +553,9 @@ class ResultBuilder:
             url, entry_id = self._normalize_kaltura_url(url, url_parts)
             kaltura_converted = entry_id is not None
             if kaltura_converted:
-                location['module_modname'] = 'cookie_mod-kalvidres'
+                location['module_modname'] = MODULE_COOKIE_KALVIDRES
             elif self._is_helixmedia_url_candidate(url, url_parts):
-                location['module_modname'] = 'cookie_mod-helixmedia'
+                location['module_modname'] = MODULE_COOKIE_HELIXMEDIA
                 logging.info(f'🎬 Detected HelixMedia URL in description: {url[:80]}...')
 
             # Determine filename based on URL type
@@ -723,12 +729,12 @@ class ResultBuilder:
 
             # Handle embedded Kaltura videos from book chapters
             # Keep module_modname as 'book' so videos are saved inside the book folder
-            if content_type == 'kalvidres_embedded':
+            if content_type == CONTENT_TYPE_KALVIDRES_EMBEDDED:
                 logging.info(f'🎥 Processing embedded Kaltura video: {content_filename}')
                 # Create File entry, override module_modname to trigger yt-dlp in task.py
                 # Path will be: section_name/module_name/content_filepath/content_filename
                 # 需要创建一个修改后的 location 副本，覆盖 module_modname
-                video_location = {**location, 'module_modname': 'cookie_mod-kalvidres'}
+                video_location = {**location, 'module_modname': MODULE_COOKIE_KALVIDRES}
                 file_obj = File(
                     **video_location,
                     content_filepath=content_filepath,  # Use filepath from content (e.g., '/691947/')

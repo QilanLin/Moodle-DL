@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
+from moodle_dl.downloader.kaltura_patterns import MODULE_COOKIE_KALVIDRES
 from moodle_dl.file_classifier import is_optional_metadata_file
 from moodle_dl.moodle.cookie_handler import CookieHandler
 from moodle_dl.moodle.core_handler import CoreHandler
@@ -252,7 +253,7 @@ class MoodleService:
         用于调试 Kalvidres 集成。
         """
         for course in courses:
-            kalvidres_count = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
+            kalvidres_count = len([f for f in course.files if f.module_modname == MODULE_COOKIE_KALVIDRES])
             if kalvidres_count > 0:
                 logging.info(f'✨ Course "{course.fullname}" has {kalvidres_count} Kaltura videos {stage}')
     
@@ -278,7 +279,7 @@ class MoodleService:
         
         # Debug: 检查 Kalvidres 文件在变化中
         for change in changes:
-            kalvidres_in_changes = len([f for f in change.files if f.module_modname == 'cookie_mod-kalvidres'])
+            kalvidres_in_changes = len([f for f in change.files if f.module_modname == MODULE_COOKIE_KALVIDRES])
             if kalvidres_in_changes > 0:
                 logging.info(f'📝 Changes for "{change.fullname}" contains {kalvidres_in_changes} Kaltura videos')
         
@@ -462,7 +463,7 @@ class MoodleService:
                 file, all_mods_classes, config
             )
             
-            is_kalvidres = file.module_modname == 'cookie_mod-kalvidres'
+            is_kalvidres = file.module_modname == MODULE_COOKIE_KALVIDRES
             if is_kalvidres and not modules_conditions_met:
                 kalvidres_filtered_count += 1
                 logging.debug(f'❌ Kalvidres file "{file.content_filename}" filtered by module: {failing_mod}')
@@ -481,7 +482,7 @@ class MoodleService:
         if kalvidres_filtered_count > 0:
             logging.warning(f'⚠️  Filtered out {kalvidres_filtered_count} Kaltura videos due to module download conditions')
         
-        kalvidres_passed = len([f for f in filtered_files if f.module_modname == 'cookie_mod-kalvidres'])
+        kalvidres_passed = len([f for f in filtered_files if f.module_modname == MODULE_COOKIE_KALVIDRES])
         if kalvidres_passed > 0:
             logging.info(f'✅ {kalvidres_passed} Kaltura videos passed all filters for course "{course.fullname}"')
         
@@ -576,7 +577,7 @@ class MoodleService:
                 continue
             
             # Debug: Count kalvidres files before filtering
-            kalvidres_before = len([f for f in course.files if f.module_modname == 'cookie_mod-kalvidres'])
+            kalvidres_before = len([f for f in course.files if f.module_modname == MODULE_COOKIE_KALVIDRES])
             if kalvidres_before > 0:
                 logging.info(f'📊 Course "{course.fullname}" has {kalvidres_before} Kaltura videos BEFORE filtering')
             

@@ -8,6 +8,7 @@ from sqlite3 import Error
 from typing import Any, Dict, List, Optional, Tuple
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.downloader.kaltura_patterns import MODULE_COOKIE_KALVIDRES
 from moodle_dl.types import Course, File, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
 
@@ -995,10 +996,10 @@ class StateRecorder:
                 continue
 
             # Debug: Count kalvidres in current course
-            current_kalvidres = [f for f in current_course.files if f.module_modname == 'cookie_mod-kalvidres']
+            current_kalvidres = [f for f in current_course.files if f.module_modname == MODULE_COOKIE_KALVIDRES]
             if len(current_kalvidres) > 0:
                 logging.info(f'🔍 [get_new_files] Course "{current_course.fullname}" has {len(current_kalvidres)} kalvidres in current_course.files')
-                stored_kalvidres = [f for f in same_course_in_stored.files if f.module_modname == 'cookie_mod-kalvidres']
+                stored_kalvidres = [f for f in same_course_in_stored.files if f.module_modname == MODULE_COOKIE_KALVIDRES]
                 logging.info(f'🔍 [get_new_files] Same course has {len(stored_kalvidres)} kalvidres in stored files')
 
             changed_course = Course(current_course.id, current_course.fullname)
@@ -1025,7 +1026,7 @@ class StateRecorder:
                         
                         matching_file = current_file
                         # Debug: Log if kalvidres file matched
-                        if current_file.module_modname == 'cookie_mod-kalvidres':
+                        if current_file.module_modname == MODULE_COOKIE_KALVIDRES:
                             kalvidres_matched_count += 1
                             logging.debug(f'❌ [get_new_files] Kalvidres "{current_file.content_filename}" matched with stored file')
                             logging.debug(f'   Current: module_id={current_file.module_id}, filename={current_file.content_filename}, filepath={current_file.content_filepath}')
@@ -1034,7 +1035,7 @@ class StateRecorder:
 
                 if matching_file is None:
                     # current_file is a new file
-                    if current_file.module_modname == 'cookie_mod-kalvidres':
+                    if current_file.module_modname == MODULE_COOKIE_KALVIDRES:
                         kalvidres_new_count += 1
                     changed_course.files.append(current_file)
 

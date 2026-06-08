@@ -40,6 +40,36 @@ CDN_HOST = 'cdnapisec.kaltura.com'
 #: Path fragment identifying the Kaltura embed iframe endpoint
 EMBED_IFRAME_PATH = '/embedIframeJs/'
 
+#: Moodle module modname for Kaltura cookie-mod videos (the
+#: standalone kalvidres module type). Also used as the
+#: module_modname on synthetic file rows so the downloader
+#: routes them through the yt-dlp path.
+MODULE_COOKIE_KALVIDRES = 'cookie_mod-kalvidres'
+
+#: Moodle module modname for Helixmedia cookie-mod videos
+MODULE_COOKIE_HELIXMEDIA = 'cookie_mod-helixmedia'
+
+#: Tuple of all cookie-mod module modnames. Used to detect
+#: "needs_moodle_cookies" downloads.
+COOKIE_MOD_MODNAMES = (MODULE_COOKIE_KALVIDRES, MODULE_COOKIE_HELIXMEDIA)
+
+#: Content type for Kaltura videos embedded in book chapters
+#: (or in resource/label module HTML). Files with this type
+#: are turned into cookie_mod-kalvidres files in the result
+#: builder and routed through yt-dlp.
+CONTENT_TYPE_KALVIDRES_EMBEDDED = 'kalvidres_embedded'
+
+#: Synthetic content type for file rows created by the
+#: extract_kaltura_from_html tool. Same as
+#: CONTENT_TYPE_KALVIDRES_EMBEDDED for legacy reasons.
+CONTENT_TYPE_COOKIE_MOD = 'cookie_mod'
+
+#: Filename prefix used by extract_kaltura_from_html when
+#: registering synthetic Kaltura video rows. The entry_id
+#: is appended to make a unique filename that the downloader
+#: can write to.
+KALTURA_VIDEO_FILENAME_PREFIX = 'kaltura_video_'
+
 
 # ---------------------------------------------------------------------------
 # Compiled regexes
@@ -198,3 +228,40 @@ def reconstruct_url_from_entry_id(entry_id: str) -> str:
         f'https://{CDN_HOST}/p/2368101/sp/236810100/embedIframeJs/'
         f'uiconf_id/42864872/partner_id/2368101?entry_id={entry_id}'
     )
+
+
+#: Filename regex for matching the synthetic Kaltura video
+#: filenames written by extract_kaltura_from_html.py and the
+#: downloader. Captures the entry_id in group 1.
+KALTURA_VIDEO_FILENAME_RE = re.compile(
+    re.escape(KALTURA_VIDEO_FILENAME_PREFIX) + r'([^."]+)\.mp4',
+    re.IGNORECASE,
+)
+
+
+def kaltura_video_filename(entry_id: str) -> str:
+    """Build the synthetic local filename for a Kaltura video.
+
+    Example: entry_id='1_a' → 'kaltura_video_1_a.mp4'
+
+    The downloader writes the actual .mp4 file using this
+    name when yt-dlp extracts the video.
+    """
+    return f'{KALTURA_VIDEO_FILENAME_PREFIX}{entry_id}.mp4'
+
+
+def entry_id_from_filename(filename: str) -> str:
+    """Reverse of kaltura_video_filename: extract the entry_id
+    from a synthetic Kaltura video filename.
+
+    Returns the entry_id or an empty string if the filename
+    doesn't match the pattern.
+    """
+    m = KALTURA_VIDEO_FILENAME_RE.search(filename or '')
+    return m.group(1) if m else ''
+
+
+def is_kaltura_synthetic_filename(filename: str) -> bool:
+    """Return True if the filename is a synthetic Kaltura
+    video filename (e.g. 'kaltura_video_1_a.mp4')."""
+    return bool(KALTURA_VIDEO_FILENAME_RE.fullmatch(filename or ''))

@@ -16,6 +16,7 @@ from moodle_dl.downloader.kaltura_patterns import (
     IFRAME_WITH_CLASS_RE,
     LTI_LAUNCH_PATH,
     ENTRY_ID_PATH_RE,
+    CONTENT_TYPE_KALVIDRES_EMBEDDED,
     extract_entry_id,
     is_lti_launch_url,
 )
@@ -279,7 +280,7 @@ class BookMod(MoodleMod):
                                     'fileurl': converted_url,
                                     'filesize': 0,
                                     'timemodified': int(time.time()),
-                                    'type': 'kalvidres_embedded',
+                                    'type': CONTENT_TYPE_KALVIDRES_EMBEDDED,
                                     'mimetype': 'video/mp4',
                                 })
 
@@ -614,17 +615,17 @@ class BookMod(MoodleMod):
                 video_name = f"{chapter_name} - Video {idx}"
 
             # Create a file entry for this Kaltura video
-            # Mark it as 'kalvidres_embedded' so it can be processed by the kalvidres downloader
-            # Use current timestamp to ensure proper change detection (different videos will have different URLs and timestamps)
+            # Mark it with the kalvidres_embedded content type so it
+            # can be processed by the kalvidres downloader
             video_files.append({
                 'filename': video_name,
                 'filepath': '/',
                 'fileurl': video_url,
                 'filesize': 0,
                 'timemodified': int(time.time()),
-                'type': 'kalvidres_embedded',  # Special type for embedded Kaltura videos
+                'type': CONTENT_TYPE_KALVIDRES_EMBEDDED,
                 'mimetype': 'video/mp4',
-                'entry_id': entry_id,  # Store entry ID for reference
+                'entry_id': entry_id,
             })
 
         return video_files

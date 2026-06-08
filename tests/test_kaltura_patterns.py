@@ -9,16 +9,26 @@ sys.path.insert(0, '/Users/linqilan/CodingProjects/moodle/Moodle-DL')
 
 from moodle_dl.downloader.kaltura_patterns import (
     CDN_HOST,
+    CONTENT_TYPE_COOKIE_MOD,
+    CONTENT_TYPE_KALVIDRES_EMBEDDED,
+    COOKIE_MOD_MODNAMES,
     EMBED_IFRAME_PATH,
     ENTRY_ID_PATH_RE,
     ENTRY_ID_QUERY_RE,
     IFRAME_RE,
+    KALTURA_VIDEO_FILENAME_PREFIX,
+    KALTURA_VIDEO_FILENAME_RE,
     LTI_LAUNCH_PATH,
     LTI_SOURCE_RE,
+    MODULE_COOKIE_HELIXMEDIA,
+    MODULE_COOKIE_KALVIDRES,
+    entry_id_from_filename,
     extract_entry_id,
     is_direct_embed_url,
+    is_kaltura_synthetic_filename,
     is_kaltura_url,
     is_lti_launch_url,
+    kaltura_video_filename,
     reconstruct_url_from_entry_id,
 )
 
@@ -156,6 +166,66 @@ class TestReconstructUrl(unittest.TestCase):
         self.assertIn('entry_id=1_test', url)
         self.assertIn(CDN_HOST, url)
         self.assertIn(EMBED_IFRAME_PATH, url)
+
+
+class TestModuleConstants(unittest.TestCase):
+    """Pin the values of the module modname constants so any
+    change triggers an explicit test update."""
+
+    def test_cookie_kalvidres_constant(self):
+        self.assertEqual(MODULE_COOKIE_KALVIDRES, 'cookie_mod-kalvidres')
+
+    def test_cookie_helixmedia_constant(self):
+        self.assertEqual(MODULE_COOKIE_HELIXMEDIA, 'cookie_mod-helixmedia')
+
+    def test_cookie_mod_modnames(self):
+        self.assertEqual(COOKIE_MOD_MODNAMES,
+                         ('cookie_mod-kalvidres', 'cookie_mod-helixmedia'))
+
+    def test_content_type_constants(self):
+        self.assertEqual(CONTENT_TYPE_KALVIDRES_EMBEDDED, 'kalvidres_embedded')
+        self.assertEqual(CONTENT_TYPE_COOKIE_MOD, 'cookie_mod')
+
+
+class TestKalturaVideoFilename(unittest.TestCase):
+    """Pin the synthetic Kaltura video filename pattern."""
+
+    def test_filename_prefix(self):
+        self.assertEqual(KALTURA_VIDEO_FILENAME_PREFIX, 'kaltura_video_')
+
+    def test_kaltura_video_filename(self):
+        self.assertEqual(
+            kaltura_video_filename('1_a'),
+            'kaltura_video_1_a.mp4',
+        )
+
+    def test_kaltura_video_filename_with_dashes(self):
+        # entry_id may contain underscores
+        self.assertEqual(
+            kaltura_video_filename('1_test_video'),
+            'kaltura_video_1_test_video.mp4',
+        )
+
+    def test_entry_id_from_filename(self):
+        self.assertEqual(
+            entry_id_from_filename('kaltura_video_1_a.mp4'),
+            '1_a',
+        )
+
+    def test_entry_id_from_filename_no_match(self):
+        self.assertEqual(entry_id_from_filename('not_kaltura.mp4'), '')
+        self.assertEqual(entry_id_from_filename(''), '')
+
+    def test_is_kaltura_synthetic_filename(self):
+        self.assertTrue(is_kaltura_synthetic_filename('kaltura_video_1_a.mp4'))
+        self.assertFalse(is_kaltura_synthetic_filename('not_kaltura.mp4'))
+        self.assertFalse(is_kaltura_synthetic_filename(''))
+
+    def test_filename_pattern_is_strict(self):
+        # The pattern should only match the exact kaltura_video_*.mp4
+        # shape — not other video filenames.
+        self.assertFalse(is_kaltura_synthetic_filename('kaltura_video_1_a.txt'))
+        self.assertFalse(is_kaltura_synthetic_filename('prefix_kaltura_video_1_a.mp4'))
 
 
 class TestRegexReusability(unittest.TestCase):
