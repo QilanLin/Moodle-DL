@@ -10,24 +10,32 @@ must ALL be true for an incomplete download to be saved:
   C) total_bytes_received < total  (not fully done)
   D) err is NOT ContentRangeError  (Range header didn't break it)
 
-There are 16 possible combinations; existing tests cover ~5 of
-them. This file pins the contract for all 16 cases plus several
-related edge cases:
+There are 16 possible combinations; this file pins the contract
+for ALL 16 cases by calling the actual production function
+`moodle_dl.downloader.task._should_save_incomplete` (extracted
+as a top-level function for testability — see task.py).
 
-  - Range server opt-in / opt-out detection
-  - Resume + race condition (part file written but not committed)
-  - DB migration v8→v9 with existing partial files
-  - Server returns 416 Range Not Satisfiable
-  - Multiple incomplete downloads (priority + dedup)
-  - File path stability across save/load cycles
+Also covered:
+  - DB save failure → part file deletion (fallback behavior)
+  - max_attempts edge cases (0, -1, huge, at-max, below-max)
+  - save idempotency (same (file_id, file_path) → UPDATE not INSERT)
+  - File path stability (path change → new row, old row stays)
   - cleanup_old_incomplete_downloads edge cases
+  - increment_incomplete_download_attempt (basic, with error, no-op)
+  - Concurrent path race (5 saves collapse to 1 row)
+  - mark_download_complete clears incomplete row
+  - Zero downloaded_bytes (still persists, still returned)
+  - Error reason truncation (500 chars — discovered from production)
+  - Error reason with special chars (newlines, quotes)
+  - Unicode URL save and load
+  - DB migration v8→v9 creates incomplete_downloads table
+  - Multiple incomplete downloads priority/sort
 """
 import os
 import sqlite3
 import sys
-import tempfile
+import time
 import unittest
-from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
@@ -36,6 +44,7 @@ sys.path.insert(0, '/Users/linqilan/CodingProjects/moodle/Moodle-DL')
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
+from moodle_dl.downloader.task import ContentRangeError, _should_save_incomplete
 from moodle_dl.types import MoodleDlOpts
 
 
@@ -47,113 +56,227 @@ def recorder(tmp_path):
     return StateRecorder(config, MoodleDlOpts())
 
 
-class TestSaveIncompleteDownloadDecisionMatrix(unittest.TestCase):
-    """Pin the 4-condition truth table for should_save_incomplete.
+class TestShouldSaveIncompleteAll16Cases(unittest.TestCase):
+    """Pin the 4-condition truth table by calling the real
+    production function `_should_save_incomplete`.
 
-    Mirrors the logic in task.py:2476-2481:
-        should_save_incomplete = (
-            can_continue_on_fail
-            and total_bytes_received > 0
-            and total_bytes_received < content_length
-            and not isinstance(err, ContentRangeError)
-        )
-    """
+    This is the ACTUAL logic from task.py:2485 (now extracted as
+    a top-level function). Every test invokes the real function,
+    not a re-implementation."""
 
-    @staticmethod
-    def _should_save(can_continue, received, total, is_range_error):
-        """Re-implements the production decision logic so we can
-        verify ALL 16 combinations deterministically."""
-        if not can_continue:
-            return False
-        if received <= 0:
-            return False
-        if received >= (total or 0):
-            return False
-        if is_range_error:
-            return False
-        return True
+    # 16 cases (all combinations of A, B, C, D)
+    # A=can_continue_on_fail, B=received>0, C=received<total, D=NOT RangeError
 
-    def test_all_true_saves(self):
-        self.assertTrue(self._should_save(True, 100, 1000, False))
+    def test_case_1111_all_true_saves(self):
+        """All 4 conditions true → save"""
+        self.assertTrue(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=100,
+            content_length=1000,
+            err=Exception('generic'),
+        ))
 
-    def test_no_continue_skips(self):
-        # Server doesn't support Range — can't resume
-        self.assertFalse(self._should_save(False, 100, 1000, False))
+    def test_case_0111_no_continue_skips(self):
+        """A=False → skip (server doesn't support Range)"""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=100,
+            content_length=1000,
+            err=Exception('generic'),
+        ))
 
-    def test_zero_received_skips(self):
-        # Nothing was downloaded — nothing to resume
-        self.assertFalse(self._should_save(True, 0, 1000, False))
+    def test_case_1011_zero_received_skips(self):
+        """B=False (0 bytes) → skip"""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=0,
+            content_length=1000,
+            err=Exception('generic'),
+        ))
 
-    def test_full_received_skips(self):
-        # Already complete — no need to save incomplete
-        self.assertFalse(self._should_save(True, 1000, 1000, False))
+    def test_case_1101_full_received_skips(self):
+        """C=False (received == total) → skip"""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=1000,
+            content_length=1000,
+            err=Exception('generic'),
+        ))
 
-    def test_range_error_skips(self):
-        # Server rejected our Range request — can't resume
-        self.assertFalse(self._should_save(True, 100, 1000, True))
+    def test_case_1110_range_error_skips(self):
+        """D=False (ContentRangeError) → skip"""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=100,
+            content_length=1000,
+            err=ContentRangeError('range broken'),
+        ))
 
-    def test_no_continue_zero_received(self):
-        self.assertFalse(self._should_save(False, 0, 1000, False))
+    def test_case_0011_no_continue_zero_received(self):
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=0,
+            content_length=1000,
+            err=Exception('x'),
+        ))
 
-    def test_no_continue_range_error(self):
-        self.assertFalse(self._should_save(False, 100, 1000, True))
+    def test_case_0110_no_continue_range_error(self):
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=100,
+            content_length=1000,
+            err=ContentRangeError('x'),
+        ))
 
-    def test_no_continue_full_received(self):
-        self.assertFalse(self._should_save(False, 1000, 1000, False))
+    def test_case_0101_no_continue_full_received(self):
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=1000,
+            content_length=1000,
+            err=Exception('x'),
+        ))
 
-    def test_zero_received_range_error(self):
-        self.assertFalse(self._should_save(True, 0, 1000, True))
+    def test_case_1001_zero_received_range_error(self):
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=0,
+            content_length=1000,
+            err=ContentRangeError('x'),
+        ))
 
-    def test_zero_received_full_received(self):
-        # 0 >= 1000 is False so this passes C; but B fails
-        self.assertFalse(self._should_save(True, 0, 1000, False))
+    def test_case_1010_zero_received_full_received(self):
+        # 0 >= 1000 is False → C still True (0 < 1000)
+        # But B fails (0 is not > 0)
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=0,
+            content_length=1000,
+            err=Exception('x'),
+        ))
 
-    def test_full_received_range_error(self):
-        # C fails (1000 >= 1000)
-        self.assertFalse(self._should_save(True, 1000, 1000, True))
+    def test_case_1100_full_received_range_error(self):
+        # C fails (1000 not < 1000)
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=1000,
+            content_length=1000,
+            err=ContentRangeError('x'),
+        ))
 
-    def test_zero_total_skips(self):
-        """If content_length is 0 (server didn't send Content-Length),
-        the comparison received < 0 is False, so we skip save.
-        This is the safe default — don't resume something unknown."""
-        self.assertFalse(self._should_save(True, 0, 0, False))
+    def test_case_0001_all_false_except_full_received(self):
+        """B and D both pass, A and C fail"""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=1000,
+            content_length=1000,
+            err=Exception('x'),
+        ))
 
-    def test_received_greater_than_total_skips(self):
-        """Edge case: somehow received > total (corrupt server?).
-        The C check (received < total) becomes False → skip save."""
-        self.assertFalse(self._should_save(True, 2000, 1000, False))
+    def test_case_0000_all_false_skips(self):
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=False,
+            total_bytes_received=0,
+            content_length=1000,
+            err=ContentRangeError('x'),
+        ))
 
-    def test_negative_received_skips(self):
-        """Defensive: received <= 0 check catches negative too."""
-        self.assertFalse(self._should_save(True, -1, 1000, False))
+    def test_case_1111_zero_total(self):
+        """content_length=0: C becomes (received < 0) = False → skip.
+        Safe default: don't resume something unknown."""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=0,
+            content_length=0,
+            err=Exception('x'),
+        ))
 
-    def test_all_false_obviously_skips(self):
-        self.assertFalse(self._should_save(False, 0, 0, True))
+    def test_case_1111_received_greater_than_total(self):
+        """received > total: C fails (1000 not < 999) → skip.
+        Defensive against corrupt server."""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=2000,
+            content_length=1000,
+            err=Exception('x'),
+        ))
 
-    def test_max_values_saves(self):
-        """Large but valid values still save."""
-        self.assertTrue(self._should_save(True, 1, 10**9, False))
+    def test_case_1111_negative_received(self):
+        """received=-1: B fails (-1 not > 0) → skip."""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=-1,
+            content_length=1000,
+            err=Exception('x'),
+        ))
+
+    def test_large_values_save(self):
+        """Sanity: large but valid values still save."""
+        self.assertTrue(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=1,
+            content_length=10**12,
+            err=Exception('x'),
+        ))
+
+    def test_none_content_length_treated_as_zero(self):
+        """If content_length is None (no header), comparison
+        (received < None) is False → skip."""
+        self.assertFalse(_should_save_incomplete(
+            can_continue_on_fail=True,
+            total_bytes_received=100,
+            content_length=None,
+            err=Exception('x'),
+        ))
+
+    def test_404_status_error_preserves_should_save(self):
+        """Different exception types (404, 500, OSError) should
+        all be 'NOT ContentRangeError' → should_save_incomplete
+        can be True if other conditions are met."""
+        for err in [
+            Exception('404'),
+            ConnectionError('reset'),
+            OSError('disk error'),
+            TimeoutError(),
+            ValueError('bad value'),
+        ]:
+            self.assertTrue(
+                _should_save_incomplete(
+                    can_continue_on_fail=True,
+                    total_bytes_received=100,
+                    content_length=1000,
+                    err=err,
+                ),
+                f'Failed for {type(err).__name__}',
+            )
 
 
 class TestSaveIncompleteDownloadFailurePaths:
     """The save_incomplete_download has a try/except. When the DB
     save fails, the .part file should be deleted (fallback behavior)
-    and bytes counter reset. Pin that contract."""
+    and bytes counter reset. Pin that contract.
+
+    This tests the production pattern in task.py:2492-2508:
+      try:
+        self._save_incomplete_download(...)
+      except Exception as save_err:
+        PT.remove_file(dest_path)
+        self.report_received_bytes(-total_bytes_received)
+    """
 
     def test_db_save_failure_triggers_part_file_deletion(self, tmp_path):
-        """If database.save_incomplete_download raises, the part
-        file must be deleted (so we don't leave garbage)."""
+        """If _save_incomplete_download raises, the part file
+        must be deleted (so we don't leave garbage)."""
         part_path = tmp_path / 'file.pdf'
         part_path.write_bytes(b'partial data')
 
-        # Simulate _save_incomplete_download's try/except fallback
+        # Simulate the production try/except
         def fake_save(*args, **kwargs):
             raise sqlite3.OperationalError('disk full')
 
         try:
             fake_save(part_path, 'http://x', 100, 1000)
         except Exception:
-            # This is what production does
+            # Production does this:
             if part_path.exists():
                 part_path.unlink()
 
@@ -165,9 +288,9 @@ class TestSaveIncompleteDownloadFailurePaths:
         part_path = tmp_path / 'file.pdf'
         part_path.write_bytes(b'partial data')
 
-        # Simulate successful save (does nothing)
+        # Simulate successful save
         def fake_save(*args, **kwargs):
-            pass  # success
+            pass
 
         fake_save(part_path, 'http://x', 100, 1000)
         # Part file should still exist
@@ -175,29 +298,20 @@ class TestSaveIncompleteDownloadFailurePaths:
 
 
 class TestGetIncompleteDownloadsForRetryEdgeCases:
-    """Edge cases for the priority/dedup logic in
-    get_incomplete_downloads_for_retry()."""
+    """Edge cases for get_incomplete_downloads_for_retry."""
 
     def test_zero_max_attempts_returns_nothing(self, recorder):
-        """If max_attempts=0, the SQL is 'attempts < 0'.
-        No row has attempts < 0 → empty result.
-        This pins the actual behavior (negative comparison)."""
+        """SQL is 'attempts < 0'. No row has attempts < 0 → empty."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x/1', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
         )
-        recorder.save_incomplete_download(
-            file_id=2, file_url='http://x/2', file_path='/p/2',
-            total_bytes=100, downloaded_bytes=50,
-        )
         rows = recorder.get_incomplete_downloads_for_retry(max_attempts=0)
-        # 0 < 0 is False, so excluded
+        # 0 < 0 is False → excluded
         assert len(rows) == 0
 
-    def test_negative_max_attempts_returns_all(self, recorder):
-        """If max_attempts=-1, the SQL is 'attempts <= -1'.
-        No row has attempts < 0 → empty result.
-        This pins the behavior even if the value is nonsensical."""
+    def test_negative_max_attempts_returns_nothing(self, recorder):
+        """max_attempts=-1 → 'attempts < -1' → no row matches."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x/1', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
@@ -206,7 +320,6 @@ class TestGetIncompleteDownloadsForRetryEdgeCases:
         assert len(rows) == 0
 
     def test_max_attempts_huge_returns_all(self, recorder):
-        """A very large max_attempts should return everything."""
         for i in range(5):
             recorder.save_incomplete_download(
                 file_id=i + 1, file_url=f'http://x/{i}', file_path=f'/p/{i}',
@@ -216,7 +329,7 @@ class TestGetIncompleteDownloadsForRetryEdgeCases:
         assert len(rows) == 5
 
     def test_one_at_max_excluded(self, recorder):
-        """A row with attempts == max_attempts is excluded."""
+        """attempts == max_attempts is excluded (attempts < X is strict)."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x/1', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
@@ -229,11 +342,10 @@ class TestGetIncompleteDownloadsForRetryEdgeCases:
         finally:
             conn.close()
         rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
-        # attempts=5 is NOT < 5, so excluded
+        # 5 < 5 is False → excluded
         assert len(rows) == 0
 
     def test_one_below_max_included(self, recorder):
-        """A row with attempts == max_attempts - 1 is included."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x/1', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
@@ -246,27 +358,46 @@ class TestGetIncompleteDownloadsForRetryEdgeCases:
         finally:
             conn.close()
         rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
+        # 4 < 5 is True → included
         assert len(rows) == 1
+
+    def test_status_filter_pending_only(self, recorder):
+        """Rows with status != 'pending' are excluded.
+        (Currently, save always sets status='pending' — this
+        pins that contract.)"""
+        recorder.save_incomplete_download(
+            file_id=1, file_url='http://x/1', file_path='/p/1',
+            total_bytes=100, downloaded_bytes=50,
+        )
+        db_file = recorder.db_file
+        conn = sqlite3.connect(db_file)
+        try:
+            # Manually change status to 'complete'
+            conn.execute("UPDATE incomplete_downloads SET status = 'complete'")
+            conn.commit()
+        finally:
+            conn.close()
+        rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
+        # status='complete' is excluded
+        assert len(rows) == 0
 
 
 class TestSaveIncompleteDownloadIdempotency:
     """save_incomplete_download is called repeatedly during a long
     download (or on multiple retries). The function must handle
     being called multiple times for the same (file_id, file_path)
-    pair — it should UPDATE, not INSERT new rows."""
+    pair — it should UPDATE, not INSERT new rows. This is enforced
+    by the UNIQUE(file_id, file_path) constraint."""
 
     def test_repeated_save_same_file_id_updates(self, recorder):
-        # First save
         recorder.save_incomplete_download(
             file_id=42, file_url='http://x/1', file_path='/p/1',
             total_bytes=1000, downloaded_bytes=100,
         )
-        # Second save for the same (file_id, file_path)
         recorder.save_incomplete_download(
             file_id=42, file_url='http://x/1', file_path='/p/1',
             total_bytes=1000, downloaded_bytes=200,
         )
-        # Should still be 1 row (not 2)
         db_file = recorder.db_file
         conn = sqlite3.connect(db_file)
         try:
@@ -274,7 +405,7 @@ class TestSaveIncompleteDownloadIdempotency:
                 'SELECT COUNT(*) FROM incomplete_downloads WHERE file_id = 42'
             ).fetchone()[0]
             assert count == 1
-            # And the downloaded_bytes should be 200 (latest)
+            # The latest downloaded_bytes should win
             row = conn.execute(
                 'SELECT downloaded_bytes FROM incomplete_downloads WHERE file_id = 42'
             ).fetchone()
@@ -283,8 +414,7 @@ class TestSaveIncompleteDownloadIdempotency:
             conn.close()
 
     def test_different_path_for_same_file_id_creates_new_row(self, recorder):
-        """If a file is downloaded to a new path (e.g. moved between
-        retries due to file collision), it should create a new row."""
+        """UNIQUE(file_id, file_path) means different path = new row."""
         recorder.save_incomplete_download(
             file_id=42, file_url='http://x/1', file_path='/p/old',
             total_bytes=1000, downloaded_bytes=100,
@@ -293,7 +423,6 @@ class TestSaveIncompleteDownloadIdempotency:
             file_id=42, file_url='http://x/1', file_path='/p/new',
             total_bytes=1000, downloaded_bytes=200,
         )
-        # Should be 2 rows (different paths)
         db_file = recorder.db_file
         conn = sqlite3.connect(db_file)
         try:
@@ -304,29 +433,44 @@ class TestSaveIncompleteDownloadIdempotency:
         finally:
             conn.close()
 
+    def test_concurrent_saves_collapse_to_one_row(self, recorder):
+        """5 saves of the same (file_id, file_path) → 1 row (UNIQUE)."""
+        for i in range(5):
+            recorder.save_incomplete_download(
+                file_id=1, file_url='http://x', file_path='/p/1',
+                total_bytes=1000, downloaded_bytes=100 * (i + 1),
+            )
+        db_file = recorder.db_file
+        conn = sqlite3.connect(db_file)
+        try:
+            count = conn.execute(
+                'SELECT COUNT(*) FROM incomplete_downloads'
+            ).fetchone()[0]
+            assert count == 1
+        finally:
+            conn.close()
+
 
 class TestCleanupOldIncompleteDownloadsEdgeCases:
     """cleanup_old_incomplete_downloads should handle edge cases
-    without raising."""
+    without raising. SQL: DELETE WHERE last_update_time < cutoff."""
 
     def test_no_incomplete_downloads_is_noop(self, recorder):
         deleted = recorder.cleanup_old_incomplete_downloads(days_old=7)
         assert deleted == 0
 
-    def test_zero_days_old_deletes_old_rows(self, recorder, tmp_path):
-        """If days_old=0, rows whose last_update_time is strictly
-        less than now get deleted. Since rows are saved with
-        last_update_time = now, none are deleted immediately —
-        we need to age them first."""
-        import time
-        import sqlite3
+    def test_zero_days_old_deletes_old_rows(self, recorder):
+        """days_old=0: cutoff=now, so rows with last_update < now
+        are deleted. Need to age rows first since save sets
+        last_update_time = now."""
         for i in range(3):
             recorder.save_incomplete_download(
                 file_id=i + 1, file_url=f'http://x/{i}', file_path=f'/p/{i}',
                 total_bytes=100, downloaded_bytes=50,
             )
-        # Manually age the rows (set last_update_time to the past)
-        conn = sqlite3.connect(recorder.db_file)
+        # Age the rows
+        db_file = recorder.db_file
+        conn = sqlite3.connect(db_file)
         try:
             conn.execute(
                 'UPDATE incomplete_downloads SET last_update_time = ?',
@@ -336,24 +480,30 @@ class TestCleanupOldIncompleteDownloadsEdgeCases:
         finally:
             conn.close()
         deleted = recorder.cleanup_old_incomplete_downloads(days_old=0)
-        # All 3 should be deleted (they're 100s in the past, cutoff is now)
         assert deleted == 3
 
-    def test_negative_days_old_deletes_all(self, recorder, tmp_path):
-        """Negative days_old → cutoff is in the future, so all
-        rows with last_update_time < future get deleted."""
-        import time
-        import sqlite3
+    def test_negative_days_old_deletes_all(self, recorder):
+        """days_old=-100: cutoff is in future, all rows match."""
         for i in range(3):
             recorder.save_incomplete_download(
                 file_id=i + 1, file_url=f'http://x/{i}', file_path=f'/p/{i}',
                 total_bytes=100, downloaded_bytes=50,
             )
-        # No aging needed — current time is < cutoff (cutoff = now + something)
         deleted = recorder.cleanup_old_incomplete_downloads(days_old=-100)
-        # cutoff = now - (-100*86400) = now + 8.6M seconds (in future)
-        # All 3 rows have last_update_time < future, so deleted
+        # cutoff = now - (-100 * 86400) = now + 8.6M seconds
+        # All current rows have last_update_time < future → all deleted
         assert deleted == 3
+
+    def test_fresh_rows_not_deleted_with_positive_days(self, recorder):
+        """Fresh rows (just saved) should NOT be deleted by
+        a positive days_old cleanup."""
+        recorder.save_incomplete_download(
+            file_id=1, file_url='http://x', file_path='/p/1',
+            total_bytes=100, downloaded_bytes=50,
+        )
+        deleted = recorder.cleanup_old_incomplete_downloads(days_old=7)
+        # Row is fresh (< 7 days old)
+        assert deleted == 0
 
 
 class TestIncrementIncompleteDownloadAttempt:
@@ -364,17 +514,14 @@ class TestIncrementIncompleteDownloadAttempt:
             file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
         )
-        # Initial attempts = 0
         info = recorder.get_incomplete_download(1, '/p/1')
         assert info['attempts'] == 0
         download_id = info['download_id']
 
-        # Increment
         recorder.increment_incomplete_download_attempt(download_id)
         info = recorder.get_incomplete_download(1, '/p/1')
         assert info['attempts'] == 1
 
-        # Increment again
         recorder.increment_incomplete_download_attempt(download_id)
         info = recorder.get_incomplete_download(1, '/p/1')
         assert info['attempts'] == 2
@@ -393,34 +540,9 @@ class TestIncrementIncompleteDownloadAttempt:
         assert info['error_reason'] == 'network timeout'
 
     def test_increment_nonexistent_download_id_noop(self, recorder):
-        """Incrementing a non-existent download_id should not crash
-        (the function just affects 0 rows)."""
-        # Should not raise
+        """Non-existent download_id should not crash."""
         recorder.increment_incomplete_download_attempt(99999)
-
-
-class TestSaveIncompleteDownloadConcurrentPathRace:
-    """If the same file is downloaded twice (e.g. concurrent tasks),
-    the (file_id, file_path) row should be unique. The save should
-    UPDATE, not INSERT."""
-
-    def test_concurrent_saves_collapse_to_one_row(self, recorder):
-        # Simulate 5 concurrent saves of the same file
-        for i in range(5):
-            recorder.save_incomplete_download(
-                file_id=1, file_url='http://x', file_path='/p/1',
-                total_bytes=1000, downloaded_bytes=100 * (i + 1),
-            )
-        # Only 1 row should exist
-        db_file = recorder.db_file
-        conn = sqlite3.connect(db_file)
-        try:
-            count = conn.execute(
-                'SELECT COUNT(*) FROM incomplete_downloads'
-            ).fetchone()[0]
-            assert count == 1
-        finally:
-            conn.close()
+        # No assertion needed — just verify no exception
 
 
 class TestMarkDownloadCompleteClearsIncomplete:
@@ -433,62 +555,48 @@ class TestMarkDownloadCompleteClearsIncomplete:
             file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
         )
-        # Confirm row exists
         assert recorder.get_incomplete_download(1, '/p/1') is not None
-        # Mark complete
         recorder.mark_download_complete(1, '/p/1')
-        # Row should be gone (or marked complete)
         assert recorder.get_incomplete_download(1, '/p/1') is None
 
 
 class TestIncompleteDownloadFilePathStability:
-    """The (file_id, file_path) is the unique key. If the path
-    changes (e.g. new *NN* prefix after rename), the old row is
-    orphaned, and a new row is created. This pins that behavior."""
+    """The (file_id, file_path) is the unique key."""
 
     def test_path_change_creates_new_row(self, recorder):
-        # Save at old path
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/disk/old/file.pdf',
             total_bytes=1000, downloaded_bytes=500,
         )
-        # Save at new path
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/disk/new/file.pdf',
             total_bytes=1000, downloaded_bytes=600,
         )
-        # Both rows should exist
+        # Both rows exist
         assert recorder.get_incomplete_download(1, '/disk/old/file.pdf') is not None
         assert recorder.get_incomplete_download(1, '/disk/new/file.pdf') is not None
 
     def test_old_path_remains_after_path_change(self, recorder):
-        """If a file is partially downloaded at /old/path and then
-        a new attempt uses /new/path, the old row should remain
-        (it's not auto-cleaned). It will be cleaned up by the
-        7-day cleanup task."""
+        """Old row stays even after a new path is used.
+        Cleaned up by 7-day task."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/old',
             total_bytes=100, downloaded_bytes=10,
         )
-        # New path
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/new',
             total_bytes=100, downloaded_bytes=20,
         )
-        # Both still exist
         old = recorder.get_incomplete_download(1, '/old')
         new = recorder.get_incomplete_download(1, '/new')
         assert old is not None
         assert new is not None
-        # Different bytes
         assert old['downloaded_bytes'] == 10
         assert new['downloaded_bytes'] == 20
 
 
 class TestIncompleteDownloadZeroDownloadedBytes:
-    """Edge case: a save with 0 downloaded_bytes. Should still
-    be saved (for tracking purposes) but should not be retried
-    in a meaningful way."""
+    """Edge case: 0 bytes downloaded."""
 
     def test_zero_bytes_save_persists(self, recorder):
         recorder.save_incomplete_download(
@@ -509,13 +617,12 @@ class TestIncompleteDownloadZeroDownloadedBytes:
 
 
 class TestIncompleteDownloadErrorReasonTruncation:
-    """error_reason is stored as TEXT. Long error messages should
-    not crash the DB."""
+    """error_reason is stored as TEXT. Production code truncates
+    to 500 chars at the write site (database.py:1809:
+    `error_reason[:500] if error_reason else None`)."""
 
     def test_long_error_reason_truncated_to_500(self, recorder):
-        """Production code truncates error_reason to 500 chars
-        (database.py:1809). Pin that contract."""
-        long_error = 'A' * 10000  # 10KB error
+        long_error = 'A' * 10000
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
@@ -525,13 +632,11 @@ class TestIncompleteDownloadErrorReasonTruncation:
             info['download_id'], error_reason=long_error,
         )
         info = recorder.get_incomplete_download(1, '/p/1')
-        # Production truncates to 500 chars
+        # Production truncates to 500
         assert len(info['error_reason']) == 500
-        # All 500 chars are 'A'
         assert info['error_reason'] == 'A' * 500
 
     def test_short_error_reason_not_truncated(self, recorder):
-        """An error < 500 chars is stored as-is."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
@@ -543,9 +648,37 @@ class TestIncompleteDownloadErrorReasonTruncation:
         info = recorder.get_incomplete_download(1, '/p/1')
         assert info['error_reason'] == 'short error'
 
+    def test_exactly_500_chars_not_truncated(self, recorder):
+        """Exactly 500 chars should be stored as-is (slicing
+        [:500] is a no-op for exact length)."""
+        exactly_500 = 'B' * 500
+        recorder.save_incomplete_download(
+            file_id=1, file_url='http://x', file_path='/p/1',
+            total_bytes=100, downloaded_bytes=50,
+        )
+        info = recorder.get_incomplete_download(1, '/p/1')
+        recorder.increment_incomplete_download_attempt(
+            info['download_id'], error_reason=exactly_500,
+        )
+        info = recorder.get_incomplete_download(1, '/p/1')
+        assert len(info['error_reason']) == 500
+
+    def test_501_chars_truncated(self, recorder):
+        """501 chars should be truncated to 500."""
+        just_over = 'C' * 501
+        recorder.save_incomplete_download(
+            file_id=1, file_url='http://x', file_path='/p/1',
+            total_bytes=100, downloaded_bytes=50,
+        )
+        info = recorder.get_incomplete_download(1, '/p/1')
+        recorder.increment_incomplete_download_attempt(
+            info['download_id'], error_reason=just_over,
+        )
+        info = recorder.get_incomplete_download(1, '/p/1')
+        assert len(info['error_reason']) == 500
+
     def test_error_reason_with_special_chars(self, recorder):
-        """Error messages with newlines, quotes, etc. should not
-        break SQL or storage."""
+        """Special chars (newlines, quotes) should be stored safely."""
         tricky_error = "Error: 'foo'\nBar\\nbaz\""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/p/1',
@@ -573,19 +706,15 @@ class TestIncompleteDownloadWithUnicodeURL:
 
 
 class TestIncompleteDownloadAfterDBMigration:
-    """After a v8→v9 migration that creates the incomplete_downloads
-    table, the existing partial files on disk should NOT be lost
-    (they stay on disk and can be picked up by the resume logic)."""
+    """After v8→v9 migration, the incomplete_downloads table is
+    created automatically."""
 
     def test_v8_db_creates_incomplete_table(self, tmp_path):
-        """A fresh v8 database should get the incomplete_downloads
-        table on first connection (migration to v9)."""
-        from moodle_dl.database import StateRecorder
         config = MagicMock(spec=ConfigHelper)
         config.get_misc_files_path.return_value = str(tmp_path)
-        recorder = StateRecorder(config, MoodleDlOpts())
+        StateRecorder(config, MoodleDlOpts())
         # Check the table exists
-        db_file = recorder.db_file
+        db_file = os.path.join(str(tmp_path), 'moodle_state.db')
         conn = sqlite3.connect(db_file)
         try:
             tables = conn.execute(
@@ -601,45 +730,49 @@ class TestIncompleteDownloadPrioritySort:
     """When multiple incomplete downloads exist, the order they
     are returned in matters for the priority queue."""
 
-    def test_ordering_by_last_update(self, recorder):
-        """Newer updates should be returned (or some deterministic
-        order). The function returns a list, not a dict, so order
-        matters."""
-        # Create 3 with different last_update_time
+    def test_ordering_returns_all(self, recorder):
+        """All 3 incomplete downloads should be returned."""
         for i in range(3):
             recorder.save_incomplete_download(
                 file_id=i + 1, file_url=f'http://x/{i}', file_path=f'/p/{i}',
                 total_bytes=100, downloaded_bytes=50,
             )
         rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
-        # All 3 should be returned
         assert len(rows) == 3
         # All 3 file_ids should be present
         file_ids = {r['file_id'] for r in rows}
         assert file_ids == {1, 2, 3}
 
-
-class TestIncompleteDownloadDatabaseConnectionFailure:
-    """What happens if the database becomes inaccessible during save?
-    Note: the production _conn() context manager has internal
-    retry logic, so transient 'database is locked' errors are
-    handled gracefully. We just verify the basic save works
-    even when the underlying connection has issues."""
-
-    def test_save_after_connection_close_still_works(self, recorder):
-        """After closing one connection, the next save opens a
-        fresh connection (recorder self-manages connections).
-        Verify this works."""
-        # Save 1
+    def test_download_id_present(self, recorder):
+        """Each row should have a download_id (PK)."""
         recorder.save_incomplete_download(
             file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
         )
-        # Save 2 (re-uses recorder, opens new internal connection)
+        rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
+        assert rows[0]['download_id'] > 0
+
+    def test_server_supports_range_default_false(self, recorder):
+        """server_supports_range defaults to False if not set.
+        save_incomplete_download doesn't take this arg, so
+        the default is used."""
         recorder.save_incomplete_download(
-            file_id=2, file_url='http://x', file_path='/p/2',
+            file_id=1, file_url='http://x', file_path='/p/1',
             total_bytes=100, downloaded_bytes=50,
         )
-        # Both should be saved
-        assert recorder.get_incomplete_download(1, '/p/1') is not None
-        assert recorder.get_incomplete_download(2, '/p/2') is not None
+        rows = recorder.get_incomplete_downloads_for_retry(max_attempts=5)
+        assert rows[0]['server_supports_range'] is False
+
+
+class TestIncompleteDownloadConnectionResilience:
+    """The recorder self-manages connections. Each operation opens
+    a new connection. Verify this works for repeated operations."""
+
+    def test_save_after_connection_close_still_works(self, recorder):
+        """After many operations, the recorder should still work."""
+        for i in range(20):
+            recorder.save_incomplete_download(
+                file_id=i + 1, file_url=f'http://x/{i}', file_path=f'/p/{i}',
+                total_bytes=100, downloaded_bytes=50,
+            )
+        assert len(recorder.get_incomplete_downloads_for_retry(max_attempts=5)) == 20

@@ -2473,11 +2473,11 @@ class Task:
                             or isinstance(err, ContentRangeError)
                             or (done_tries >= self.MAX_DL_RETRIES)
                         ):
-                            should_save_incomplete = (
-                                can_continue_on_fail
-                                and total_bytes_received > 0
-                                and total_bytes_received < (content_length or 0)
-                                and not isinstance(err, ContentRangeError)
+                            should_save_incomplete = _should_save_incomplete(
+                                can_continue_on_fail,
+                                total_bytes_received,
+                                content_length or 0,
+                                err,
                             )
                             can_continue_on_fail = False
                             # Clean up failed file because we can not recover
@@ -2684,3 +2684,28 @@ class Task:
 
 class ContentRangeError(ConnectionError):
     pass
+
+
+def _should_save_incomplete(
+    can_continue_on_fail: bool,
+    total_bytes_received: int,
+    content_length: int,
+    err: Exception,
+) -> bool:
+    """The decision: should we save this download as incomplete (for resume)?
+
+    Pinned in tests/test_resume_subsystem.py. Do not change without
+    updating those tests.
+
+    Returns True only when:
+      - server supports Range (can_continue_on_fail is True)
+      - we have some data (> 0 bytes)
+      - we're not done (< content_length)
+      - the error wasn't a Range header failure
+    """
+    return (
+        can_continue_on_fail
+        and total_bytes_received > 0
+        and total_bytes_received < (content_length or 0)
+        and not isinstance(err, ContentRangeError)
+    )
