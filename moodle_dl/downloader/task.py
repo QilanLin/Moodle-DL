@@ -35,6 +35,117 @@ from moodle_dl.downloader.kaltura_patterns import (
     COOKIE_MOD_MODNAMES,
     MODULE_COOKIE_KALVIDRES,
 )
+
+
+# ---------------------------------------------------------------------------
+# Part-file resume infrastructure
+# ---------------------------------------------------------------------------
+#: Suffix used for in-progress (partial) downloads. A complete file
+#: never has this suffix. The atomic rename pattern means:
+#:   download in progress: foo.pdf.part
+#:   kill mid-download:     foo.pdf.part (on disk, no final file)
+#:   resume / complete:     foo.pdf (final, atomic rename)
+PART_FILE_SUFFIX = '.part'
+
+
+def dest_path_to_part_path(dest_path: str) -> str:
+    """Return the .part path for a given final destination path.
+
+    Idempotent: calling on an already-`.part` path returns it
+    unchanged. This avoids accidentally double-suffixing."""
+    if not dest_path:
+        return '.part'
+    if dest_path.endswith(PART_FILE_SUFFIX):
+        return dest_path
+    return dest_path + PART_FILE_SUFFIX
+
+
+def validate_part_file_size(part_path: str, expected_total: int) -> tuple:
+    """Decide what to do with an existing .part file.
+
+    Returns:
+        (is_valid, action) where:
+        - is_valid: True if part file can be reused, False if it must
+          be discarded.
+        - action: one of 'resume', 'rename_to_final',
+          'delete_and_redownload'.
+
+    Logic:
+      - If expected_total is 0 (server didn't report size): treat any
+        non-empty part as resumable. Empty part = start over.
+      - If part size == expected_total: complete (rename to final).
+      - If part size < expected_total: resumable via Range.
+      - If part size > expected_total: corrupt (delete and
+        re-download).
+    """
+    try:
+        part_size = os.path.getsize(part_path)
+    except OSError:
+        return False, 'delete_and_redownload'
+
+    if part_size == 0:
+        return False, 'delete_and_redownload'
+
+    if expected_total == 0:
+        # Server didn't tell us the total size. We have some data —
+        # try to resume.
+        return True, 'resume'
+
+    if part_size == expected_total:
+        return True, 'rename_to_final'
+
+    if part_size < expected_total:
+        return True, 'resume'
+
+    # part_size > expected_total (corrupt or wrong file)
+    return False, 'delete_and_redownload'
+
+
+def scan_for_orphan_part_files(workspace_root: str, recorder) -> List[tuple]:
+    """Walk workspace_root, find ``*.part`` files, classify them.
+
+    Returns a list of ``(part_path, expected_total, action)`` tuples
+    for every ``.part`` file whose ``(file_id, file_path)`` is NOT in
+    the ``incomplete_downloads`` table (i.e., orphans left by a
+    previous run that died before ``save_incomplete_download`` ran).
+
+    Files already in the table are skipped (the regular resume path
+    handles them).
+    """
+    import sqlite3
+    orphans = []
+    for root, dirs, files in os.walk(workspace_root):
+        # Skip macOS metadata and hidden dirs
+        dirs[:] = [d for d in dirs if not d.startswith('._') and not d.startswith('.')]
+        for f in files:
+            if not f.endswith(PART_FILE_SUFFIX) or f.startswith('._'):
+                continue
+            full = os.path.join(root, f)
+            # Try to find an existing incomplete_downloads row for
+            # this path. The DB stores the .part path in file_path.
+            try:
+                conn = sqlite3.connect(recorder.db_file)
+                cur = conn.cursor()
+                cur.execute(
+                    """SELECT downloaded_bytes, total_bytes
+                       FROM incomplete_downloads
+                       WHERE file_path = ? AND status = 'pending'""",
+                    (full,),
+                )
+                row = cur.fetchone()
+                conn.close()
+            except Exception:
+                row = None
+            if row is not None:
+                # Already tracked; regular path handles it
+                continue
+            # Orphan: figure out expected_total from disk size
+            try:
+                part_size = os.path.getsize(full)
+            except OSError:
+                continue
+            orphans.append((full, part_size, 'unknown'))
+    return orphans
 from moodle_dl.downloader.kaltura_url import (
     KalturaAuthenticationError,
     KalturaCDNError,
@@ -2244,7 +2355,12 @@ class Task:
 
         # 清理失败的文件
         # 注意: download_url 中已经实现了智能的文件保留逻辑（断点续传）
-        PT.remove_file(self.file.saved_to)
+        # 🔧 Part-file resume: also remove the .part file
+        for path_to_remove in (
+            self.file.saved_to,
+            dest_path_to_part_path(self.file.saved_to or ''),
+        ):
+            PT.remove_file(path_to_remove)
         self.report_received_bytes(-self.status.bytes_downloaded)
         self.report_failure()
 
@@ -2335,7 +2451,9 @@ class Task:
                 logging.debug('[%d] Warning got status %s', self.task_id, resp.status)
 
             # 使用传入的 dest_path 参数而不是 self.destination
-            file_obj = file_obj or await aiofiles.open(dest_path, "wb")
+            # 🔧 Part-file resume: 用 .part 后缀写, 完成时 atomically rename
+            part_path = dest_path_to_part_path(dest_path)
+            file_obj = file_obj or await aiofiles.open(part_path, "wb")
             
             try:
                 async for chunk in resp.content.iter_chunked(self.CHUNK_SIZE):
@@ -2379,19 +2497,24 @@ class Task:
         with Timer() as watch:
             async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
                 # 尝试恢复未完成的下载（仅在第一次尝试时）
-                if not resume_attempted and os.path.exists(dest_path):
-                    resume_attempted = True
-                    try:
-                        resumed_bytes, resumed_file_obj = await self._resume_incomplete_download(
-                            dest_path, dl_url, session, headers, ssl_context
-                        )
-                        if resumed_file_obj is not None and resumed_bytes > 0:
-                            total_bytes_received = resumed_bytes
-                            file_obj = resumed_file_obj
-                            can_continue_on_fail = True
-                            headers['Range'] = f'bytes={total_bytes_received}-'
-                    except Exception as resume_err:
-                        logging.debug('[%d] 尝试恢复下载时出错: %s', self.task_id, resume_err)
+                # 🔧 Part-file resume: the part file lives at .part suffix;
+                # the DB row recorded dest_path.part. Pass the part
+                # path explicitly to avoid the size mismatch.
+                if not resume_attempted:
+                    part_path = dest_path_to_part_path(dest_path)
+                    if os.path.exists(part_path):
+                        resume_attempted = True
+                        try:
+                            resumed_bytes, resumed_file_obj = await self._resume_incomplete_download(
+                                part_path, dl_url, session, headers, ssl_context
+                            )
+                            if resumed_file_obj is not None and resumed_bytes > 0:
+                                total_bytes_received = resumed_bytes
+                                file_obj = resumed_file_obj
+                                can_continue_on_fail = True
+                                headers['Range'] = f'bytes={total_bytes_received}-'
+                        except Exception as resume_err:
+                            logging.debug('[%d] 尝试恢复下载时出错: %s', self.task_id, resume_err)
                 
                 while done_tries < self.MAX_DL_RETRIES:
                     try:
@@ -2444,6 +2567,21 @@ class Task:
                         if file_obj is not None and not file_obj.closed:
                             await file_obj.close()
 
+                        # 🔧 Part-file resume: atomic rename .part → final
+                        part_path = dest_path_to_part_path(dest_path)
+                        if part_path != dest_path and os.path.exists(part_path):
+                            try:
+                                os.replace(part_path, dest_path)
+                                logging.debug(
+                                    '[%d] Atomically renamed %s → %s',
+                                    self.task_id, part_path, dest_path,
+                                )
+                            except OSError as rename_err:
+                                logging.warning(
+                                    '[%d] Failed to rename %s to %s: %s',
+                                    self.task_id, part_path, dest_path, rename_err,
+                                )
+
                         if content_length >= 0 and total_bytes_received < content_length:
                             raise ContentTooShortError(
                                 f'[{self.task_id}] Download incomplete: Got only {format_bytes(total_bytes_received)}'
@@ -2490,25 +2628,34 @@ class Task:
                             # remember that the file started downloading, and continue downloading
                             # on next run instead of deleting it.
                             if should_save_incomplete:
-                                # 保存到数据库用于下次续传
+                                # 저장到数据库用于下次续传
+                                # 🔧 Part-file resume: record the .part path so
+                                # the next run can find and resume it
+                                part_path = dest_path_to_part_path(dest_path)
                                 try:
                                     self._save_incomplete_download(
-                                        dest_path, dl_url, total_bytes_received, content_length or 0
+                                        part_path, dl_url, total_bytes_received, content_length or 0
                                     )
                                     logging.warning(
-                                        '[%d] 下载中断，已保存 %s 字节，将在下次重试时继续下载',
+                                        '[%d] 下载中断，已保存 %s 字节到 %s，将在下次重试时继续下载',
                                         self.task_id, 
-                                        format_bytes(total_bytes_received)
+                                        format_bytes(total_bytes_received),
+                                        part_path,
                                     )
                                 except Exception as save_err:
-                                    logging.error('[%d] 保存中断下载记录失败: %s', self.task_id, save_err)
+                                    logging.error('[%d] 저장中断下载记录失败: %s', self.task_id, save_err)
                                     # 如果保存失败，删除文件（回退到原来的行为）
-                                    PT.remove_file(dest_path)
+                                    PT.remove_file(part_path)
                                     self.report_received_bytes(-total_bytes_received)
                                     total_bytes_received = 0
                             else:
                                 # 如果无法续传或没有部分下载，删除文件
-                                PT.remove_file(dest_path)
+                                # 🔧 Part-file resume: delete the .part file, not
+                                # the final path (the final path may not exist
+                                # if we were writing to .part the whole time)
+                                part_path = dest_path_to_part_path(dest_path)
+                                for path_to_remove in (part_path, dest_path):
+                                    PT.remove_file(path_to_remove)
                                 self.report_received_bytes(-total_bytes_received)
                                 total_bytes_received = 0
 

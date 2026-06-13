@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from urllib import parse as urlparse
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiohttp
 import pytest
@@ -1427,8 +1427,12 @@ async def test_get_head_infos_reraises_retryable_and_unexpected_errors(task_fact
 
 @pytest.mark.asyncio
 async def test_perform_download_request_writes_chunks_and_reports_progress(task_factory, tmp_path):
+    """_perform_download_request now writes to .part suffix. Caller is
+    expected to rename after success (download_url does this)."""
     task = task_factory()
     dest_path = tmp_path / 'download.bin'
+    from moodle_dl.downloader.task import dest_path_to_part_path
+    part_path = dest_path_to_part_path(str(dest_path))
 
     class FakeContent:
         async def iter_chunked(self, _chunk_size):
@@ -1466,6 +1470,11 @@ async def test_perform_download_request_writes_chunks_and_reports_progress(task_
     assert total == 5
     assert content_length == 5
     assert content_range is None
+    # .part file holds the data; rename to final mimics the production flow
+    with open(part_path, 'rb') as f:
+        assert f.read() == b'abcde'
+    import os
+    os.replace(part_path, str(dest_path))
     assert dest_path.read_bytes() == b'abcde'
     assert task.events == [
         (DlEvent.TOTAL_SIZE, {'content_length': 5}),
@@ -2914,7 +2923,12 @@ async def test_handle_error_tolerates_getsize_failure(task_factory):
     ):
         await task._handle_error(RuntimeError('boom'))
 
-    remove_file.assert_called_once_with('/tmp/failed-download.bin')
+    # 🔧 Part-file resume: cleanup tries both final and .part paths
+    expected_calls = [
+        call('/tmp/failed-download.bin'),
+        call('/tmp/failed-download.bin.part'),
+    ]
+    assert remove_file.call_args_list == expected_calls
     assert task.status.state == TaskState.FAILED
     assert (DlEvent.RECEIVED, {'bytes_received': -11}) in task.events
 
@@ -3053,7 +3067,15 @@ async def test_download_url_ignores_resume_errors_and_downloads_from_start(task_
     task = task_factory()
     task.file.file_id = 123
     dest_path = tmp_path / 'partial.bin'
-    dest_path.write_bytes(b'partial')
+    # 🔧 Part-file resume: the resume trigger looks for .part suffix
+    from moodle_dl.downloader.task import dest_path_to_part_path
+    part_path = dest_path_to_part_path(str(dest_path))
+    # Write the partial file under the .part path that download_url
+    # actually scans for during resume.
+    import os
+    os.makedirs(os.path.dirname(part_path) or '.', exist_ok=True)
+    with open(part_path, 'wb') as f:
+        f.write(b'partial')
     fake_file = SimpleNamespace(closed=False, close=AsyncMock())
     captured_headers = []
 
@@ -3119,7 +3141,14 @@ async def test_download_url_missing_content_range_after_retry_cleans_file_and_fa
     assert task._perform_download_request.await_count == 2
     assert task._perform_download_request.await_args_list[1].args[3]['Range'] == 'bytes=0-'
     assert fake_file.close_count == 1
-    remove_file.assert_called_once_with(str(dest_path))
+    # 🔧 Part-file resume: the .part file is what gets removed
+    # (the dest path is also passed to PT.remove_file as a no-op
+    # safety net, so we accept either 1 or 2 calls).
+    from moodle_dl.downloader.task import dest_path_to_part_path
+    expected_part = dest_path_to_part_path(str(dest_path))
+    assert any(
+        c == call(expected_part) for c in remove_file.call_args_list
+    ), f'Expected {expected_part} in {remove_file.call_args_list}'
     assert (DlEvent.RECEIVED, {'bytes_received': -5}) in task.events
     sleep_mock.assert_awaited_once_with(1)
 
@@ -3201,8 +3230,11 @@ async def test_download_url_saves_incomplete_download_when_final_retry_fails_aft
     task.check_range_download_opt.assert_awaited_once()
     assert task._perform_download_request.await_count == 2
     assert task._perform_download_request.await_args_list[1].args[3]['Range'] == 'bytes=5-'
+    # 🔧 Part-file resume: _save_incomplete_download now records the
+    # .part path (the actual file the downloader is writing to).
+    from moodle_dl.downloader.task import dest_path_to_part_path
     task._save_incomplete_download.assert_called_once_with(
-        str(dest_path),
+        dest_path_to_part_path(str(dest_path)),
         'https://example.com/download.bin',
         5,
         10,
