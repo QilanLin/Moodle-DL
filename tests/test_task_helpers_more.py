@@ -110,7 +110,7 @@ def task_factory(tmp_path):
 
 def test_create_session_with_retry_loads_cookies_when_available(task_factory):
     task = task_factory(cookies_text='cookie-data')
-    with patch('moodle_dl.downloader.task.MoodleDLCookieJar') as cookie_jar_cls:
+    with patch('moodle_dl.downloader.task_cookie_manager.MoodleDLCookieJar') as cookie_jar_cls:
         cookie_jar = MagicMock()
         cookie_jar_cls.return_value = cookie_jar
 
@@ -123,7 +123,7 @@ def test_create_session_with_retry_loads_cookies_when_available(task_factory):
 
 def test_create_session_with_retry_continues_when_cookie_loading_fails(task_factory):
     task = task_factory(cookies_text='broken-cookie-data')
-    with patch('moodle_dl.downloader.task.MoodleDLCookieJar') as cookie_jar_cls:
+    with patch('moodle_dl.downloader.task_cookie_manager.MoodleDLCookieJar') as cookie_jar_cls:
         cookie_jar = MagicMock()
         cookie_jar.load.side_effect = RuntimeError('bad cookies')
         cookie_jar_cls.return_value = cookie_jar
@@ -1280,7 +1280,7 @@ async def test_cookie_jar_and_range_download_helpers(task_factory):
 
     task = task_factory(cookies_text='cookie-data')
     with (
-        patch('moodle_dl.downloader.task.MoodleDLCookieJar') as cookie_jar_cls,
+        patch('moodle_dl.downloader.task_cookie_manager.MoodleDLCookieJar') as cookie_jar_cls,
         patch('moodle_dl.downloader.task.convert_to_aiohttp_cookie_jar') as convert,
     ):
         cookie_jar = MagicMock()
@@ -1309,7 +1309,7 @@ async def test_cookie_jar_and_range_download_helpers(task_factory):
 async def test_cookie_jar_conversion_is_cached_per_download_options(task_factory):
     task = task_factory(cookies_text='cookie-data')
     with (
-        patch('moodle_dl.downloader.task.MoodleDLCookieJar') as cookie_jar_cls,
+        patch('moodle_dl.downloader.task_cookie_manager.MoodleDLCookieJar') as cookie_jar_cls,
         patch('moodle_dl.downloader.task.convert_to_aiohttp_cookie_jar') as convert,
     ):
         cookie_jar = MagicMock()
@@ -1602,7 +1602,7 @@ async def test_extract_kalvidres_text_handles_cookie_fallback_and_empty_pages(ta
     )
 
     with patch('moodle_dl.downloader.task.requests.Session', return_value=failed_session), patch(
-        'moodle_dl.downloader.task.MoodleDLCookieJar'
+        'moodle_dl.downloader.task_cookie_manager.MoodleDLCookieJar'
     ) as cookie_jar_cls:
         cookie_jar = MagicMock()
         cookie_jar_cls.return_value = cookie_jar

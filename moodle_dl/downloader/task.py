@@ -42,6 +42,7 @@ from moodle_dl.downloader._patterns import (  # noqa: E402
     ensure_parent_dir,
     safe_remove_part_and_final,
 )
+from moodle_dl.downloader.task_cookie_manager import TaskCookieManager
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +312,18 @@ class Task:
         # use of database= avoids the per-completion schema
         # validation that the legacy code triggered, and ensures
         # that completion writes land in the correct DB when
-        # global_opts is being reused across workspaces.
+        # global opts is being reused across workspaces.
         self.database = database
+
+        # 🔧 Refactor: cookie/session management is delegated to
+        # TaskCookieManager, which encapsulates the cookie cache
+        # and requests.Session factory. This reduces the Task
+        # surface area and groups all cookie concerns in one place.
+        self._cookie_mgr = TaskCookieManager(
+            options,
+            retry_attempts=self.REQUEST_RETRY_ATTEMPTS,
+            backoff_factor=self.REQUEST_BACKOFF_FACTOR,
+        )
 
         # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
         self.api_source = 'mobile'  # 默认为 mobile API
@@ -341,74 +352,17 @@ class Task:
         return StateRecorder(config, self.opts)
 
     def _get_cached_mozilla_cookie_jar(self):
-        if self.opts.cookies_text is None:
-            return None
-
-        cache_key = '_moodle_dl_cookie_jar_cache'
-        text_key = '_moodle_dl_cookie_jar_cache_text'
-        if getattr(self.opts, text_key, None) != self.opts.cookies_text:
-            cookie_jar = MoodleDLCookieJar(StringIO(self.opts.cookies_text))
-            cookie_jar.load(ignore_discard=True, ignore_expires=True)
-            setattr(self.opts, text_key, self.opts.cookies_text)
-            setattr(self.opts, cache_key, cookie_jar)
-            # Note: do NOT clear the aiohttp cache here. The
-            # original code did
-            #     setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
-            # but that name doesn't match the cache_key variable
-            # above (this method populates the *mozilla* jar
-            # cache, not the aiohttp one), so the line was a
-            # self-defeating typo. We leave both caches alone.
-
-        return getattr(self.opts, cache_key)
+        return self._cookie_mgr.get_mozilla_jar()
 
     @staticmethod
     def _clone_mozilla_cookie_jar(cookie_jar):
-        if cookie_jar is None or not isinstance(cookie_jar, http.cookiejar.CookieJar):
-            return cookie_jar
-
-        cloned = MoodleDLCookieJar()
-        for cookie in cookie_jar:
-            cloned.set_cookie(copy.copy(cookie))
-        return cloned
+        return TaskCookieManager.clone_mozilla_jar(cookie_jar)
 
     def _get_requests_cookie_jar(self):
-        return self._clone_mozilla_cookie_jar(self._get_cached_mozilla_cookie_jar())
+        return self._cookie_mgr.get_requests_jar()
 
-    def _create_session_with_retry(self) -> requests.Session:
-        """
-        创建一个配置了重试机制的 requests.Session。
-        
-        功能:
-        - 自动重试 500, 502, 503, 504 等错误
-        - 指数退避（exponential backoff）
-        - Cookie 支持
-        - SSL 证书验证配置
-        
-        @return: 配置好的 requests.Session 对象
-        """
-        session = requests.Session()
-        
-        # 配置重试策略
-        retry_strategy = Retry(
-            total=self.REQUEST_RETRY_ATTEMPTS,
-            backoff_factor=self.REQUEST_BACKOFF_FACTOR,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS"],
-        )
-        
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("https://", adapter)
-        session.mount("http://", adapter)
-        
-        # 加载 Cookie
-        if self.opts.cookies_text is not None:
-            try:
-                session.cookies = self._get_requests_cookie_jar()
-                logging.debug('[%d] ✓ 成功加载 Cookie', self.task_id)
-            except Exception as e:
-                logging.warning('[%d] ⚠️  加载 Cookie 失败: %s', self.task_id, e)
-        
-        return session
+    def _create_session_with_retry(self) -> 'requests.Session':
+        return self._cookie_mgr.create_session()
 
     def _is_drm_error(self, error_msg: str) -> bool:
         """
