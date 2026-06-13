@@ -2923,10 +2923,13 @@ async def test_handle_error_tolerates_getsize_failure(task_factory):
     ):
         await task._handle_error(RuntimeError('boom'))
 
-    # 🔧 Part-file resume: cleanup tries both final and .part paths
+    # 🔧 Part-file resume: cleanup tries both final and .part paths.
+    # The .part is removed FIRST so the final-renaming fallback
+    # doesn't accidentally race. The order of these two calls is
+    # a contract — the test pins it.
     expected_calls = [
-        call('/tmp/failed-download.bin'),
         call('/tmp/failed-download.bin.part'),
+        call('/tmp/failed-download.bin'),
     ]
     assert remove_file.call_args_list == expected_calls
     assert task.status.state == TaskState.FAILED

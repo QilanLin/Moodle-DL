@@ -9,6 +9,8 @@ import html
 import logging
 import os
 
+from moodle_dl.downloader._patterns import ensure_parent_dir
+
 
 class KalvidresTextExtractor:
     """
@@ -244,11 +246,11 @@ class KalvidresTextExtractor:
             lines.append(text_data['additional_content'])
             lines.append("")
 
-        # 保存文件
+        # 저장文件
         content = '\n'.join(lines)
 
         try:
-            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            ensure_parent_dir(save_path)
             with open(save_path, 'w', encoding='utf-8') as f:
                 f.write(content)
 

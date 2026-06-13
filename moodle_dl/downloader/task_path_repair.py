@@ -30,6 +30,7 @@ import shutil
 import sqlite3
 from typing import Iterable, List, Tuple
 
+from moodle_dl.downloader._patterns import ensure_dir
 from moodle_dl.downloader.task import Task
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools
@@ -172,7 +173,7 @@ def move_buggy_files(
         )
         new_dir = os.path.dirname(new)
         if not os.path.isdir(new_dir):
-            os.makedirs(new_dir, exist_ok=True)
+            ensure_dir(new_dir)
         if os.path.exists(new):
             # Already correct; just remove the buggy duplicate
             os.remove(old)

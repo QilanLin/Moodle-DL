@@ -35,6 +35,13 @@ from moodle_dl.downloader.kaltura_patterns import (
     COOKIE_MOD_MODNAMES,
     MODULE_COOKIE_KALVIDRES,
 )
+from moodle_dl.downloader._patterns import (  # noqa: E402
+    NET_ERRORS,
+    IncompleteRecord,
+    ensure_dir,
+    ensure_parent_dir,
+    safe_remove_part_and_final,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1842,7 +1849,7 @@ class Task:
         content = '\n'.join(lines)
 
         # Create directory if needed
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        ensure_parent_dir(save_path)
 
         async with aiofiles.open(save_path, 'w', encoding='utf-8') as f:
             await f.write(content)
@@ -2356,11 +2363,10 @@ class Task:
         # 清理失败的文件
         # 注意: download_url 中已经实现了智能的文件保留逻辑（断点续传）
         # 🔧 Part-file resume: also remove the .part file
-        for path_to_remove in (
-            self.file.saved_to,
-            dest_path_to_part_path(self.file.saved_to or ''),
-        ):
-            PT.remove_file(path_to_remove)
+        safe_remove_part_and_final(
+            self.file.saved_to or '',
+            pt_remove_file=PT.remove_file,
+        )
         self.report_received_bytes(-self.status.bytes_downloaded)
         self.report_failure()
 
@@ -2726,9 +2732,10 @@ class Task:
                                 # 🔧 Part-file resume: delete the .part file, not
                                 # the final path (the final path may not exist
                                 # if we were writing to .part the whole time)
-                                part_path = dest_path_to_part_path(dest_path)
-                                for path_to_remove in (part_path, dest_path):
-                                    PT.remove_file(path_to_remove)
+                                safe_remove_part_and_final(
+                                    dest_path,
+                                    pt_remove_file=PT.remove_file,
+                                )
                                 self.report_received_bytes(-total_bytes_received)
                                 total_bytes_received = 0
 
@@ -2754,11 +2761,11 @@ class Task:
             format_seconds(watch.duration),
         )
 
-    def _save_incomplete_download(self, file_path: str, file_url: str, 
+    def _save_incomplete_download(self, file_path: str, file_url: str,
                                    downloaded_bytes: int, total_bytes: int):
         """
-        保存未完成的下载信息到数据库，用于断点续传
-        
+        저장未完成的下载信息到数据库，用于断点续传
+
         @param file_path: 文件保存路径
         @param file_url: 文件 URL
         @param downloaded_bytes: 已下载的字节数
@@ -2778,30 +2785,29 @@ class Task:
                 conn = sqlite3.connect(database.db_file)
                 cursor = conn.cursor()
                 cursor.execute(
-                    """SELECT file_id FROM files 
+                    """SELECT file_id FROM files
                     WHERE course_id = ? AND module_id = ? AND content_fileurl = ?""",
                     (self.course.id, self.file.module_id, self.file.content_fileurl)
                 )
                 result = cursor.fetchone()
                 conn.close()
                 file_id = result[0] if result else None
-                
+
                 if file_id is None:
                     logging.warning('[%d] 无法获取 file_id，跳过保存中断下载记录', self.task_id)
                     return
-            
-            # 保存到数据库
-            database.save_incomplete_download(
+
+            # 🔧 IncompleteRecord: typed value object replacing the
+            # 6-arg cursor.execute boilerplate. The .save() method
+            # delegates to recorder.save_incomplete_download.
+            IncompleteRecord(
                 file_id=file_id,
                 file_url=file_url,
                 file_path=file_path,
-                total_bytes=total_bytes,
                 downloaded_bytes=downloaded_bytes,
-                server_supports_range=True,  # 因为我们知道服务器支持 Range
-                etag=None,
-                last_modified=None
-            )
-            
+                total_bytes=total_bytes,
+            ).save(database)
+
             logging.debug(
                 '[%d] 已保存未完成下载记录: file_id=%d, 进度=%d/%d',
                 self.task_id, file_id, downloaded_bytes, total_bytes
