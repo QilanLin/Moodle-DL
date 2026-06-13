@@ -15,19 +15,15 @@ This test suite verifies the end-to-end behavior of the
   7. The incomplete_downloads table tracks .part paths
 
 The tests use a real local HTTP server (like test_e2e_resume.py)
-to verify the end-to-end behavior without mocking.
+to verify the end-to-end behavior without mocking. The HTTP
+server is provided by the shared `range_http_server` fixture
+in tests/_support/fixtures.py.
 """
 import asyncio
-import http.server
 import os
-import socket
-import sqlite3
 import sys
-import tempfile
-import threading
 import unittest
 import urllib.parse
-from contextlib import contextmanager
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
@@ -38,72 +34,11 @@ from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.types import MoodleDlOpts
 
-
-# -----------------------------------------------------------------------
-# Real local HTTP server that supports Range requests
-# -----------------------------------------------------------------------
-class RangeHTTPHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP handler that serves a file with Range support."""
-
-    file_content: bytes = b''
-    file_size: int = 0
-    request_log: list = []
-    serve_mode: str = 'normal'  # 'normal', 'no_range'
-
-    def do_GET(self):
-        range_header = self.headers.get('Range', '')
-        if self.serve_mode == 'no_range' or not range_header.startswith('bytes='):
-            # Full file (or no range support)
-            self.request_log.append(('full', None, self.file_size))
-            self.send_response(200)
-            self.send_header('Content-Length', str(self.file_size))
-            self.send_header('Accept-Ranges', 'none' if self.serve_mode == 'no_range' else 'bytes')
-            self.end_headers()
-            self.wfile.write(self.file_content)
-            return
-        # Range request
-        spec = range_header[len('bytes='):]
-        if '-' in spec:
-            start_s, end_s = spec.split('-', 1)
-            start = int(start_s) if start_s else 0
-            end = int(end_s) if end_s else (self.file_size - 1)
-        end = min(end, self.file_size - 1)
-        length = end - start + 1
-        self.request_log.append(('range', start, length))
-        self.send_response(206)
-        self.send_header('Content-Range', f'bytes {start}-{end}/{self.file_size}')
-        self.send_header('Content-Length', str(length))
-        self.send_header('Accept-Ranges', 'bytes')
-        self.end_headers()
-        self.wfile.write(self.file_content[start:end + 1])
-
-    def log_message(self, format, *args):
-        pass
-
-
-def find_free_port():
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
-
-
-@contextmanager
-def start_range_server(content: bytes, mode: str = 'normal'):
-    port = find_free_port()
-    handler = RangeHTTPHandler
-    handler.file_content = content
-    handler.file_size = len(content)
-    handler.request_log = []
-    handler.serve_mode = mode
-    server = http.server.HTTPServer(('127.0.0.1', port), handler)
-    t = threading.Thread(target=server.serve_forever, daemon=True)
-    t.start()
-    try:
-        yield f'http://127.0.0.1:{port}', handler
-    finally:
-        server.shutdown()
-        server.server_close()
-        t.join(timeout=2)
+from _support.fixtures import (  # noqa: E402
+    range_http_server,
+    tmp_db,
+    write_part_file,
+)
 
 
 # -----------------------------------------------------------------------
@@ -259,68 +194,68 @@ class TestKillMidDownloadResume:
     6. Verify final file is 10MB and matches expected hash
     """
 
-    def test_kill_mid_download_resume_works(self):
+    def test_kill_mid_download_resume_works(self, tmp_path):
         """The full cycle: download 5MB, kill, restart, resume to 10MB."""
         file_size = 10 * 1024 * 1024  # 10MB
         file_content = bytes(i % 256 for i in range(file_size))
         expected_hash = hashlib.sha256(file_content).hexdigest()
-        with tempfile_context() as td:
-            with start_range_server(file_content, mode='normal') as (base_url, handler):
-                # Step 1: Simulate partial download (5MB)
-                partial_size = 5 * 1024 * 1024
-                part_path = os.path.join(td, 'foo.pdf.part')
-                with open(part_path, 'wb') as f:
-                    f.write(file_content[:partial_size])
+        with range_http_server(file_content, mode='normal') as (base_url, server):
+            td = str(tmp_path)
+            # Step 1: Simulate partial download (5MB)
+            partial_size = 5 * 1024 * 1024
+            part_path = os.path.join(td, 'foo.pdf.part')
+            with open(part_path, 'wb') as f:
+                f.write(file_content[:partial_size])
 
-                # Step 2: Simulate kill -9 (no cleanup)
-                # .part file remains
+            # Step 2: Simulate kill -9 (no cleanup)
+            # .part file remains
 
-                # Step 3: Verify .part file is on disk
-                assert os.path.exists(part_path)
-                assert os.path.getsize(part_path) == partial_size
+            # Step 3: Verify .part file is on disk
+            assert os.path.exists(part_path)
+            assert os.path.getsize(part_path) == partial_size
 
-                # Step 4: Resume - download the rest via Range
-                # This simulates what moodle-dl would do on restart
-                with open(part_path, 'ab') as f:
-                    f.write(file_content[partial_size:])
+            # Step 4: Resume - download the rest via Range
+            # This simulates what moodle-dl would do on restart
+            with open(part_path, 'ab') as f:
+                f.write(file_content[partial_size:])
 
-                # Step 5: Final file matches expected
-                with open(part_path, 'rb') as f:
-                    downloaded = f.read()
-                assert len(downloaded) == file_size
-                assert hashlib.sha256(downloaded).hexdigest() == expected_hash
+            # Step 5: Final file matches expected
+            with open(part_path, 'rb') as f:
+                downloaded = f.read()
+            assert len(downloaded) == file_size
+            assert hashlib.sha256(downloaded).hexdigest() == expected_hash
 
-    def test_kill_mid_download_no_range_server_redisdownloads(self):
+    def test_kill_mid_download_no_range_server_redisdownloads(self, tmp_path):
         """If server doesn't support Range, .part is deleted and re-downloaded."""
         file_size = 1024 * 100
         file_content = b'x' * file_size
-        with tempfile_context() as td:
-            with start_range_server(file_content, mode='no_range') as (base_url, handler):
-                # Part file from previous kill
-                part_path = os.path.join(td, 'foo.pdf.part')
-                with open(part_path, 'wb') as f:
-                    f.write(b'partial_')
+        with range_http_server(file_content, mode='no_range') as (base_url, server):
+            td = str(tmp_path)
+            # Part file from previous kill
+            part_path = os.path.join(td, 'foo.pdf.part')
+            with open(part_path, 'wb') as f:
+                f.write(b'partial_')
 
-                # Try Range request — should fail (server says 200 full)
-                req = urllib.request.Request(
-                    f'{base_url}/x',
-                    headers={'Range': 'bytes=8-'},
-                )
-                with urllib.request.urlopen(req) as resp:
-                    assert resp.status == 200
-                    # Server returns full file, can't use Range
-                    data = resp.read()
-                    assert data == file_content
+            # Try Range request — should fail (server says 200 full)
+            req = urllib.request.Request(
+                f'{base_url}/x',
+                headers={'Range': 'bytes=8-'},
+            )
+            with urllib.request.urlopen(req) as resp:
+                assert resp.status == 200
+                # Server returns full file, can't use Range
+                data = resp.read()
+                assert data == file_content
 
-                # moodle-dl would: delete .part, re-download full
-                # Here we just simulate: delete .part, write full content
-                os.remove(part_path)
-                with open(part_path, 'wb') as f:
-                    f.write(file_content)
+            # moodle-dl would: delete .part, re-download full
+            # Here we just simulate: delete .part, write full content
+            os.remove(part_path)
+            with open(part_path, 'wb') as f:
+                f.write(file_content)
 
-                # Final
-                with open(part_path, 'rb') as f:
-                    assert f.read() == file_content
+            # Final
+            with open(part_path, 'rb') as f:
+                assert f.read() == file_content
 
 
 # -----------------------------------------------------------------------
@@ -527,12 +462,6 @@ class TestInvalidPartFileRecovery:
         # If part is non-zero, we still want to resume (Range: bytes=50-)
         assert is_valid is True
         assert action == 'resume'
-
-
-@contextmanager
-def tempfile_context():
-    with tempfile.TemporaryDirectory() as td:
-        yield td
 
 
 import hashlib
