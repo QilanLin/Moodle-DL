@@ -2454,6 +2454,9 @@ class Task:
             # 🔧 Part-file resume: 用 .part 后缀写, 完成时 atomically rename
             part_path = dest_path_to_part_path(dest_path)
             file_obj = file_obj or await aiofiles.open(part_path, "wb")
+            # 🔧 Ctrl-C resilience: track the open file handle so the
+            # OUTER download_url's finally block can close it on kill.
+            self._open_file_handle = file_obj
             
             try:
                 async for chunk in resp.content.iter_chunked(self.CHUNK_SIZE):
@@ -2478,6 +2481,76 @@ class Task:
             return file_obj, total_bytes_received, content_length, content_range
 
     async def download_url(self, dl_url: str, dest_path: str, timeout: int = None):
+        # 🔧 Ctrl-C / kill resilience:
+        # Wrap the entire download in a try/except that catches BOTH
+        # asyncio.CancelledError (raised when the event loop is being
+        # torn down, e.g. by signal handlers) AND BaseException
+        # (KeyboardInterrupt at the top of the loop). On cancellation
+        # we MUST save the partial .part file to disk + record an
+        # incomplete_downloads row so the next run can resume.
+        self._open_file_handle = None  # 🔧 tracked for finally cleanup
+        try:
+            return await self._download_url_impl(dl_url, dest_path, timeout)
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            # Reached on Ctrl-C / SIGTERM / task.cancel(). The file
+            # is at .part, partial. Save the resume record and re-raise.
+            await self._save_incomplete_on_kill(dl_url, dest_path)
+            raise
+        finally:
+            # 🔧 Ctrl-C resilience: ensure open file handle is closed
+            # so the .part on disk is fully flushed before the
+            # exception propagates. Without this, partial writes may
+            # be lost when the event loop tears down.
+            fh = getattr(self, '_open_file_handle', None)
+            if fh is not None and not getattr(fh, 'closed', True):
+                self._open_file_handle = None
+                try:
+                    await fh.close()
+                except Exception:
+                    pass
+
+    async def _save_incomplete_on_kill(self, dl_url: str, dest_path: str):
+        """Best-effort: record the .part file in incomplete_downloads.
+
+        Called from download_url's except block when the download was
+        killed (Ctrl-C, SIGTERM, asyncio cancellation, OOM kill -9).
+        The .part file is left on disk; this method records its size
+        so the next run can resume from byte N.
+
+        Must be tolerant of secondary failures: if the DB is also
+        locked, we still want to keep the .part on disk for the
+        scan_for_orphan_part_files() sweep on next startup.
+        """
+        try:
+            part_path = dest_path_to_part_path(dest_path)
+            if not os.path.exists(part_path):
+                # Nothing on disk to save
+                return
+            part_size = os.path.getsize(part_path)
+            if part_size == 0:
+                # Empty .part file: nothing downloaded, don't record
+                return
+            self._save_incomplete_download(
+                part_path, dl_url, part_size, 0  # 0 = unknown total
+            )
+            logging.warning(
+                '[%d] 🔧 Kill detected — saved %s bytes to %s for resume',
+                self.task_id, part_size, part_path,
+            )
+        except Exception as save_err:
+            # Don't let a save failure mask the original cancellation
+            logging.error(
+                '[%d] Failed to save incomplete record on kill: %s',
+                self.task_id, save_err,
+            )
+
+    async def _download_url_impl(self, dl_url: str, dest_path: str, timeout: int = None):
+        # 🔧 Ctrl-C resilience: if this function is interrupted by
+        # asyncio.CancelledError (from task.cancel() / signal handler),
+        # we want to leave the .part file on disk for resume, NOT
+        # delete it. We do NOT need to add a try/except here — the
+        # OUTER `download_url` already catches CancelledError and
+        # calls _save_incomplete_on_kill.
         total_bytes_received = 0
         content_length = 0
         done_tries = 0
@@ -2490,10 +2563,10 @@ class Task:
             self.opts.global_opts.allow_insecure_ssl,
             self.opts.global_opts.use_all_ciphers,
         )
-        
+
         # 🆕 尝试恢复之前中断的下载
         resume_attempted = False
-        
+
         with Timer() as watch:
             async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
                 # 尝试恢复未完成的下载（仅在第一次尝试时）
@@ -2515,7 +2588,7 @@ class Task:
                                 headers['Range'] = f'bytes={total_bytes_received}-'
                         except Exception as resume_err:
                             logging.debug('[%d] 尝试恢复下载时出错: %s', self.task_id, resume_err)
-                
+
                 while done_tries < self.MAX_DL_RETRIES:
                     try:
                         if done_tries > 0:
