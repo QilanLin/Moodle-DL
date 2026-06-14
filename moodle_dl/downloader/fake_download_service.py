@@ -7,9 +7,11 @@ from typing import List
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
-from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 from moodle_dl.types import Course, MoodleDlOpts
 from moodle_dl.utils import PathTools as PT
+
+from unittest.mock import MagicMock
 
 
 class FakeDownloadService:
@@ -42,7 +44,9 @@ class FakeDownloadService:
         for course in self.courses:
             for file in course.files:
                 if file.deleted is False:
-                    save_destination = Task.gen_path(self.config.get_download_path(), course, file)
+                    save_destination = TaskFileOps(MagicMock()).gen_path(
+                        self.config.get_download_path(), course, file,
+                    )
                     filename = PT.to_valid_name(file.content_filename, is_file=True)
 
                     if file.content_type == 'description':

@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
 from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 from moodle_dl.types import Course, DownloadOptions, File, MoodleDlOpts
 
 
@@ -86,7 +87,7 @@ class TestRetryIntegration(unittest.TestCase):
         self.assertEqual(retrieved_file.content_filename, "lecture.pdf")
 
         # 验证重试时生成的文件名一致
-        generated_filename = Task._generate_filename_with_index(retrieved_file)
+        generated_filename = TaskFileOps(MagicMock()).generate_filename_with_index(retrieved_file)
         self.assertEqual(
             generated_filename, "*01* lecture.pdf", "重试时文件名应与首次一致"
         )
@@ -143,7 +144,7 @@ class TestRetryIntegration(unittest.TestCase):
         self.assertEqual(retrieved_file.position_in_section, 4)
 
         # 验证文件名
-        generated_filename = Task._generate_filename_with_index(retrieved_file)
+        generated_filename = TaskFileOps(MagicMock()).generate_filename_with_index(retrieved_file)
         self.assertEqual(
             generated_filename, "*05* assignment.pdf", "多次失败后文件名应保持一致"
         )
@@ -178,7 +179,7 @@ class TestRetryIntegration(unittest.TestCase):
         self.assertIsNone(retrieved_file.position_in_section, "系统文件不应有位置信息")
 
         # 验证文件名（不添加索引）
-        generated_filename = Task._generate_filename_with_index(retrieved_file)
+        generated_filename = TaskFileOps(MagicMock()).generate_filename_with_index(retrieved_file)
         self.assertEqual(generated_filename, "metadata.json", "系统文件不应添加索引")
 
     def test_reset_for_retry_preserves_position(self):
@@ -255,7 +256,7 @@ class TestRetryIntegration(unittest.TestCase):
         self.assertEqual(retrieved_file.position_in_section, 2)
 
         # 验证文件名（保留原始文件名中的 "01-"）
-        generated_filename = Task._generate_filename_with_index(retrieved_file)
+        generated_filename = TaskFileOps(MagicMock()).generate_filename_with_index(retrieved_file)
         self.assertEqual(
             generated_filename,
             "*03* 01-introduction.pdf",

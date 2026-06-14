@@ -15,6 +15,8 @@ import unittest
 from unittest.mock import MagicMock, AsyncMock, patch
 from concurrent.futures import ThreadPoolExecutor
 from moodle_dl.downloader.task import Task, KalturaExtractionError
+from moodle_dl.downloader.task_file_ops import TaskFileOps
+from moodle_dl.downloader.task_url_ops import TaskUrlOps
 from moodle_dl.types import Course, File, MoodleDlOpts, MoodleURL, DownloadOptions
 from moodle_dl.config import ConfigHelper
 
@@ -25,64 +27,64 @@ class TestHTMLConversionMethods(unittest.TestCase):
     def test_convert_line_breaks(self):
         """测试 <br> 标签转换"""
         html = "<p>Hello<br>World</p>"
-        result = Task._convert_line_breaks(html)
+        result = TaskFileOps.convert_line_breaks(html)
         self.assertEqual(result, "<p>Hello\nWorld</p>")
 
     def test_convert_line_breaks_with_slash(self):
         """测试 <br/> 标签转换"""
         html = "Line 1<br/>Line 2<br />Line 3"
-        result = Task._convert_line_breaks(html)
+        result = TaskFileOps.convert_line_breaks(html)
         self.assertEqual(result, "Line 1\nLine 2\nLine 3")
 
     def test_convert_paragraphs(self):
         """测试 <p> 标签转换"""
         html = "<p>Para 1</p><p>Para 2</p>"
-        result = Task._convert_paragraphs(html)
+        result = TaskFileOps.convert_paragraphs(html)
         self.assertIn("\n", result)
 
     def test_convert_lists_ul(self):
         """测试 <ul> 列表转换"""
         html = "<ul><li>Item 1</li><li>Item 2</li></ul>"
-        result = Task._convert_lists(html)
+        result = TaskFileOps.convert_lists(html)
         self.assertIn("•", result)
 
     def test_convert_lists_ol(self):
         """测试 <ol> 列表转换"""
         html = "<ol><li>First</li><li>Second</li></ol>"
-        result = Task._convert_lists(html)
+        result = TaskFileOps.convert_lists(html)
         self.assertIn("•", result)
 
     def test_convert_formatting_bold(self):
         """测试 <b> 和 <strong> 标签转换"""
         html = "<b>Bold text</b> and <strong>strong text</strong>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertIn("**Bold text**", result)
         self.assertIn("**strong text**", result)
 
     def test_convert_formatting_italic(self):
         """测试 <i> 和 <em> 标签转换"""
         html = "<i>Italic text</i> and <em>emphasized text</em>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertIn("*Italic text*", result)
         self.assertIn("*emphasized text*", result)
 
     def test_remove_html_tags(self):
         """测试移除 HTML 标签"""
         html = "<p>Hello <b>World</b></p>"
-        result = Task._remove_html_tags(html)
+        result = TaskFileOps.remove_html_tags(html)
         self.assertNotIn("<", result)
         self.assertNotIn(">", result)
 
     def test_decode_html_entities(self):
         """测试 HTML 实体解码"""
         html = "Hello &amp; World &lt;3&gt;"
-        result = Task._decode_html_entities(html)
+        result = TaskFileOps.decode_html_entities(html)
         self.assertIn("Hello & World <3>", result)
 
     def test_clean_whitespace(self):
         """测试空白清理"""
         text = "Hello    World   Test"
-        result = Task._clean_whitespace(text)
+        result = TaskFileOps.clean_whitespace(text)
         self.assertNotIn("  ", result)
 
     def test_clean_html_simple(self):
@@ -125,7 +127,7 @@ class TestHTMLConversionMethods(unittest.TestCase):
         task = Task(1, file, course, options, thread_pool, lambda: None)
         thread_pool.shutdown(wait=False)
 
-        result = task._clean_html_simple(html)
+        result = task._file_ops.clean_html_simple(html)
         self.assertNotIn("<", result)
         self.assertNotIn(">", result)
         self.assertIn("Hello", result)
@@ -181,37 +183,37 @@ class TestDRMErrorDetection(unittest.TestCase):
     def test_drm_error_detection_drm_keyword(self):
         """测试检测 DRM 关键词"""
         error_msg = "This content is DRM protected"
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertTrue(result)
 
     def test_drm_error_detection_widevine(self):
         """测试检测 Widevine 关键词"""
         error_msg = "WidevineDecryptor failed"
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertTrue(result)
 
     def test_drm_error_detection_encrypted(self):
         """测试检测 encrypted 关键词"""
         error_msg = "Content is encrypted"
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertTrue(result)
 
     def test_drm_error_detection_case_insensitive(self):
         """测试大小写不敏感"""
         error_msg = "THIS IS DRM PROTECTED CONTENT"
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertTrue(result)
 
     def test_drm_error_detection_negative(self):
         """测试非 DRM 错误"""
         error_msg = "Network connection failed"
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertFalse(result)
 
     def test_drm_error_detection_empty(self):
         """测试空错误消息"""
         error_msg = ""
-        result = self.task._is_drm_error(error_msg)
+        result = TaskUrlOps().is_drm_error(error_msg)
         self.assertFalse(result)
 
 
@@ -420,7 +422,7 @@ class TestFilenameGeneration(unittest.TestCase):
             position_in_section=0,
         )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
-        result = task._generate_filename_with_index(file)
+        result = task._file_ops.generate_filename_with_index(file)
         self.assertEqual(result, "*01* lecture.pdf")
 
     def test_generate_filename_with_index_double_digit(self):
@@ -439,7 +441,7 @@ class TestFilenameGeneration(unittest.TestCase):
             position_in_section=9,
         )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
-        result = task._generate_filename_with_index(file)
+        result = task._file_ops.generate_filename_with_index(file)
         self.assertEqual(result, "*10* video.mp4")
 
     def test_generate_filename_with_index_preserves_original(self):
@@ -458,7 +460,7 @@ class TestFilenameGeneration(unittest.TestCase):
             position_in_section=4,
         )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
-        result = task._generate_filename_with_index(file)
+        result = task._file_ops.generate_filename_with_index(file)
         self.assertEqual(result, "*05* 01-introduction.pdf")
 
     def test_generate_filename_without_index(self):
@@ -476,7 +478,7 @@ class TestFilenameGeneration(unittest.TestCase):
             content_isexternalfile=False,
         )
         task = Task(1, file, self.course, self.options, self.thread_pool, self.callback)
-        result = task._generate_filename_with_index(file)
+        result = task._file_ops.generate_filename_with_index(file)
         self.assertEqual(result, "readme.txt")
 
 

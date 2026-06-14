@@ -352,7 +352,7 @@ class Task:
         self.api_source = 'mobile'  # 默认为 mobile API
 
         self.destination = self.gen_path(options.download_path, course, file)
-        self.filename = self._generate_filename_with_index(file)
+        self.filename = self._file_ops.generate_filename_with_index(file)
         self.status = TaskStatus()
 
     def _get_or_create_database(self) -> "StateRecorder":
@@ -373,23 +373,6 @@ class Task:
         from moodle_dl.database import StateRecorder
         config = ConfigHelper(self.opts.global_opts, validate_db=False)
         return StateRecorder(config, self.opts)
-
-    def _get_cached_mozilla_cookie_jar(self):
-        return self._cookie_mgr.get_mozilla_jar()
-
-    @staticmethod
-    def _clone_mozilla_cookie_jar(cookie_jar):
-        return TaskCookieManager.clone_mozilla_jar(cookie_jar)
-
-    def _get_requests_cookie_jar(self):
-        return self._cookie_mgr.get_requests_jar()
-
-    def _create_session_with_retry(self) -> 'requests.Session':
-        return self._cookie_mgr.create_session()
-
-    def _is_drm_error(self, error_msg: str) -> bool:
-        # 🔧 Delegated to TaskUrlOps. Behavior preserved.
-        return self._url_ops.is_drm_error(error_msg)
 
     def _extract_entry_id(self, url: str) -> str:
         """
@@ -494,19 +477,11 @@ class Task:
         )
 
     @staticmethod
-    def _generate_filename_with_index(file: File) -> str:
-        # 🔧 Delegated to TaskFileOps. Behavior preserved.
-        from moodle_dl.downloader.task_file_ops import TaskFileOps
-        import unittest.mock as _mock
-        return TaskFileOps(_mock.MagicMock()).generate_filename_with_index(file)
-
-    @staticmethod
     def gen_path(storage_path: str, course: Course, file: File):
         # 🔧 Delegated to TaskFileOps. Behavior preserved.
         from moodle_dl.downloader.task_file_ops import TaskFileOps
         import unittest.mock as _mock
         return TaskFileOps(_mock.MagicMock()).gen_path(storage_path, course, file)
-
     def add_token_to_url(self, url: str) -> str:
         """
         Adds the Moodle token to a URL (使用改进的 URL 处理)
@@ -1111,7 +1086,7 @@ class Task:
                 )
                 session = requests.Session()
                 if self.opts.cookies_text is not None:
-                    session.cookies = self._get_requests_cookie_jar()
+                    session.cookies = self._cookie_mgr.get_requests_jar()
                 verify_ssl = not self.opts.global_opts.skip_cert_verify
                 resp = await asyncio.to_thread(
                     session.get, warmup_url,
@@ -1155,7 +1130,7 @@ class Task:
                 # 每次重试都用新 session，避免上一轮的状态污染
                 sess = requests.Session()
                 if self.opts.cookies_text is not None:
-                    sess.cookies = self._get_requests_cookie_jar()
+                    sess.cookies = self._cookie_mgr.get_requests_jar()
                 return sess.get(url, headers=self.RQ_HEADER, verify=verify_ssl, timeout=30)
 
             response = _fetch()
@@ -1208,7 +1183,7 @@ class Task:
             # 2. Extract module name (H1)
             h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_content, re.DOTALL)
             if h1_match:
-                h1_text = self._clean_html_simple(h1_match.group(1))
+                h1_text = self._file_ops.clean_html_simple(h1_match.group(1))
                 if h1_text:
                     text_data['module_name'] = h1_text
 
@@ -1217,7 +1192,7 @@ class Task:
             activity_match = re.search(activity_pattern, html_content, re.DOTALL)
             if activity_match:
                 content_html = activity_match.group(1)
-                text_data['activity_description'] = self._clean_html_preserve_structure(content_html)
+                text_data['activity_description'] = self._file_ops.clean_html_preserve_structure(content_html)
 
             # Save as Markdown if we have content
             if text_data:
@@ -1255,7 +1230,7 @@ class Task:
                 return known_embed_url
             
             # 创建带重试机制的 session
-            session = self._create_session_with_retry()
+            session = self._cookie_mgr.create_session()
             verify_ssl = not self.opts.global_opts.skip_cert_verify
 
             # ====== 阶段 1: 获取 kalvidres 页面 ======
@@ -1403,48 +1378,6 @@ class Task:
             
             logging.debug('[%d] 详细错误堆栈: %s', self.task_id, traceback.format_exc())
             return None
-
-    # 🔧 HTML cleaning methods are delegated to TaskFileOps.
-    # See moodle_dl/downloader/task_file_ops.py for the actual
-    # implementations. This keeps the file/HTML concerns in one
-    # cohesive class, leaving Task focused on download orchestration.
-    def _clean_html_simple(self, html_text: str) -> str:
-        return self._file_ops.clean_html_simple(html_text)
-
-    @staticmethod
-    def _convert_line_breaks(html_text: str) -> str:
-        return TaskFileOps.convert_line_breaks(html_text)
-
-    @staticmethod
-    def _convert_paragraphs(html_text: str) -> str:
-        return TaskFileOps.convert_paragraphs(html_text)
-
-    @staticmethod
-    def _convert_lists(html_text: str) -> str:
-        return TaskFileOps.convert_lists(html_text)
-
-    @staticmethod
-    def _convert_formatting(html_text: str) -> str:
-        return TaskFileOps.convert_formatting(html_text)
-
-    @staticmethod
-    def _convert_links(html_text: str) -> str:
-        return TaskFileOps.convert_links(html_text)
-
-    @staticmethod
-    def _remove_html_tags(html_text: str) -> str:
-        return TaskFileOps.remove_html_tags(html_text)
-
-    @staticmethod
-    def _decode_html_entities(html_text: str) -> str:
-        return TaskFileOps.decode_html_entities(html_text)
-
-    @staticmethod
-    def _clean_whitespace(html_text: str) -> str:
-        return TaskFileOps.clean_whitespace(html_text)
-
-    def _clean_html_preserve_structure(self, html_text: str) -> str:
-        return self._file_ops.clean_html_preserve_structure(html_text)
 
     async def _save_kalvidres_text(self, text_data: dict, save_path: str):
         """Save extracted text as Markdown file"""
@@ -1990,7 +1923,7 @@ class Task:
         if self.opts.cookies_text is not None:
             cached_aiohttp_cookie_jar = getattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', None)
             if cached_aiohttp_cookie_jar is None:
-                cached_aiohttp_cookie_jar = convert_to_aiohttp_cookie_jar(self._get_cached_mozilla_cookie_jar())
+                cached_aiohttp_cookie_jar = convert_to_aiohttp_cookie_jar(self._cookie_mgr.get_mozilla_jar())
                 setattr(self.opts, '_moodle_dl_aiohttp_cookie_jar_cache', cached_aiohttp_cookie_jar)
             return clone_aiohttp_cookie_jar(cached_aiohttp_cookie_jar)
         return None

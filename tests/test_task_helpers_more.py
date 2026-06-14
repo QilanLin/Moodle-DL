@@ -114,7 +114,7 @@ def test_create_session_with_retry_loads_cookies_when_available(task_factory):
         cookie_jar = MagicMock()
         cookie_jar_cls.return_value = cookie_jar
 
-        session = task._create_session_with_retry()
+        session = task._cookie_mgr.create_session()
 
     cookie_jar_cls.assert_called_once()
     cookie_jar.load.assert_called_once_with(ignore_discard=True, ignore_expires=True)
@@ -128,7 +128,7 @@ def test_create_session_with_retry_continues_when_cookie_loading_fails(task_fact
         cookie_jar.load.side_effect = RuntimeError('bad cookies')
         cookie_jar_cls.return_value = cookie_jar
 
-        session = task._create_session_with_retry()
+        session = task._cookie_mgr.create_session()
 
     assert session is not None
     cookie_jar.load.assert_called_once()
@@ -1896,10 +1896,19 @@ async def test_warmup_passes_existing_cookies_to_homepage_request(task_factory, 
         sessions.append(sess)
         return sess
 
-    with (
-        patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session),
-        patch.object(Task, '_get_requests_cookie_jar', return_value=cookie_jar_sentinel),
-    ):
+    cookie_jar_sentinel = object()
+    sessions = []
+
+    def make_session():
+        sess = MagicMock()
+        sess.get = MagicMock(return_value=SimpleNamespace(status_code=200, url='https://moodle.example.com/my/'))
+        sessions.append(sess)
+        sess.cookies = cookie_jar_sentinel
+        return sess
+
+    with patch('moodle_dl.downloader.task.requests.Session', side_effect=make_session):
+        # Mock the cookie manager on the task instance.
+        task._cookie_mgr.get_requests_jar = MagicMock(return_value=cookie_jar_sentinel)
         result = await task._try_warmup_session('moodle.example.com')
 
     assert result is True
@@ -1956,7 +1965,7 @@ async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory)
         SimpleNamespace(status_code=200, text=lti_html),
         SimpleNamespace(status_code=200, text=browse_html),
     ]
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     result = await task.extract_kalvidres_video_url('https://moodle.example.com/mod/kalvidres/view.php?id=1')
 
@@ -1968,13 +1977,13 @@ async def test_extract_kalvidres_video_url_success_and_error_paths(task_factory)
     forbidden = task_factory()
     forbidden_session = MagicMock()
     forbidden_session.get.return_value = SimpleNamespace(status_code=403, text='')
-    forbidden._create_session_with_retry = MagicMock(return_value=forbidden_session)
+    forbidden._cookie_mgr.create_session = MagicMock(return_value=forbidden_session)
     assert await forbidden.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
     missing_iframe = task_factory()
     missing_session = MagicMock()
     missing_session.get.return_value = SimpleNamespace(status_code=200, text='<html>No iframe</html>')
-    missing_iframe._create_session_with_retry = MagicMock(return_value=missing_session)
+    missing_iframe._cookie_mgr.create_session = MagicMock(return_value=missing_session)
     assert await missing_iframe.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
 
@@ -1990,7 +1999,7 @@ async def test_extract_kalvidres_video_url_handles_initial_network_errors(task_f
     task = task_factory()
     session = MagicMock()
     session.get.side_effect = error
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
     assert session.get.call_count == expected_calls
@@ -2002,7 +2011,7 @@ async def test_extract_kalvidres_video_url_handles_initial_http_failures(task_fa
     task = task_factory()
     session = MagicMock()
     session.get.return_value = SimpleNamespace(status_code=status_code, text='')
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
@@ -2029,7 +2038,7 @@ async def test_extract_kalvidres_video_url_handles_lti_stage_failures(task_facto
         session.get.side_effect = [first, lti_response]
     else:
         session.get.side_effect = [first, lti_response]
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
@@ -2058,7 +2067,7 @@ async def test_extract_kalvidres_video_url_handles_browse_stage_failures(task_fa
     first = SimpleNamespace(status_code=200, text=kalvidres_html)
     second = SimpleNamespace(status_code=200, text=lti_html)
     session.get.side_effect = [first, second, browse_response]
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
@@ -2080,7 +2089,7 @@ async def test_extract_kalvidres_video_url_uses_kcl_partner_fallback(task_factor
         SimpleNamespace(status_code=200, text=lti_html),
         SimpleNamespace(status_code=200, text=browse_html),
     ]
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     result = await task.extract_kalvidres_video_url('https://moodle.example.com/mod/kalvidres/view.php?id=1')
 
@@ -2108,7 +2117,7 @@ async def test_extract_kalvidres_video_url_uses_keats_kaf_partner_fallback(task_
         SimpleNamespace(status_code=200, text=lti_html),
         SimpleNamespace(status_code=200, text=browse_html),
     ]
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     result = await task.extract_kalvidres_video_url('https://moodle.example.com/mod/kalvidres/view.php?id=1')
 
@@ -2149,7 +2158,7 @@ async def test_extract_kalvidres_video_url_builds_from_known_kcl_embed_urls(
     expected_entry,
 ):
     task = task_factory()
-    task._create_session_with_retry = MagicMock(side_effect=AssertionError('network should not be used'))
+    task._cookie_mgr.create_session = MagicMock(side_effect=AssertionError('network should not be used'))
 
     result = await task.extract_kalvidres_video_url(source_url)
 
@@ -2157,7 +2166,7 @@ async def test_extract_kalvidres_video_url_builds_from_known_kcl_embed_urls(
         'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
         f'uiconf_id/{expected_uiconf}/partner_id/2368101?iframeembed=true&entry_id={expected_entry}'
     )
-    task._create_session_with_retry.assert_not_called()
+    task._cookie_mgr.create_session.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2169,7 +2178,7 @@ async def test_extract_kalvidres_video_url_builds_playlist_url_from_kaf_source(t
         'isPlaylist%2Ftrue%2F'
     )
     task = task_factory()
-    task._create_session_with_retry = MagicMock(side_effect=AssertionError('network should not be used'))
+    task._cookie_mgr.create_session = MagicMock(side_effect=AssertionError('network should not be used'))
 
     result = await task.extract_kalvidres_video_url(source_url)
 
@@ -2183,7 +2192,7 @@ async def test_extract_kalvidres_video_url_builds_playlist_url_from_kaf_source(t
         'https://kaf.keats.kcl.ac.uk/playlist/details/{playlistAPI.kpl0Id}'
     ]
     assert 'entry_id' not in query
-    task._create_session_with_retry.assert_not_called()
+    task._cookie_mgr.create_session.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -2200,19 +2209,19 @@ async def test_extract_kalvidres_video_url_handles_bad_browse_url_and_unknown_er
             text='<input name="target_link_uri" value="https://kaf.example.com/no-entry-or-skin">',
         ),
     ]
-    bad_browse._create_session_with_retry = MagicMock(return_value=bad_session)
+    bad_browse._cookie_mgr.create_session = MagicMock(return_value=bad_session)
     assert await bad_browse.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
     unknown = task_factory()
-    unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('ssl certificate failed'))
+    unknown._cookie_mgr.create_session = MagicMock(side_effect=RuntimeError('ssl certificate failed'))
     assert await unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
     auth_unknown = task_factory()
-    auth_unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('auth cookie rejected'))
+    auth_unknown._cookie_mgr.create_session = MagicMock(side_effect=RuntimeError('auth cookie rejected'))
     assert await auth_unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
     timeout_unknown = task_factory()
-    timeout_unknown._create_session_with_retry = MagicMock(side_effect=RuntimeError('timeout while preparing session'))
+    timeout_unknown._cookie_mgr.create_session = MagicMock(side_effect=RuntimeError('timeout while preparing session'))
     assert await timeout_unknown.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
 
@@ -2221,7 +2230,7 @@ async def test_extract_kalvidres_video_url_handles_generic_request_exception(tas
     task = task_factory()
     session = MagicMock()
     session.get.side_effect = requests.RequestException('broken request')
-    task._create_session_with_retry = MagicMock(return_value=session)
+    task._cookie_mgr.create_session = MagicMock(return_value=session)
 
     assert await task.extract_kalvidres_video_url('https://moodle.example.com/video') is None
 
@@ -2229,8 +2238,8 @@ async def test_extract_kalvidres_video_url_handles_generic_request_exception(tas
 def test_kalvidres_html_cleaners_handle_empty_input(task_factory):
     task = task_factory()
 
-    assert task._clean_html_simple('') == ''
-    assert task._clean_html_preserve_structure('') == ''
+    assert task._file_ops.clean_html_simple('') == ''
+    assert task._file_ops.clean_html_preserve_structure('') == ''
 
 
 class FakeYoutubeDL:

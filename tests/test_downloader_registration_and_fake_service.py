@@ -65,7 +65,7 @@ def test_fake_download_service_records_saved_paths_without_downloading(tmp_path)
     try:
         with (
             patch(
-                "moodle_dl.downloader.fake_download_service.Task.gen_path",
+                "moodle_dl.downloader.fake_download_service.TaskFileOps.gen_path",
                 side_effect=lambda _download_path, _course, file: str(tmp_path / file.content_type),
             ),
             patch("moodle_dl.downloader.fake_download_service.platform.system", return_value="Darwin"),
@@ -98,7 +98,7 @@ def test_fake_download_service_uses_desktop_shortcut_on_non_macos(tmp_path):
     course = Course(10, "Course", [url_file])
 
     with (
-        patch("moodle_dl.downloader.fake_download_service.Task.gen_path", return_value=str(tmp_path)),
+        patch("moodle_dl.downloader.fake_download_service.TaskFileOps.gen_path", return_value=str(tmp_path)),
         patch("moodle_dl.downloader.fake_download_service.platform.system", return_value="Linux"),
     ):
         FakeDownloadService([course], config, MoodleDlOpts(), database).run()

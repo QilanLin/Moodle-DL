@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 from moodle_dl.moodle.result_builder import ResultBuilder
 from moodle_dl.types import Course, File, MoodleURL
 
@@ -154,19 +155,19 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         # position=0 → "*01*"
         file = self._create_file("lecture.pdf")
         file.position_in_section = 0
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*01* lecture.pdf")
 
         # position=4 → "*05*"
         file = self._create_file("notes.pdf")
         file.position_in_section = 4
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*05* notes.pdf")
 
         # position=9 → "*10*"
         file = self._create_file("quiz.pdf")
         file.position_in_section = 9
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*10* quiz.pdf")
 
     def test_filename_generation_large_position(self):
@@ -174,26 +175,26 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         # position=98 → "*99*" (仍然是2位)
         file = self._create_file("file.pdf")
         file.position_in_section = 98
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*99* file.pdf")
 
         # position=99 → "*100*" (3位数)
         file = self._create_file("file.pdf")
         file.position_in_section = 99
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*100* file.pdf")
 
         # position=123 → "*124*" (3位数)
         file = self._create_file("file.pdf")
         file.position_in_section = 123
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*124* file.pdf")
 
     def test_filename_generation_without_position(self):
         """测试无位置索引的文件名生成（系统文件）"""
         file = self._create_file("metadata.json")
         file.position_in_section = None
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "metadata.json")
 
     def test_filename_generation_preserves_original(self):
@@ -201,14 +202,14 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         # 原始文件名本身就有数字前缀，应完整保留
         file = self._create_file("01-introduction.pdf")
         file.position_in_section = 4
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         # 应该是 "*05* 01-introduction.pdf"，不是 "*05* introduction.pdf"
         self.assertEqual(filename, "*05* 01-introduction.pdf")
 
         # 更复杂的例子
         file = self._create_file("2024-01-15-lecture.pdf")
         file.position_in_section = 0
-        filename = Task._generate_filename_with_index(file)
+        filename = TaskFileOps(MagicMock()).generate_filename_with_index(file)
         self.assertEqual(filename, "*01* 2024-01-15-lecture.pdf")
 
     def test_empty_file_list(self):

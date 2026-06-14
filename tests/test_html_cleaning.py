@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import MagicMock
 
 from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 
 
 class TestHTMLCleaningFunctions(unittest.TestCase):
@@ -18,107 +19,107 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
     def test_convert_line_breaks(self):
         """Test <br> tag conversion"""
         html = "Line 1<br>Line 2<br/>Line 3"
-        result = Task._convert_line_breaks(html)
+        result = TaskFileOps.convert_line_breaks(html)
         self.assertEqual(result, "Line 1\nLine 2\nLine 3")
 
     def test_convert_line_breaks_self_closing(self):
         """Test both <br> and <br/> formats"""
         html = "Start<br>Middle<br/>End"
-        result = Task._convert_line_breaks(html)
+        result = TaskFileOps.convert_line_breaks(html)
         self.assertEqual(result, "Start\nMiddle\nEnd")
 
     def test_convert_paragraphs(self):
         """Test <p> tag conversion"""
         html = "<p>Para 1</p><p>Para 2</p>"
-        result = Task._convert_paragraphs(html)
+        result = TaskFileOps.convert_paragraphs(html)
         self.assertEqual(result, "\nPara 1\n\nPara 2\n")
 
     def test_convert_paragraphs_with_attributes(self):
         """Test <p> conversion with class/style attributes"""
         html = '<p class="intro">Start</p><p style="color: red">Text</p>'
-        result = Task._convert_paragraphs(html)
+        result = TaskFileOps.convert_paragraphs(html)
         self.assertEqual(result, "\nStart\n\nText\n")
 
     def test_convert_lists_unordered(self):
         """Test <ul> and <li> conversion"""
         html = "<ul><li>Item 1</li><li>Item 2</li></ul>"
-        result = Task._convert_lists(html)
+        result = TaskFileOps.convert_lists(html)
         self.assertIn("• Item 1", result)
         self.assertIn("• Item 2", result)
 
     def test_convert_lists_ordered(self):
         """Test <ol> conversion"""
         html = "<ol><li>First</li><li>Second</li></ol>"
-        result = Task._convert_lists(html)
+        result = TaskFileOps.convert_lists(html)
         self.assertIn("• First", result)
         self.assertIn("• Second", result)
 
     def test_convert_formatting_bold(self):
         """Test bold tag conversion"""
         html = "This is <b>bold</b> and <strong>strong</strong>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertEqual(result, "This is **bold** and **strong**")
 
     def test_convert_formatting_italic(self):
         """Test italic tag conversion"""
         html = "This is <i>italic</i> and <em>emphasized</em>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertEqual(result, "This is *italic* and *emphasized*")
 
     def test_convert_formatting_mixed(self):
         """Test mixed bold and italic"""
         html = "<b>Bold</b> and <i>italic</i> and <strong>strong</strong> and <em>em</em>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertEqual(result, "**Bold** and *italic* and **strong** and *em*")
 
     def test_convert_formatting_nested(self):
         """Test nested formatting (via DOTALL flag)"""
         html = "<b>Bold with <i>italic inside</i></b>"
-        result = Task._convert_formatting(html)
+        result = TaskFileOps.convert_formatting(html)
         self.assertIn("**", result)
         self.assertIn("*", result)
 
     def test_convert_links(self):
         """Test link conversion"""
         html = 'Click <a href="https://example.com">here</a>'
-        result = Task._convert_links(html)
+        result = TaskFileOps.convert_links(html)
         self.assertEqual(result, "Click [here](https://example.com)")
 
     def test_convert_links_multiple(self):
         """Test multiple links"""
         html = '<a href="url1">Link 1</a> and <a href="url2">Link 2</a>'
-        result = Task._convert_links(html)
+        result = TaskFileOps.convert_links(html)
         self.assertIn("[Link 1](url1)", result)
         self.assertIn("[Link 2](url2)", result)
 
     def test_convert_links_with_attributes(self):
         """Test links with extra attributes"""
         html = '<a href="url" title="Title" class="link">Text</a>'
-        result = Task._convert_links(html)
+        result = TaskFileOps.convert_links(html)
         self.assertEqual(result, "[Text](url)")
 
     def test_remove_html_tags(self):
         """Test removal of remaining HTML tags"""
         html = "<div><span>Text</span></div>"
-        result = Task._remove_html_tags(html)
+        result = TaskFileOps.remove_html_tags(html)
         self.assertEqual(result, "Text")
 
     def test_remove_html_tags_with_attributes(self):
         """Test tag removal with attributes"""
         html = '<div class="container"><span id="text">Content</span></div>'
-        result = Task._remove_html_tags(html)
+        result = TaskFileOps.remove_html_tags(html)
         self.assertEqual(result, "Content")
 
     def test_decode_html_entities(self):
         """Test HTML entity decoding"""
         html = "Hello &amp; goodbye &lt;world&gt;"
-        result = Task._decode_html_entities(html)
+        result = TaskFileOps.decode_html_entities(html)
         self.assertEqual(result, "Hello & goodbye <world>")
 
     def test_decode_html_entities_common(self):
         """Test common HTML entities"""
         html = "&nbsp;&quot;&copy;&reg;&trade;"
-        result = Task._decode_html_entities(html)
+        result = TaskFileOps.decode_html_entities(html)
         self.assertIn("©", result)
         self.assertIn("®", result)
         self.assertIn("™", result)
@@ -126,19 +127,19 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
     def test_clean_whitespace_newlines(self):
         """Test excessive newline cleanup"""
         html = "Line 1\n\n\n\nLine 2"
-        result = Task._clean_whitespace(html)
+        result = TaskFileOps.clean_whitespace(html)
         self.assertEqual(result, "Line 1\n\nLine 2")
 
     def test_clean_whitespace_spaces(self):
         """Test multiple space cleanup"""
         html = "Word1    Word2     Word3"
-        result = Task._clean_whitespace(html)
+        result = TaskFileOps.clean_whitespace(html)
         self.assertEqual(result, "Word1 Word2 Word3")
 
     def test_clean_whitespace_trim(self):
         """Test trimming of leading/trailing whitespace"""
         html = "  \n  Text  \n  "
-        result = Task._clean_whitespace(html)
+        result = TaskFileOps.clean_whitespace(html)
         self.assertEqual(result, "Text")
 
     def test_full_pipeline_simple(self):
@@ -220,7 +221,7 @@ class TestHTMLCleaningOrder(unittest.TestCase):
         """Entities should be decoded before final cleanup"""
         # If cleanup happened first, extra spaces might be removed
         html = "&nbsp;&nbsp;&nbsp;Text"
-        result = Task._clean_whitespace(Task._decode_html_entities(html))
+        result = TaskFileOps.clean_whitespace(TaskFileOps.decode_html_entities(html))
         # Non-breaking spaces converted to regular spaces, then cleaned
         self.assertNotIn("\xa0", result)
 
@@ -230,8 +231,8 @@ class TestHTMLCleaningOrder(unittest.TestCase):
         
         # Correct order: convert formatting first (converts <b> to **), 
         # then remove tags, then decode entities
-        result = Task._remove_html_tags(Task._convert_formatting(html))
-        result = Task._decode_html_entities(result)
+        result = TaskFileOps.remove_html_tags(TaskFileOps.convert_formatting(html))
+        result = TaskFileOps.decode_html_entities(result)
         
         # After conversion: <b>&lt;b&gt;</b> becomes **&lt;b&gt;**
         # After removing tags: **&lt;b&gt;** stays the same (no tags to remove)
