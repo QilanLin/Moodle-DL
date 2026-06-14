@@ -43,6 +43,7 @@ from moodle_dl.downloader._patterns import (  # noqa: E402
     safe_remove_part_and_final,
 )
 from moodle_dl.downloader.task_cookie_manager import TaskCookieManager
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +326,12 @@ class Task:
             backoff_factor=self.REQUEST_BACKOFF_FACTOR,
         )
 
+        # 🔧 Refactor: file/path/HTML operations are delegated
+        # to TaskFileOps, which groups filename generation, path
+        # construction, HTML cleaning, and shortcut management in
+        # one class. Keeps Task focused on download orchestration.
+        self._file_ops = TaskFileOps(self)
+
         # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
         self.api_source = 'mobile'  # 默认为 mobile API
 
@@ -478,82 +485,17 @@ class Task:
 
     @staticmethod
     def _generate_filename_with_index(file: File) -> str:
-        """
-        生成带索引前缀的文件名。
-
-        如果文件有 position_in_section，则在原始文件名前添加位置索引前缀。
-        ⚠️ 核心原则：保留原始文件名，只添加前缀。
-
-        示例:
-            position=0, original="lecture.pdf" → "*01* lecture.pdf"
-            position=4, original="01-intro.pdf" → "*05* 01-intro.pdf" (保留原名中的 "01-")
-            position=None → "lecture.pdf" (无索引)
-
-        @param file: File 对象
-        @return: 处理后的文件名（已通过 to_valid_name 验证）
-        """
-        original_filename = PT.to_valid_name(file.content_filename, is_file=True)
-
-        # 如果文件没有分配位置索引，直接返回原始文件名
-        if file.position_in_section is None:
-            return original_filename
-
-        # 生成索引前缀
-        position = file.position_in_section
-        if position < 99:
-            index_str = f"{position + 1:02d}"
-        else:
-            index_str = f"{position + 1:03d}"
-
-        # 添加索引前缀（使用星号包围索引，使用空格分隔），保留原始文件名
-        indexed_filename = f"*{index_str}* {original_filename}"
-
-        return indexed_filename
+        # 🔧 Delegated to TaskFileOps. Behavior preserved.
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        import unittest.mock as _mock
+        return TaskFileOps(_mock.MagicMock()).generate_filename_with_index(file)
 
     @staticmethod
     def gen_path(storage_path: str, course: Course, file: File):
-        "Generate the directory path where a file should be stored"
-        course_name = course.fullname
-        if course.overwrite_name_with is not None:
-            course_name = course.overwrite_name_with
-
-        # TODO: Move this out of the downloader
-        # if a flat path is requested
-        if not course.create_directory_structure:
-            return PT.flat_path_of_file(storage_path, course_name, file.content_filepath)
-
-        # TODO: Get mod names automated; all mods should be in a sub-folder
-        # If the file is located in a folder or in an assignment,
-        # it should be saved in a sub-folder (with the name of the module).
-        #
-        # 🆕 We also route 'resource' and 'page' module files through
-        # path_of_file_in_module(). These modules frequently embed
-        # inner assets (e.g. an HTML page referencing assets/css/main.css,
-        # assets/js/jquery.min.js, etc.). The HTML's relative href
-        # like "assets/css/main.css" only resolves correctly when the
-        # asset is saved under the same module folder as the HTML.
-        # Without this routing, inner assets get saved flat at the
-        # section root and the relative href returns 404.
-        if file.module_modname.endswith(
-            (
-                'assign', 'book', 'data', 'folder', 'forum', 'lesson',
-                'page', 'quiz', 'resource', 'workshop',
-            )
-        ) or file.module_modname in (
-            'resource', 'page', 'url', 'label',
-        ):
-            return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
-            )
-
-        # 🆕 Special handling for embedded videos (kalvidres, helixmedia, etc.)
-        # These are embedded in book/page/etc modules and should be saved in the module folder
-        if file.module_modname in COOKIE_MOD_MODNAMES:
-            return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
-            )
-
-        return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
+        # 🔧 Delegated to TaskFileOps. Behavior preserved.
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        import unittest.mock as _mock
+        return TaskFileOps(_mock.MagicMock()).gen_path(storage_path, course, file)
 
     def add_token_to_url(self, url: str) -> str:
         """
@@ -1678,111 +1620,47 @@ class Task:
             logging.debug('[%d] 详细错误堆栈: %s', self.task_id, traceback.format_exc())
             return None
 
+    # 🔧 HTML cleaning methods are delegated to TaskFileOps.
+    # See moodle_dl/downloader/task_file_ops.py for the actual
+    # implementations. This keeps the file/HTML concerns in one
+    # cohesive class, leaving Task focused on download orchestration.
     def _clean_html_simple(self, html_text: str) -> str:
-        """Clean HTML tags, return plain text"""
-        import re
-        import html as html_module
-
-        if not html_text:
-            return ""
-
-        text = re.sub(r'<br\s*/?>', '\n', html_text)
-        text = re.sub(r'<[^>]+>', '', text)
-        text = html_module.unescape(text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
+        return self._file_ops.clean_html_simple(html_text)
 
     @staticmethod
     def _convert_line_breaks(html_text: str) -> str:
-        """Convert <br> tags to newlines"""
-        import re
-        return re.sub(r'<br\s*/?>', '\n', html_text)
+        return TaskFileOps.convert_line_breaks(html_text)
 
     @staticmethod
     def _convert_paragraphs(html_text: str) -> str:
-        """Convert <p> tags to newlines"""
-        import re
-        text = re.sub(r'</p>\s*<p[^>]*>', '\n\n', html_text)
-        text = re.sub(r'</?p[^>]*>', '\n', text)
-        return text
+        return TaskFileOps.convert_paragraphs(html_text)
 
     @staticmethod
     def _convert_lists(html_text: str) -> str:
-        """Convert list tags (<ul>, <ol>, <li>) to Markdown format"""
-        import re
-        text = re.sub(r'<li[^>]*>', '\n• ', html_text)
-        text = re.sub(r'</li>', '', text)
-        text = re.sub(r'</?ul[^>]*>', '\n', text)
-        text = re.sub(r'</?ol[^>]*>', '\n', text)
-        return text
+        return TaskFileOps.convert_lists(html_text)
 
     @staticmethod
     def _convert_formatting(html_text: str) -> str:
-        """Convert bold and italic tags to Markdown format"""
-        import re
-        # Convert bold tags
-        text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', html_text, flags=re.DOTALL)
-        text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.DOTALL)
-        
-        # Convert italic tags
-        text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.DOTALL)
-        text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.DOTALL)
-        return text
+        return TaskFileOps.convert_formatting(html_text)
 
     @staticmethod
     def _convert_links(html_text: str) -> str:
-        """Convert HTML links to Markdown format"""
-        import re
-        return re.sub(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', r'[\2](\1)', html_text, flags=re.DOTALL)
+        return TaskFileOps.convert_links(html_text)
 
     @staticmethod
     def _remove_html_tags(html_text: str) -> str:
-        """Remove all remaining HTML tags"""
-        import re
-        return re.sub(r'<[^>]+>', '', html_text)
+        return TaskFileOps.remove_html_tags(html_text)
 
     @staticmethod
     def _decode_html_entities(html_text: str) -> str:
-        """Decode HTML entities to characters"""
-        import html as html_module
-        return html_module.unescape(html_text)
+        return TaskFileOps.decode_html_entities(html_text)
 
     @staticmethod
     def _clean_whitespace(html_text: str) -> str:
-        """Clean excessive whitespace"""
-        import re
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', html_text)
-        text = re.sub(r' +', ' ', text)
-        return text.strip()
+        return TaskFileOps.clean_whitespace(html_text)
 
     def _clean_html_preserve_structure(self, html_text: str) -> str:
-        """
-        Clean HTML while preserving document structure as Markdown.
-        
-        Process pipeline:
-        1. Convert line breaks
-        2. Convert paragraphs
-        3. Convert lists
-        4. Convert formatting (bold, italic)
-        5. Convert links
-        6. Remove remaining tags
-        7. Decode HTML entities
-        8. Clean whitespace
-        """
-        if not html_text:
-            return ""
-
-        # Apply transformations in order
-        text = self._convert_line_breaks(html_text)
-        text = self._convert_paragraphs(text)
-        text = self._convert_lists(text)
-        text = self._convert_formatting(text)
-        text = self._convert_links(text)
-        text = self._remove_html_tags(text)
-        text = self._decode_html_entities(text)
-        text = self._clean_whitespace(text)
-        
-        return text
+        return self._file_ops.clean_html_preserve_structure(html_text)
 
     async def _save_kalvidres_text(self, text_data: dict, save_path: str):
         """Save extracted text as Markdown file"""

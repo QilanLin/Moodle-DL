@@ -7,6 +7,8 @@ does exactly one thing and does it well.
 """
 
 import unittest
+from unittest.mock import MagicMock
+
 from moodle_dl.downloader.task import Task
 
 
@@ -141,19 +143,6 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
 
     def test_full_pipeline_simple(self):
         """Test complete pipeline with simple HTML"""
-        # Create a mock Task object with minimal setup
-        from unittest.mock import MagicMock
-        task = MagicMock(spec=Task)
-        task._convert_line_breaks = Task._convert_line_breaks
-        task._convert_paragraphs = Task._convert_paragraphs
-        task._convert_lists = Task._convert_lists
-        task._convert_formatting = Task._convert_formatting
-        task._convert_links = Task._convert_links
-        task._remove_html_tags = Task._remove_html_tags
-        task._decode_html_entities = Task._decode_html_entities
-        task._clean_whitespace = Task._clean_whitespace
-        task._clean_html_preserve_structure = Task._clean_html_preserve_structure.__get__(task, Task)
-        
         html = """
         <p>Hello <b>World</b></p>
         <p>Check out <a href="https://example.com">this link</a></p>
@@ -162,9 +151,12 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
             <li>Item 2</li>
         </ul>
         """
-        
-        result = task._clean_html_preserve_structure(html)
-        
+        # Use the TaskFileOps helper directly.
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        ops = TaskFileOps(MagicMock())
+        # 'structured' mode preserves formatting as markdown.
+        result = ops.clean_html(html, mode='structured')
+
         # Verify key conversions
         self.assertIn("**World**", result)  # Bold preserved
         self.assertIn("[this link](https://example.com)", result)  # Link preserved
@@ -176,19 +168,6 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
 
     def test_full_pipeline_complex(self):
         """Test complete pipeline with complex HTML"""
-        # Create a mock Task object with minimal setup
-        from unittest.mock import MagicMock
-        task = MagicMock(spec=Task)
-        task._convert_line_breaks = Task._convert_line_breaks
-        task._convert_paragraphs = Task._convert_paragraphs
-        task._convert_lists = Task._convert_lists
-        task._convert_formatting = Task._convert_formatting
-        task._convert_links = Task._convert_links
-        task._remove_html_tags = Task._remove_html_tags
-        task._decode_html_entities = Task._decode_html_entities
-        task._clean_whitespace = Task._clean_whitespace
-        task._clean_html_preserve_structure = Task._clean_html_preserve_structure.__get__(task, Task)
-        
         html = """
         <div class="content">
             <p>Welcome to <strong>Python</strong> tutorial!</p>
@@ -201,9 +180,11 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
             <p>Good luck &amp; have fun!</p>
         </div>
         """
-        
-        result = task._clean_html_preserve_structure(html)
-        
+        # Use TaskFileOps directly
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        ops = TaskFileOps(MagicMock())
+        result = ops.clean_html(html, mode='structured')
+
         # Verify structure is preserved
         self.assertIn("**Python**", result)
         self.assertIn("*basics*", result)
@@ -211,44 +192,25 @@ class TestHTMLCleaningFunctions(unittest.TestCase):
         self.assertIn("• Learn", result)
         self.assertIn("[official docs](https://docs.python.org)", result)
         self.assertIn("& have fun", result)  # Entity decoded
-        
+
         # Verify no HTML tags remain
         self.assertNotIn("<", result)
         self.assertNotIn(">", result)
 
     def test_empty_input(self):
         """Test handling of empty input"""
-        from unittest.mock import MagicMock
-        task = MagicMock(spec=Task)
-        task._convert_line_breaks = Task._convert_line_breaks
-        task._convert_paragraphs = Task._convert_paragraphs
-        task._convert_lists = Task._convert_lists
-        task._convert_formatting = Task._convert_formatting
-        task._convert_links = Task._convert_links
-        task._remove_html_tags = Task._remove_html_tags
-        task._decode_html_entities = Task._decode_html_entities
-        task._clean_whitespace = Task._clean_whitespace
-        task._clean_html_preserve_structure = Task._clean_html_preserve_structure.__get__(task, Task)
-        
-        result = task._clean_html_preserve_structure("")
-        self.assertEqual(result, "")
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        ops = TaskFileOps(MagicMock())
+        result = ops.clean_html_preserve_structure('')
+        self.assertEqual(result, '')
 
     def test_none_input(self):
         """Test handling of None input"""
-        from unittest.mock import MagicMock
-        task = MagicMock(spec=Task)
-        task._convert_line_breaks = Task._convert_line_breaks
-        task._convert_paragraphs = Task._convert_paragraphs
-        task._convert_lists = Task._convert_lists
-        task._convert_formatting = Task._convert_formatting
-        task._convert_links = Task._convert_links
-        task._remove_html_tags = Task._remove_html_tags
-        task._decode_html_entities = Task._decode_html_entities
-        task._clean_whitespace = Task._clean_whitespace
-        task._clean_html_preserve_structure = Task._clean_html_preserve_structure.__get__(task, Task)
-        
-        result = task._clean_html_preserve_structure(None)
-        self.assertEqual(result, "")
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        ops = TaskFileOps(MagicMock())
+        # None is falsy → empty string
+        result = ops.clean_html_preserve_structure(None)  # type: ignore[arg-type]
+        self.assertEqual(result, '')
 
 
 class TestHTMLCleaningOrder(unittest.TestCase):
