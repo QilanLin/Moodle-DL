@@ -548,63 +548,49 @@ class Task:
     # so the existing call sites (including legacy tests that
     # patch `moodle_dl.downloader.task.YtLogger` etc.) keep
     # working.
-    class YtLogger:
-        """logger for yt-dlp (kept as a Task class attribute for
+    class YtLogger(YtLogger):
+        """yt-dlp logger adapter (kept as a Task class attribute for
         backward compatibility with `Task.YtLogger(task)` and
         existing tests that patch `moodle_dl.downloader.task.logging`).
-        Delegates all real work to TaskYtDlpBridge's YtLogger."""
+
+        Inherits all behavior from TaskYtDlpBridge.YtLogger (the
+        clean_msg / debug / warning / error implementations live
+        there). The only thing this subclass overrides is
+        `__init__`, which:
+          1. Sets up the logging module reference to
+             `moodle_dl.downloader.task.logging` so tests that
+             patch that attribute (e.g.
+             `patch('moodle_dl.downloader.task.logging')`) are
+             intercepted dynamically.
+          2. Replaces the bridge's logger with this instance so
+             the bridge's other methods (yt_hook, etc.) that
+             log through `self.logger` use the patched logging.
+        """
 
         def __init__(self, task):
-            # Pass a getter for the task module's logging so
-            # existing tests patching `moodle_dl.downloader.task.logging`
-            # continue to work. The closure captures the module
-            # OBJECT (not the attribute value), so patches are
-            # picked up dynamically.
+            # Initialize the parent YtLogger with the bridge.
+            # We need the parent to set up its `_logging_resolver`
+            # before we override it.
+            # First: get a reference to the task module's logging
+            # so existing tests patching
+            # `moodle_dl.downloader.task.logging` work dynamically.
             import moodle_dl.downloader.task as _task_module
             from moodle_dl.downloader.task_yt_dlp_bridge import (
                 _logging_module as _bridge_logging,
             )
-            self.bridge = task._yt_dlp_bridge
-            self.task = task
-            self.task_id = task.task_id
-            # Re-build the bridge's logger using the task module's
-            # logging so the test patches hit it.
-            self.bridge.logger = YtLogger(
+            # Initialize parent with a custom logging_getter that
+            # resolves `_task_module.logging` dynamically (so
+            # patches of that attribute are picked up).
+            YtLogger.__init__(
+                self,
                 task._yt_dlp_bridge,
                 logging_getter=lambda: getattr(_task_module, 'logging', _bridge_logging),
             )
-
-        def clean_msg(self, msg: str) -> str:
-            return self.bridge.logger.clean_msg(msg)
-
-        def debug(self, msg):
-            # Inline the ETA filter so the message flow is preserved
-            # without round-tripping through the bridge (which would
-            # re-construct the logger).
-            if msg.find('ETA') >= 0:
-                return
-            self.bridge.logger.debug(msg)
-
-        def warning(self, msg):
-            self.bridge.logger.warning(msg)
-
-        def error(self, msg):
-            self.bridge.logger.error(msg)
-
-    def yt_hook(self, data: Dict):
-        self._yt_dlp_bridge.yt_hook(data)
-
-    def report_yt_dlp_content_length(self, content_length: int, file_name: str):
-        self._yt_dlp_bridge.report_content_length(content_length, file_name)
-
-    def report_yt_dlp_received_bytes(self, bytes_received_total: int, file_name: str):
-        self._yt_dlp_bridge.report_received_bytes(bytes_received_total, file_name)
-
-    def yt_hook_after_move(self, final_filename: str):
-        self._yt_dlp_bridge.yt_hook_after_move(final_filename)
-
-    def is_blocked_for_yt_dlp(self, url: str):
-        return self._yt_dlp_bridge.is_blocked_for_yt_dlp(url)
+            # The parent __init__ sets `self.task = task`,
+            # `self.task_id = task.task_id`, `self.bridge = task._yt_dlp_bridge`.
+            # Also replace the bridge's logger with this instance
+            # so the bridge's log calls go through this logger.
+            task._yt_dlp_bridge.logger = self
 
     def set_utime(self, last_modified_header: str = None):
         """
@@ -783,7 +769,7 @@ class Task:
             return
         # For cookie_mod files (kalvidres, helixmedia, lti), always try yt-dlp
         # These are Moodle-integrated video platforms that need special handling
-        if needs_moodle_cookies and infos.is_html and not self.is_blocked_for_yt_dlp(url_to_download):
+        if needs_moodle_cookies and infos.is_html and not self._yt_dlp_bridge.is_blocked_for_yt_dlp(url_to_download):
             yt_dlp_processed = await self.download_using_yt_dlp(
                 dl_url=url_to_download,
                 infos=infos,

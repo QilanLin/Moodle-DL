@@ -394,9 +394,7 @@ class MoodleService:
                 return False, mod.MOD_NAME
         return True, None
 
-    @staticmethod
-    def _is_optional_metadata_file(file) -> bool:
-        return is_optional_metadata_file(file)
+        # (moved to is_optional_metadata_file; no wrapper needed)
 
     @staticmethod
     def _check_file_filter_conditions(
@@ -428,7 +426,7 @@ class MoodleService:
             # Filter optional generated metadata/launch sidecars
             and (
                 filter_config.get('download_metadata_files', True)
-                or not MoodleService._is_optional_metadata_file(file)
+                or not is_optional_metadata_file(file)
             )
             # Exclude files whose file extension is blacklisted
             and (determine_ext(file.content_filename) not in filter_config['exclude_file_extensions'])

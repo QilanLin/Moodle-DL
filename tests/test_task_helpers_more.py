@@ -206,11 +206,11 @@ def test_yt_logger_logs_normal_debug_and_warning_messages(task_factory):
 def test_yt_hook_tracks_total_size_received_bytes_and_ignores_incomplete_events(task_factory):
     task = task_factory()
 
-    task.yt_hook({'status': 'error', 'tmpfilename': 'ignored.part'})
-    task.yt_hook({'status': 'downloading'})
+    task._yt_dlp_bridge.yt_hook({'status': 'error', 'tmpfilename': 'ignored.part'})
+    task._yt_dlp_bridge.yt_hook({'status': 'downloading'})
     assert task.events == []
 
-    task.yt_hook({
+    task._yt_dlp_bridge.yt_hook({
         'status': 'downloading',
         'tmpfilename': 'video.part',
         'total_bytes_estimate': 100,
@@ -224,7 +224,7 @@ def test_yt_hook_tracks_total_size_received_bytes_and_ignores_incomplete_events(
         (DlEvent.RECEIVED, {'bytes_received': 10}),
     ]
 
-    task.yt_hook({
+    task._yt_dlp_bridge.yt_hook({
         'status': 'downloading',
         'tmpfilename': 'video.part',
         'total_bytes': 125,
@@ -237,7 +237,7 @@ def test_yt_hook_tracks_total_size_received_bytes_and_ignores_incomplete_events(
         (DlEvent.RECEIVED, {'bytes_received': 20}),
     ]
 
-    task.yt_hook({
+    task._yt_dlp_bridge.yt_hook({
         'status': 'downloading',
         'tmpfilename': 'video.part',
         'total_bytes': 125,
@@ -248,12 +248,12 @@ def test_yt_hook_tracks_total_size_received_bytes_and_ignores_incomplete_events(
 
 def test_yt_hook_after_move_and_blocked_youtube_channel_detection(task_factory):
     task = task_factory()
-    task.yt_hook_after_move(f'/prefix{task.destination}/video.mp4')
+    task._yt_dlp_bridge.yt_hook_after_move(f'/prefix{task.destination}/video.mp4')
 
     assert task.file.saved_to == f'{task.destination}/video.mp4'
-    assert task.is_blocked_for_yt_dlp('https://www.youtube.com/channel/abc') is True
-    assert task.is_blocked_for_yt_dlp('https://www.youtube.com/watch?v=abc') is False
-    assert task.is_blocked_for_yt_dlp('https://vimeo.com/channel/abc') is False
+    assert task._yt_dlp_bridge.is_blocked_for_yt_dlp('https://www.youtube.com/channel/abc') is True
+    assert task._yt_dlp_bridge.is_blocked_for_yt_dlp('https://www.youtube.com/watch?v=abc') is False
+    assert task._yt_dlp_bridge.is_blocked_for_yt_dlp('https://vimeo.com/channel/abc') is False
 
 
 def test_set_utime_prefers_valid_server_timestamp_and_falls_back_to_file_timestamp(task_factory, tmp_path):

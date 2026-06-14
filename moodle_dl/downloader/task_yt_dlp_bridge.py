@@ -127,9 +127,6 @@ class YtLogger:
     def _resolve_default(self):
         return _logging_module
 
-    def _logging(self):
-        return self._logging_resolver()
-
     def clean_msg(self, msg: str) -> str:
         """Strip ANSI escapes, newlines, and token=... secrets."""
         msg = msg.replace('\n', '')
@@ -208,8 +205,14 @@ class TaskYtDlpBridge:
         bytes_received_total = data.get('downloaded_bytes', 0) or 0
 
         self.task.status.yt_dlp_current_file = tmp_file_name
-        self.task.report_yt_dlp_content_length(content_length, tmp_file_name)
-        self.task.report_yt_dlp_received_bytes(bytes_received_total, tmp_file_name)
+        # 🔧 DRY: call our own report methods directly instead of
+        # round-tripping through the task. Previously:
+        #   self.task.report_yt_dlp_content_length(...)
+        #   → task.report_yt_dlp_content_length(...)
+        #   → self._yt_dlp_bridge.report_content_length(...)
+        # which was a 2-hop delegation through the task.
+        self.report_content_length(content_length, tmp_file_name)
+        self.report_received_bytes(bytes_received_total, tmp_file_name)
 
     def yt_hook_after_move(self, final_filename: str) -> None:
         """Called as the final step for each video file (after postprocessors)."""

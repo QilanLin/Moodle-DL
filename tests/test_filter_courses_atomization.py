@@ -21,6 +21,7 @@ from typing import List
 from moodle_dl.types import Course, File
 from moodle_dl.moodle.moodle_service import MoodleService
 from moodle_dl.config import ConfigHelper
+from moodle_dl.file_classifier import is_optional_metadata_file
 
 
 class TestLoadFilterConfig(unittest.TestCase):
@@ -370,7 +371,7 @@ class TestCheckFileFilterConditions(unittest.TestCase):
             with self.subTest(filename=filename):
                 file = MagicMock(spec=File)
                 file.content_filename = filename
-                self.assertEqual(MoodleService._is_optional_metadata_file(file), expected)
+                self.assertEqual(is_optional_metadata_file(file), expected)
 
     def test_optional_metadata_filtered_when_disabled(self):
         """Test generated JSON/launch sidecars are filtered when metadata files are disabled."""
