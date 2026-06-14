@@ -44,6 +44,7 @@ from moodle_dl.downloader._patterns import (  # noqa: E402
 )
 from moodle_dl.downloader.task_cookie_manager import TaskCookieManager
 from moodle_dl.downloader.task_file_ops import TaskFileOps
+from moodle_dl.downloader.task_url_ops import TaskUrlOps
 from moodle_dl.downloader.task_yt_dlp_bridge import TaskYtDlpBridge, YtLogger
 
 
@@ -280,7 +281,6 @@ class Task:
         'drm-protected',
         'WidevineDecryptor',
     ]
-
     RQ_HEADER = {
         'User-Agent': (
             'Mozilla/5.0 (Linux; Android 7.1.1; Moto G Play Build/NPIS26.48-43-2; wv) AppleWebKit/537.36'
@@ -341,6 +341,13 @@ class Task:
         # yt-dlp noise-pattern detection in one place.
         self._yt_dlp_bridge = TaskYtDlpBridge(self)
 
+        # 🔧 Refactor: URL operations are delegated to TaskUrlOps,
+        # which owns add_token_to_url, is_filtered_domain, and
+        # is_drm_error. The class is stateless so it's used as
+        # a module-level utility, but it's exposed via self._url_ops
+        # for consistency with the other helpers.
+        self._url_ops = TaskUrlOps()
+
         # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
         self.api_source = 'mobile'  # 默认为 mobile API
 
@@ -381,14 +388,8 @@ class Task:
         return self._cookie_mgr.create_session()
 
     def _is_drm_error(self, error_msg: str) -> bool:
-        """
-        检测错误消息是否表示 DRM 保护。
-        
-        @param error_msg: 错误消息字符串
-        @return: 如果是 DRM 相关错误返回 True
-        """
-        error_lower = error_msg.lower()
-        return any(kw.lower() in error_lower for kw in self.DRM_KEYWORDS)
+        # 🔧 Delegated to TaskUrlOps. Behavior preserved.
+        return self._url_ops.is_drm_error(error_msg)
 
     def _extract_entry_id(self, url: str) -> str:
         """
@@ -522,24 +523,12 @@ class Task:
         @param url: The URL to that the token should be added.
         @return: The URL with the token.
         """
-        # 使用改进的 URL 处理方法
-        fixed_url = UrlHelper.fix_pluginfile_url(
-            url=url, token=self.opts.token, moodle_base_url=self.opts.moodle_url
+        # 🔧 Delegated to TaskUrlOps. Behavior preserved.
+        return self._url_ops.add_token_to_url(
+            url=url,
+            token=self.opts.token,
+            moodle_base_url=self.opts.moodle_url,
         )
-
-        # 如果不是 pluginfile URL，使用原来的简单方法
-        if fixed_url == url and not UrlHelper.is_pluginfile_url(url):
-            # 不是 pluginfile URL，使用原来的方法（兼容性）
-            if 'token=' in url:
-                return url  # 已包含 token，直接返回
-
-            url_parts = list(urlparse.urlparse(url))
-            query = dict(urlparse.parse_qsl(url_parts[4]))
-            query.update({'token': self.opts.token})
-            url_parts[4] = urlparse.urlencode(query)
-            return urlparse.urlunparse(url_parts)
-
-        return fixed_url
 
     def create_target_file(self, target_path: str) -> str:
         """
@@ -1009,25 +998,16 @@ class Task:
 
         @return: True if the domain is filtered.
         """
-
+        # 🔧 Delegated to TaskUrlOps. The URL parsing (extracting
+        # the hostname) stays here because it depends on the
+        # task's file attribute; the whitelist/blacklist matching
+        # lives in the helper.
         domain = urlparse.urlparse(self.file.content_fileurl).hostname
-
-        if domain is None or domain == '':
-            return True
-
-        in_blacklist = False
-        for entry in self.opts.download_domains_blacklist:
-            if domain == entry or domain.endswith('.' + entry):
-                in_blacklist = True
-                break
-
-        in_whitelist = len(self.opts.download_domains_whitelist) == 0
-        for entry in self.opts.download_domains_whitelist:
-            if domain == entry or domain.endswith('.' + entry):
-                in_whitelist = True
-                break
-
-        return not in_whitelist or in_blacklist
+        return self._url_ops.is_filtered_domain(
+            domain,
+            blacklist=self.opts.download_domains_blacklist,
+            whitelist=self.opts.download_domains_whitelist,
+        )
 
     async def create_shortcut(self):
         "Create a Shortcut to a URL"
