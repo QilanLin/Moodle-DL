@@ -476,12 +476,10 @@ class Task:
             source_url,
         )
 
-    @staticmethod
-    def gen_path(storage_path: str, course: Course, file: File):
-        # 🔧 Delegated to TaskFileOps. Behavior preserved.
-        from moodle_dl.downloader.task_file_ops import TaskFileOps
-        import unittest.mock as _mock
-        return TaskFileOps(_mock.MagicMock()).gen_path(storage_path, course, file)
+    def gen_path(self, storage_path: str, course: Course, file: File):
+        # 🔧 Delegated to TaskFileOps via the instance helper.
+        # Behavior preserved.
+        return self._file_ops.gen_path(storage_path, course, file)
     def add_token_to_url(self, url: str) -> str:
         """
         Adds the Moodle token to a URL (使用改进的 URL 处理)

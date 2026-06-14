@@ -623,7 +623,7 @@ class TestPathGeneration(unittest.TestCase):
 
         storage_path = "/storage"
 
-        result = Task.gen_path(storage_path, course, file)
+        result = TaskFileOps(MagicMock()).gen_path(storage_path, course, file)
         self.assertIsNotNone(result)
 
     def test_gen_path_with_subdirectory(self):
@@ -642,7 +642,7 @@ class TestPathGeneration(unittest.TestCase):
 
         storage_path = "/storage"
 
-        result = Task.gen_path(storage_path, course, file)
+        result = TaskFileOps(MagicMock()).gen_path(storage_path, course, file)
         self.assertIsNotNone(result)
 
     def test_gen_path_overwrite_name(self):
@@ -659,7 +659,7 @@ class TestPathGeneration(unittest.TestCase):
 
         storage_path = "/storage"
 
-        result = Task.gen_path(storage_path, course, file)
+        result = TaskFileOps(MagicMock()).gen_path(storage_path, course, file)
         self.assertIsNotNone(result)
 
 

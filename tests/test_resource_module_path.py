@@ -37,6 +37,7 @@ Pin points:
 import os
 import tempfile
 import unittest
+from unittest.mock import MagicMock
 
 from moodle_dl.config import ConfigHelper
 from moodle_dl.database import StateRecorder
@@ -44,6 +45,7 @@ from moodle_dl.downloader.html_localizer import (
     build_local_resource_map, rewrite_html_links_to_local_paths,
 )
 from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 from moodle_dl.types import File, MoodleDlOpts, Course
 
 
@@ -89,7 +91,7 @@ class TestGenPathForResourceModule(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             course = make_course()
             f = make_file('/', 'main.css')
-            dest = Task.gen_path(td, course, f)
+            dest = TaskFileOps(MagicMock()).gen_path(td, course, f)
             # After the fix, the module name should be in the path
             self.assertIn(
                 'Interactive Virtual Practical Sessions', dest,
@@ -113,7 +115,7 @@ class TestGenPathForResourceModule(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             course = make_course()
             f = make_file('/assets/css/', 'main.css')
-            dest = Task.gen_path(td, course, f)
+            dest = TaskFileOps(MagicMock()).gen_path(td, course, f)
             self.assertIn('assets/css', dest)
             self.assertIn(
                 'Interactive Virtual Practical Sessions', dest,
@@ -126,7 +128,7 @@ class TestGenPathForResourceModule(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             course = make_course()
             f = make_file('/', 'chapter1.html', module_modname='book')
-            dest = Task.gen_path(td, course, f)
+            dest = TaskFileOps(MagicMock()).gen_path(td, course, f)
             self.assertIn('Interactive Virtual Practical Sessions', dest)
 
 
@@ -174,7 +176,7 @@ class TestResourceHtmlRewriting(unittest.TestCase):
 
             # Simulate moodle-dl saving: dest = <ws>/<course>/<section>/<module>/<filename>
             for f in [html, css, js, img]:
-                d = Task.gen_path(ws, course, f)
+                d = TaskFileOps(MagicMock()).gen_path(ws, course, f)
                 os.makedirs(d, exist_ok=True)
                 full = os.path.join(d, f'*{1:02d}* {f.content_filename}')
                 with open(full, 'w') as fp:

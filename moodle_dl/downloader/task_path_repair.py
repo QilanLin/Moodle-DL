@@ -29,9 +29,11 @@ import re
 import shutil
 import sqlite3
 from typing import Iterable, List, Tuple
+from unittest.mock import MagicMock
 
 from moodle_dl.downloader._patterns import ensure_dir
 from moodle_dl.downloader.task import Task
+from moodle_dl.downloader.task_file_ops import TaskFileOps
 from moodle_dl.types import Course, File
 from moodle_dl.utils import PathTools
 
@@ -96,7 +98,7 @@ def compute_correct_saved_to(
         section_name=section_name,
     )
     course = Course(_id=0, fullname=course_fullname, files=[f])
-    dest = Task.gen_path(ws, course, f)
+    dest = TaskFileOps(MagicMock()).gen_path(ws, course, f)
     return os.path.join(dest, buggy_filename)
 
 
