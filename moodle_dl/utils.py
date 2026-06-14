@@ -18,6 +18,7 @@ import ssl
 import sys
 import time
 import unicodedata
+import functools
 from functools import cache
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -652,6 +653,7 @@ class PathTools:
     restricted_filenames = False
 
     @staticmethod
+    @functools.cache  # 🔧 Perf: cache the result; max ~38k unique inputs
     def to_valid_name(name: str, is_file: bool, max_length: int = 200) -> str:
         """
         Filtering invalid characters in filenames and paths.

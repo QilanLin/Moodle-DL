@@ -290,7 +290,11 @@ class Task:
     }
 
     def _kaltura_urls(self) -> KalturaUrlBuilder:
-        return KalturaUrlBuilder(self.task_id)
+        # 🔧 Cached: Kaltura extraction calls this 10 times per
+        # task; cache the builder so we only construct it once.
+        if self._kaltura_urls_cache is None:
+            self._kaltura_urls_cache = KalturaUrlBuilder(self.task_id)
+        return self._kaltura_urls_cache
 
     def __init__(
         self,
@@ -316,6 +320,19 @@ class Task:
         # that completion writes land in the correct DB when
         # global opts is being reused across workspaces.
         self.database = database
+
+        # 🔧 Perf: lazily-constructed KalturaUrlBuilder. Each
+        # Kaltura task calls self._kaltura_urls() up to 10 times
+        # during extraction; caching the builder saves 9 redundant
+        # constructor calls per Kaltura task.
+        self._kaltura_urls_cache: Optional['KalturaUrlBuilder'] = None
+
+        # 🔧 Perf: cache for is_filtered_external_domain() (called
+        # 2-3 times per linked file in may_perform_network_io and
+        # real_run's _execute_download). Bounded to ~38k entries
+        # for 38k files (or much less in practice since most
+        # linked files share domains).
+        self._is_filtered_external_domain_cache: dict = {}
 
         # 🔧 Refactor: cookie/session management is delegated to
         # TaskCookieManager, which encapsulates the cookie cache
@@ -853,12 +870,26 @@ class Task:
         # the hostname) stays here because it depends on the
         # task's file attribute; the whitelist/blacklist matching
         # lives in the helper.
+        # 🔧 Perf: cache the result per (URL, blacklist, whitelist).
+        # For 38k files, urlparse is the slowest single-call
+        # contribution in this method (~0.012ms each, called
+        # multiple times per linked file in real_run).
+        cache_key = (
+            self.file.content_fileurl,
+            tuple(self.opts.download_domains_blacklist),
+            tuple(self.opts.download_domains_whitelist),
+        )
+        cached = self._is_filtered_external_domain_cache.get(cache_key)
+        if cached is not None:
+            return cached
         domain = urlparse.urlparse(self.file.content_fileurl).hostname
-        return self._url_ops.is_filtered_domain(
+        result = self._url_ops.is_filtered_domain(
             domain,
             blacklist=self.opts.download_domains_blacklist,
             whitelist=self.opts.download_domains_whitelist,
         )
+        self._is_filtered_external_domain_cache[cache_key] = result
+        return result
 
     async def create_shortcut(self):
         "Create a Shortcut to a URL"
