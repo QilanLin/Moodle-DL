@@ -13,7 +13,7 @@ class NetworkThrottle:
     def __init__(
         self,
         base_delay: float = 1.0,
-        jitter: float = 1.0,
+        jitter: float = 0.5,
         *,
         delay_first: bool = True,
         sleep: Callable[[float], None] = time.sleep,

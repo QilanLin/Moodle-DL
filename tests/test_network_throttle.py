@@ -43,10 +43,10 @@ async def test_network_throttle_async_wait_uses_async_sleep():
         monotonic=lambda: 100.0,
         random_func=lambda: 1.0,
     )
-
     await throttle.async_wait('async request')
 
-    async_sleep.assert_awaited_once_with(2.0)
+    # delay = base_delay (1.0) + jitter (0.5) * random (1.0) = 1.5
+    async_sleep.assert_awaited_once_with(1.5)
 
 
 @pytest.mark.asyncio
