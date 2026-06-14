@@ -44,6 +44,7 @@ from moodle_dl.downloader._patterns import (  # noqa: E402
 )
 from moodle_dl.downloader.task_cookie_manager import TaskCookieManager
 from moodle_dl.downloader.task_file_ops import TaskFileOps
+from moodle_dl.downloader.task_yt_dlp_bridge import TaskYtDlpBridge, YtLogger
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +333,14 @@ class Task:
         # one class. Keeps Task focused on download orchestration.
         self._file_ops = TaskFileOps(self)
 
+        # 🔧 Refactor: yt-dlp integration is delegated to
+        # TaskYtDlpBridge, which owns YtLogger, yt_hook,
+        # yt_hook_after_move, report_yt_dlp_*, is_blocked_*, and
+        # download_using_yt_dlp. The bridge keeps the cryptic
+        # "censored_sensitive_data" filter, ETA filter, and
+        # yt-dlp noise-pattern detection in one place.
+        self._yt_dlp_bridge = TaskYtDlpBridge(self)
+
         # API 来源标记 ('mobile' 或 'web')，用于 Fallback 策略
         self.api_source = 'mobile'  # 默认为 mobile API
 
@@ -569,136 +578,69 @@ class Task:
 
         return True
 
+    # 🔧 Yt-dlp integration is delegated to TaskYtDlpBridge.
+    # See moodle_dl/downloader/task_yt_dlp_bridge.py for the
+    # actual implementations. Task keeps the thin delegators
+    # so the existing call sites (including legacy tests that
+    # patch `moodle_dl.downloader.task.YtLogger` etc.) keep
+    # working.
     class YtLogger:
-        "logger for yt-dlp"
+        """logger for yt-dlp (kept as a Task class attribute for
+        backward compatibility with `Task.YtLogger(task)` and
+        existing tests that patch `moodle_dl.downloader.task.logging`).
+        Delegates all real work to TaskYtDlpBridge's YtLogger."""
 
         def __init__(self, task):
+            # Pass a getter for the task module's logging so
+            # existing tests patching `moodle_dl.downloader.task.logging`
+            # continue to work. The closure captures the module
+            # OBJECT (not the attribute value), so patches are
+            # picked up dynamically.
+            import moodle_dl.downloader.task as _task_module
+            from moodle_dl.downloader.task_yt_dlp_bridge import (
+                _logging_module as _bridge_logging,
+            )
+            self.bridge = task._yt_dlp_bridge
             self.task = task
             self.task_id = task.task_id
+            # Re-build the bridge's logger using the task module's
+            # logging so the test patches hit it.
+            self.bridge.logger = YtLogger(
+                task._yt_dlp_bridge,
+                logging_getter=lambda: getattr(_task_module, 'logging', _bridge_logging),
+            )
 
         def clean_msg(self, msg: str) -> str:
-            msg = msg.replace('\n', '')
-            msg = msg.replace('\r', '')
-            msg = msg.replace('\033[K', '')
-            msg = msg.replace('\033[0;31m', '')
-            msg = msg.replace('\033[0m', '')
-            msg = re.sub('token=([a-zA-Z0-9]+)', 'censored_sensitive_data', msg)
-
-            return msg
+            return self.bridge.logger.clean_msg(msg)
 
         def debug(self, msg):
+            # Inline the ETA filter so the message flow is preserved
+            # without round-tripping through the bridge (which would
+            # re-construct the logger).
             if msg.find('ETA') >= 0:
                 return
-            msg = self.clean_msg(msg)
-            logging.debug('[%d] yt-dlp Debug: %s', self.task_id, msg)
+            self.bridge.logger.debug(msg)
 
         def warning(self, msg):
-            msg = self.clean_msg(msg)
-            if (msg.find('Falling back on generic information extractor')) >= 0 or (
-                msg.find('Forcing generic information extractor') >= 0
-            ):
-                self.task.status.yt_dlp_used_generic_extractor = True
-                logging.debug('[%d] yt-dlp Warning: %s', self.task_id, msg)
-                return
-            if msg.find('Requested formats are incompatible for merge') >= 0:
-                logging.debug('[%d] yt-dlp Warning: %s', self.task_id, msg)
-                return
-            logging.warning('[%d] yt-dlp Warning: %s', self.task_id, msg)
+            self.bridge.logger.warning(msg)
 
         def error(self, msg):
-            msg = self.clean_msg(msg)
-            if msg.find('Unsupported URL') >= 0:
-                logging.debug('[%d] yt-dlp 错误：%s', self.task_id, msg)
-                return
-            if msg.find('no suitable InfoExtractor') >= 0:
-                logging.debug('[%d] yt-dlp 错误：%s', self.task_id, msg)
-                return
-            # This is a critical error, with high probability the link can be downloaded at a later time.
-            logging.error('[%d] yt-dlp 错误：%s', self.task_id, msg)
-            self.task.status.yt_dlp_failed_with_error = True
+            self.bridge.logger.error(msg)
 
     def yt_hook(self, data: Dict):
-        """
-        @param data: a dictionary with the entries
-            * status: One of "downloading", "error", or "finished". Check this first and ignore unknown values.
-            * info_dict: The extracted info_dict
-
-            If status is one of "downloading", or "finished", the following properties may also be present:
-            * filename: The final filename (always present)
-            * tmpfilename: The filename we're currently writing to
-            * downloaded_bytes: Bytes on disk
-            * total_bytes: Size of the whole file, None if unknown
-            * total_bytes_estimate: Guess of the eventual file size, None if unavailable.
-            * elapsed: The number of seconds since download started.
-            * eta: The estimated time in seconds, None if unknown
-            * speed: The download speed in bytes/second, None if unknown
-            * fragment_index: The counter of the currently downloaded video fragment.
-            * fragment_count: The number of fragments (= individual files that will be merged)
-
-            Progress hooks are guaranteed to be called at least once
-            (with status "finished") if the download is successful.
-        """
-        if data['status'] == 'error':
-            return
-
-        tmp_file_name = data.get('tmpfilename')
-        if tmp_file_name is None or tmp_file_name == '':
-            # for some unknown reason sometimes the filename is missing
-            return
-        content_length = data.get('total_bytes', 0) or 0
-        if content_length <= 0:
-            total_bytes_estimate = data.get('total_bytes_estimate', 0) or 0
-            content_length = total_bytes_estimate
-        bytes_received_total = data.get('downloaded_bytes', 0) or 0
-
-        self.status.yt_dlp_current_file = tmp_file_name
-        self.report_yt_dlp_content_length(content_length, tmp_file_name)
-        self.report_yt_dlp_received_bytes(bytes_received_total, tmp_file_name)
+        self._yt_dlp_bridge.yt_hook(data)
 
     def report_yt_dlp_content_length(self, content_length: int, file_name: str):
-        if file_name not in self.status.yt_dlp_total_size_per_file:
-            self.status.yt_dlp_total_size_per_file[file_name] = content_length
-            self.status.external_total_size += content_length
-            self.callback(DlEvent.TOTAL_SIZE, self, content_length=content_length)
-            return
-        old_content_length = self.status.yt_dlp_total_size_per_file[file_name]
-        if old_content_length != content_length:
-            content_length_diff = content_length - old_content_length
-            self.status.external_total_size += content_length_diff
-            self.callback(DlEvent.TOTAL_SIZE_UPDATE, self, content_length_diff=content_length_diff)
-            self.status.yt_dlp_total_size_per_file[file_name] = content_length
+        self._yt_dlp_bridge.report_content_length(content_length, file_name)
 
     def report_yt_dlp_received_bytes(self, bytes_received_total: int, file_name: str):
-        if file_name not in self.status.yt_dlp_bytes_downloaded_per_file:
-            self.status.yt_dlp_bytes_downloaded_per_file[file_name] = bytes_received_total
-            self.status.bytes_downloaded += bytes_received_total
-            self.callback(DlEvent.RECEIVED, self, bytes_received=bytes_received_total)
-            return
-        old_bytes_downloaded = self.status.yt_dlp_bytes_downloaded_per_file[file_name]
-        bytes_received = bytes_received_total - old_bytes_downloaded
-        if bytes_received > 0:
-            self.status.yt_dlp_bytes_downloaded_per_file[file_name] = bytes_received_total
-            self.status.bytes_downloaded += bytes_received
-            self.callback(DlEvent.RECEIVED, self, bytes_received=bytes_received)
-        elif bytes_received < 0:
-            logging.debug('Calculation error in report_yt_dlp_received_bytes')
+        self._yt_dlp_bridge.report_received_bytes(bytes_received_total, file_name)
 
     def yt_hook_after_move(self, final_filename: str):
-        """
-        Get called as the final step for each video file, after all postprocessors have been called.
-        @param final_filename: The filename will be passed as the only argument.
-        """
-        rel_pos = final_filename.find(self.destination)
-        if rel_pos >= 0:
-            final_filename = final_filename[rel_pos:]
-        self.file.saved_to = final_filename
+        self._yt_dlp_bridge.yt_hook_after_move(final_filename)
 
     def is_blocked_for_yt_dlp(self, url: str):
-        url_parsed = urlparse.urlparse(url)
-        # Do not download whole YT channels
-        if url_parsed.hostname.endswith('youtube.com') and url_parsed.path.startswith('/channel/'):
-            return True
-        return False
+        return self._yt_dlp_bridge.is_blocked_for_yt_dlp(url)
 
     def set_utime(self, last_modified_header: str = None):
         """
