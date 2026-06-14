@@ -29,7 +29,7 @@ Fork source: <https://github.com/QilanLin/Moodle-DL>. Upstream project and histo
 
 ### Requirements
 
-- Python `>= 3.7`
+- Python `>= 3.9` (3.7 / 3.8 are no longer supported)
 - Use the same Python interpreter that you plan to run `moodle-dl` with, for example `python3 -m pip ...`.
 
 ### Install From Source

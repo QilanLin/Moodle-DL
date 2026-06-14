@@ -36,21 +36,34 @@ setup(
             'moodle-dl = moodle_dl.main:main',
         ],
     },
-    python_requires='>=3.7',
+    python_requires='>=3.9',
     install_requires=[
+        # HTTP / async HTTP
         'aiodns>=3.0.0',
         'aiofiles>=22.1.0',
         'aiohttp>=3.8.4',
+        # TLS / certificates
         'certifi>=2020.4.5.2',
+        # Terminal coloring / structured logging
         'colorama>=0.4.6',
         'colorlog>=6.7.0',
+        # HTML→text conversion
         'html2text>=2020.1.16',
+        # Browser automation (used for SSO login)
         'playwright>=1.40.0',
+        # PHP-serialized payloads (Moodle web service response format)
+        'phpserialize>=1.3',
+        # Keypress reading (used in interactive prompts)
         'readchar>=4.0.3',
-        'requests>=2.24.0',
+        # Sync HTTP
+        'requests>=2.30.0',
+        'urllib3>=1.26.0,<3',  # requests 2.30+ requires urllib3<3
+        # Error reporting
         'sentry_sdk>=0.13.5',
+        # XMPP notifications
         'xmpppy>=0.7.1',
-        'yt_dlp>=2024.3.10',  # Re-enabled for cookie_mod files (kalvidres, helixmedia, lti)
+        # Media extraction (Kaltura / Helixmedia / LTI)
+        'yt_dlp>=2024.3.10',
     ],
     extras_require={
         'test': [
