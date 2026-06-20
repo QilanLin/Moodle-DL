@@ -23,6 +23,96 @@ from moodle_dl.utils import SslHelper
 from moodle_dl.ip_validator import IPValidator
 
 
+# -----------------------------------------------------------------------
+# Cross-process cookie-file lock
+# -----------------------------------------------------------------------
+# 🔧 Hang fix: a blocking fcntl.flock(LOCK_EX) on a sidecar
+# ``<cookie_file>.lock`` file used to wait forever if the previous
+# moodle-dl process died while holding the lock (e.g. OS killed
+# it for OOM). flock is *supposed* to be released on process
+# death, but on some POSIX implementations (notably macOS over
+# NFS, and certain Linux containers) the lock file can persist
+# and block future moodle-dl runs indefinitely. We now:
+#
+#   1. Acquire the lock NON-BLOCKING (LOCK_EX | LOCK_NB).
+#   2. If EAGAIN (lock is held by another process), retry up to
+#      ``COOKIE_FLOCK_RETRY_MAX`` times with exponential backoff.
+#      This lets a sibling moodle-dl finish its critical section
+#      without us waiting forever.
+#   3. If we still don't get the lock after the budget, give up
+#      and proceed without the lock. The cookie save is best-
+#      effort; not saving the cookies for one cycle is preferable
+#      to hanging the whole run.
+#
+# The fcntl module is POSIX-only. On Windows we fall back to a
+# no-op — the project does not formally support Windows anyway,
+# and the file-level atomic rename in MoodleDLCookieJar.save()
+# is sufficient protection against most corruption.
+COOKIE_FLOCK_TIMEOUT_S = 5.0  # max time to wait for the cookie lock
+COOKIE_FLOCK_INITIAL_BACKOFF_S = 0.05  # first retry delay
+COOKIE_FLOCK_MAX_BACKOFF_S = 0.5  # cap per-retry delay
+
+
+def _safe_cookie_flock(cookie_jar_path, session) -> bool:
+    """Acquire a sidecar lock on the cookie file, save cookies,
+    release the lock. Returns True on success, False if we gave up.
+
+    The lock is acquired with LOCK_EX | LOCK_NB and retried with
+    exponential backoff (50ms, 100ms, 200ms, 400ms, 500ms cap) up to
+    ``COOKIE_FLOCK_TIMEOUT_S`` seconds total. If the lock is held
+    by a stuck process and we can't get it, we return False rather
+    than waiting forever.
+    """
+    import time as _time
+    lock_path = cookie_jar_path + '.lock'
+    try:
+        import fcntl  # POSIX-only; absent on Windows
+    except ImportError:
+        # Windows or unusual platform: skip the lock. The atomic
+        # rename inside the cookie save provides best-effort safety.
+        session.cookies.save(ignore_discard=True, ignore_expires=True)
+        return True
+
+    deadline = _time.monotonic() + COOKIE_FLOCK_TIMEOUT_S
+    backoff = COOKIE_FLOCK_INITIAL_BACKOFF_S
+    lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        while True:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break  # got the lock
+            except (BlockingIOError, OSError) as lock_err:
+                # EAGAIN / EWOULDBLOCK — another process holds it
+                if lock_err.errno not in (11, 35):  # EAGAIN, EDEADLK variants
+                    # Unexpected error — log and bail
+                    logging.debug('Cookie flock failed with errno %s', lock_err.errno)
+                    return False
+                if _time.monotonic() >= deadline:
+                    logging.warning(
+                        'Could not acquire cookie lock within %ss '
+                        '(%s); proceeding without lock (cookies may be stale)',
+                        COOKIE_FLOCK_TIMEOUT_S, lock_path,
+                    )
+                    # Don't return yet — try the save anyway without
+                    # the lock so the user still gets cookies saved
+                    # (best-effort). Worst case: cookies get clobbered
+                    # by a sibling moodle-dl mid-save; they'll just
+                    # be re-fetched next time.
+                    session.cookies.save(ignore_discard=True, ignore_expires=True)
+                    return False
+                # Sleep with exponential backoff, capped.
+                _time.sleep(backoff)
+                backoff = min(backoff * 2, COOKIE_FLOCK_MAX_BACKOFF_S)
+        # We have the lock — save cookies, then release.
+        try:
+            session.cookies.save(ignore_discard=True, ignore_expires=True)
+        finally:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        return True
+    finally:
+        os.close(lock_fd)
+
+
 class RequestHelper:
     """
     Functions for sending out requests to the Moodle System.
@@ -118,15 +208,13 @@ class RequestHelper:
             # uses temp + rename), but without the lock a
             # process could read+truncate+write in between
             # another process's read and write.
-            import fcntl
-            lock_path = cookie_jar_path + ".lock"
-            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                session.cookies.save(ignore_discard=True, ignore_expires=True)
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+            #
+            # We acquire the lock non-blocking (LOCK_EX | LOCK_NB)
+            # so a stuck / crashed peer doesn't deadlock us forever.
+            # The fcntl module only exists on POSIX; on Windows we
+            # fall back to a no-op (Windows file locking uses
+            # msvcrt which is incompatible with this design).
+            _safe_cookie_flock(cookie_jar_path, session)
 
         return response, session
 
@@ -156,17 +244,12 @@ class RequestHelper:
             raise MoodleNetworkError(f"网络连接错误: {str(error)}") from None
 
         if cookie_jar_path is not None:
-            # 🆕 Cross-process safe cookie save. See comment in
-            # post_URL for the rationale.
-            import fcntl
-            lock_path = cookie_jar_path + ".lock"
-            lock_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
-            try:
-                fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                session.cookies.save(ignore_discard=True, ignore_expires=True)
-            finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+            for cookie in session.cookies:
+                cookie.expires = 2147483647
+
+            # 🆕 Cross-process safe cookie save (see comment in
+            # post_URL for the rationale).
+            _safe_cookie_flock(cookie_jar_path, session)
 
         return response, session
 

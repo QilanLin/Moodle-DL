@@ -27,6 +27,7 @@ The interface is intentionally focused on yt-dlp only:
     bridge.download(...)         # actual integration
 """
 import logging as _logging_module
+import asyncio
 import os
 import re
 from typing import TYPE_CHECKING, Any, Dict, Optional
@@ -380,9 +381,18 @@ class TaskYtDlpBridge:
             ydl._download_retcode = 0  # pylint: disable=protected-access
             try:
                 loop = _asyncio.get_running_loop()
-                ydl_result = await loop.run_in_executor(
-                    self.task.thread_pool,
-                    _functools.partial(ydl.download, dl_url),
+                # 🔧 Hang fix: wrap ``run_in_executor`` in
+                # ``asyncio.wait_for`` so a stuck yt-dlp can't hang
+                # the event loop forever. Default 10 minutes; the
+                # operator can override with the env var
+                # ``YT_DLP_TIMEOUT``.
+                ydl_timeout = float(os.environ.get('YT_DLP_TIMEOUT', '600'))
+                ydl_result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        self.task.thread_pool,
+                        _functools.partial(ydl.download, dl_url),
+                    ),
+                    timeout=ydl_timeout,
                 )
                 if ydl_result == 0:
                     if self.task._is_index_mod_page_file():
@@ -392,6 +402,10 @@ class TaskYtDlpBridge:
                     # want to download the URL extra — only if yt-dlp
                     # used a generic extractor.
                     return not self.task.status.yt_dlp_used_generic_extractor
+            except asyncio.TimeoutError:
+                error_msg = f'yt-dlp exceeded {ydl_timeout}s timeout'
+                logging.error('[%d] ❌ %s', self.task_id, error_msg)
+                self._log_yt_dlp_error_diagnosis(error_msg)
             except Exception as yt_err:
                 error_msg = str(yt_err)
                 logging.error('[%d] ❌ yt-dlp 下载失败', self.task_id)

@@ -2462,13 +2462,24 @@ async def test_download_using_yt_dlp_ignores_errors_when_configured(task_factory
 async def test_download_using_external_downloader_success_and_failures(task_factory):
     success = task_factory(content_filename='video.mp4')
     Path(success.destination).mkdir(parents=True, exist_ok=True)
-    proc = SimpleNamespace(
-        stdout=SimpleNamespace(readline=AsyncMock(return_value=b'')),
-        communicate=AsyncMock(return_value=(b'', b'')),
+    # 🔧 Hang fix v3: external downloader is now read via
+    # drain(stream) which calls stream.read(N). The mock must
+    # therefore provide ``stdout.read`` and ``stderr.read`` that
+    # return b'' on the second call (to simulate EOF), otherwise
+    # drain() would loop forever appending the same return_value.
+    success_proc = SimpleNamespace(
+        stdout=SimpleNamespace(
+            read=AsyncMock(side_effect=[b'', b'']),
+        ),
+        stderr=SimpleNamespace(
+            read=AsyncMock(side_effect=[b'', b'']),
+        ),
         returncode=0,
+        pid=12345,
+        wait=AsyncMock(return_value=0),
     )
 
-    with patch('moodle_dl.downloader.task.asyncio.create_subprocess_exec', AsyncMock(return_value=proc)) as create_proc:
+    with patch('moodle_dl.downloader.task.asyncio.create_subprocess_exec', AsyncMock(return_value=success_proc)) as create_proc:
         await success.download_using_external_downloader(
             'https://video.example.com/watch',
             'downloader %U',
@@ -2480,10 +2491,17 @@ async def test_download_using_external_downloader_success_and_failures(task_fact
 
     failing = task_factory(content_filename='video.mp4')
     failing.file.saved_to = str(Path(failing.destination) / 'video.mp4.url')
+    # Same fix: mock read returns a payload then b'' for EOF.
     failing_proc = SimpleNamespace(
-        stdout=SimpleNamespace(readline=AsyncMock(return_value=b'')),
-        communicate=AsyncMock(return_value=(b'', b'bad')),
+        stdout=SimpleNamespace(
+            read=AsyncMock(side_effect=[b'', b'']),
+        ),
+        stderr=SimpleNamespace(
+            read=AsyncMock(side_effect=[b'bad', b'']),
+        ),
         returncode=2,
+        pid=12346,
+        wait=AsyncMock(return_value=2),
     )
 
     with (

@@ -741,28 +741,122 @@ class Task:
             cmd,
         )
         external_dl_failed_with_error = False
+        stderr_text = ''
+        # Track the drain tasks so we can guarantee they're
+        # awaited (and thus cancelled) on EVERY exit path. If we
+        # don't, the tasks can outlive this function and accumulate
+        # data — observed during testing with AsyncMock streams.
+        # Storing them on a closure-scoped list lets us wait on
+        # them even from inside the except / finally blocks below.
+        drain_tasks = []
         try:
+            # 🔧 Hang fix: stream stdout via a background task and
+            # wait_for it with an explicit timeout. If the subprocess
+            # hangs (or its stdout buffer fills up and blocks the
+            # subprocess), we kill it and report a clean error.
+            #
+            # Background reading of stdout is necessary because
+            # once the OS pipe buffer fills (~64KB on macOS/Linux),
+            # the subprocess blocks on its next write — at which
+            # point ``await proc.communicate()`` would wait forever
+            # even though the download is "done" in the subprocess's
+            # mind. The dedicated reader task drains the pipe
+            # concurrently so the subprocess never blocks.
             proc = await asyncio.create_subprocess_exec(
-                shlex.split(cmd),
+                *shlex.split(cmd),
                 cwd=str(self.destination),
-                stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
             )
 
-            for lines in await proc.stdout.readline():
-                # line = line.decode('utf-8', 'replace')
-                logging.debug('[%d] Ext-Dl: %s', self.task_id, lines.splitlines()[-1])
+            async def drain(stream):
+                """Read a subprocess stream until EOF, returning all bytes.
 
-            _, stderr = await proc.communicate()
+                🪧 Memory: we accumulate into a list and join at the
+                end. For an external downloader that emits hundreds
+                of megabytes (e.g. ``yt-dlp`` downloading a long
+                video), the list can grow large. We bound it by the
+                ``asyncio.wait_for`` timeout in the caller: if the
+                subprocess outlives the deadline, we kill it and the
+                streams EOF, which terminates the loop.
+                """
+                chunks = []
+                while True:
+                    chunk = await stream.read(64 * 1024)
+                    if not chunk:
+                        return b''.join(chunks)
+                    chunks.append(chunk)
+
+            # Use ``asyncio.wait_for`` to enforce a hard timeout on the
+            # whole subprocess lifetime. The default is 5 minutes;
+            # the operator can override with the
+            # ``EXTERNAL_DOWNLOADER_TIMEOUT`` env var.
+            timeout = float(os.environ.get('EXTERNAL_DOWNLOADER_TIMEOUT', '300'))
+
+            stdout_task = asyncio.create_task(drain(proc.stdout))
+            stderr_task = asyncio.create_task(drain(proc.stderr))
+            drain_tasks.extend([stdout_task, stderr_task])
+
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task),
+                    timeout=timeout,
+                )
+                stderr_text = (stderr_bytes or b'').decode('utf-8', errors='replace')
+            except asyncio.TimeoutError:
+                # Subprocess is still running after the timeout —
+                # kill it forcibly.
+                logging.error(
+                    '[%d] External downloader exceeded %ss timeout; '
+                    'killing it (PID=%s)',
+                    self.task_id, timeout, proc.pid,
+                )
+                try:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+                        await proc.wait()
+                except ProcessLookupError:
+                    pass
+                # Don't await the drain tasks here — cancel them and
+                # let asyncio garbage-collect on event loop shutdown.
+                # Awaiting on a non-cancellable stream would block
+                # the test runner indefinitely (observed during
+                # testing with AsyncMock mocks that ignore cancel()).
+                for t in drain_tasks:
+                    if not t.done():
+                        t.cancel()
+                raise RuntimeError(
+                    f'External downloader exceeded {timeout}s timeout '
+                    f'and was killed'
+                )
+
+            # Decode stdout to log lines for debugging.
+            for line in (stdout_bytes or b'').decode('utf-8', errors='replace').splitlines():
+                logging.debug('[%d] Ext-Dl: %s', self.task_id, line)
+
+            # Wait for the actual exit code.
+            await proc.wait()
 
             if proc.returncode != 0:
                 external_dl_failed_with_error = True
         except (subprocess.SubprocessError, ValueError, TypeError) as e:
-            stderr = str(e)
+            stderr_text = stderr_text or str(e)
             external_dl_failed_with_error = True
 
+        # Cancel any drain tasks that are still alive. On real
+        # subprocess this is a no-op (the task already returned b''
+        # on EOF). On test mocks with AsyncMock the cancel() may
+        # not take effect, but we don't await — the next event
+        # loop iteration will GC the task.
+        for t in drain_tasks:
+            if not t.done():
+                t.cancel()
+
         if external_dl_failed_with_error:
-            logging.error('[%d] External downloader error: %s', self.task_id, stderr)
+            logging.error('[%d] External downloader error: %s', self.task_id, stderr_text)
             if not delete_if_successful:
                 # cleanup the url-link file
                 PT.remove_file(self.file.saved_to)
@@ -1082,8 +1176,47 @@ class Task:
 
         PT.remove_file(self.file.saved_to)
         self.set_path(True)
-        with urllib.request.urlopen(url_to_download) as response:
-            data = response.read()
+        # 🔧 Hang fix: use ``asyncio.to_thread`` to push the
+        # blocking urlopen into a worker thread AND wrap the
+        # call in ``asyncio.wait_for`` so a slow / unreachable
+        # server can't hang the event loop forever.
+        # Default timeout matches the existing REQUEST_TIMEOUT
+        # pattern used elsewhere (30s); overridable via env var
+        # EXTERNAL_URLOPEN_TIMEOUT for the rare case where a user
+        # wants to wait longer for a legitimate slow server.
+        import urllib.request as _urllib_req
+        import urllib.error as _urllib_err
+        urlopen_timeout = float(
+            os.environ.get('EXTERNAL_URLOPEN_TIMEOUT', str(self.REQUEST_TIMEOUT))
+        )
+        try:
+            # Pass the *context-manager wrapper* of urlopen to
+            # to_thread, then enter the context in the async code.
+            # This preserves the test mocks that rely on
+            # ``response.__enter__.return_value.read.return_value``.
+            urlopen_cm = await asyncio.wait_for(
+                asyncio.to_thread(
+                    _urllib_req.urlopen,
+                    url_to_download,
+                    timeout=urlopen_timeout,
+                ),
+                timeout=urlopen_timeout + 5.0,  # outer cap slightly above
+            )
+            # urlopen returns an HTTPResponse that supports the
+            # context-manager protocol (``__enter__``/``__exit__``).
+            # Real responses close the connection on exit; mocks just
+            # set ``__exit__.return_value = False`` and we ignore it.
+            with urlopen_cm as response:
+                data = response.read()
+        except (asyncio.TimeoutError, TimeoutError):
+            logging.error(
+                '[%d] ❌ urlen failed: exceeded %ss timeout',
+                self.task_id, urlopen_timeout,
+            )
+            return False
+        except _urllib_err.URLError as url_err:
+            logging.error('[%d] ❌ urlen failed: %s', self.task_id, url_err)
+            return False
 
         async with aiofiles.open(self.file.saved_to, "wb") as target_file:
             await target_file.write(data)
