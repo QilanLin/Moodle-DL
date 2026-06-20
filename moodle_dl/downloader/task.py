@@ -40,6 +40,7 @@ from moodle_dl.downloader._patterns import (  # noqa: E402
     IncompleteRecord,
     ensure_dir,
     ensure_parent_dir,
+    make_aiohttp_timeout,
     safe_remove_part_and_final,
 )
 from moodle_dl.downloader.task_cookie_manager import TaskCookieManager
@@ -672,7 +673,7 @@ class Task:
             self.opts.global_opts.allow_insecure_ssl,
             self.opts.global_opts.use_all_ciphers,
         )
-        async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
+        async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True, timeout=make_aiohttp_timeout()) as session:
             try:
                 async with session.request("HEAD", dl_url, headers=self.RQ_HEADER, ssl=ssl_context, timeout=20) as resp:
                     if resp.url != dl_url:
@@ -1022,7 +1023,7 @@ class Task:
             self.opts.global_opts.use_all_ciphers,
         )
 
-        async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
+        async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True, timeout=make_aiohttp_timeout()) as session:
             async with session.request(
                 "GET",
                 url_to_download,
@@ -2168,7 +2169,7 @@ class Task:
         resume_attempted = False
 
         with Timer() as watch:
-            async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True) as session:
+            async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True, timeout=make_aiohttp_timeout()) as session:
                 # 尝试恢复未完成的下载（仅在第一次尝试时）
                 # 🔧 Part-file resume: the part file lives at .part suffix;
                 # the DB row recorded dest_path.part. Pass the part

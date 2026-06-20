@@ -1379,7 +1379,21 @@ async def test_get_head_infos_extracts_response_metadata(task_factory, fake_head
         infos = await task.get_head_infos('https://example.com/file.pdf')
 
     get_ssl_context.assert_called_once_with(False, False, False)
-    assert fake_head_client_session.captured == [{'cookie_jar': fake_cookie_jar, 'raise_for_status': True}]
+    # The ClientSession is now created with a `timeout=make_aiohttp_timeout()`
+    # kwarg so DNS / connect / per-chunk read timeouts are bounded. We
+    # assert the *shape* of the kwarg dict (i.e. that the new timeout was
+    # passed) but not the ClientTimeout instance itself (which is opaque).
+    assert len(fake_head_client_session.captured) == 1
+    captured = fake_head_client_session.captured[0]
+    assert captured['cookie_jar'] is fake_cookie_jar
+    assert captured['raise_for_status'] is True
+    assert 'timeout' in captured
+    # aiohttp.ClientTimeout is the marker; verify the per-phase limits
+    # we set in make_aiohttp_timeout() survive the round-trip.
+    timeout = captured['timeout']
+    assert timeout.total == 300.0
+    assert timeout.connect == 10.0
+    assert timeout.sock_read == 30.0
     assert infos.content_type == 'application/pdf'
     assert infos.content_length == 321
     assert infos.last_modified == 'Wed, 21 Oct 2015 07:28:00 GMT'
@@ -3044,7 +3058,11 @@ async def test_download_url_marks_complete_and_ignores_cleanup_errors(task_facto
     ):
         await task.download_url('https://example.com/download.bin', str(dest_path))
 
-    assert FakeClientSession.instances[0].kwargs == {'cookie_jar': 'cookie-jar', 'raise_for_status': True}
+    assert FakeClientSession.instances[0].kwargs == {
+        'cookie_jar': 'cookie-jar',
+        'raise_for_status': True,
+        'timeout': FakeClientSession.instances[0].kwargs['timeout'],  # opaque ClientTimeout
+    }
     fake_file.close.assert_awaited_once()
     recorder_cls.assert_called_once_with(config_cls.return_value, task.opts)
     recorder_cls.return_value.mark_download_complete.assert_called_once_with(123, str(dest_path))

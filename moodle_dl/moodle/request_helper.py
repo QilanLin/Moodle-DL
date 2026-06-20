@@ -13,6 +13,7 @@ from requests import Response
 from requests.exceptions import RequestException
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.downloader._patterns import make_aiohttp_timeout
 from moodle_dl.exceptions import MoodleAPIError, MoodleAuthError, MoodleNetworkError, RequestRejectedError
 from moodle_dl.network_throttle import NetworkThrottle
 from moodle_dl.types import MoodleDlOpts, MoodleURL
@@ -194,7 +195,7 @@ class RequestHelper:
         resp_json = None
         last_retryable_error = None
 
-        async with self.semaphore, aiohttp.ClientSession() as session:
+        async with self.semaphore, aiohttp.ClientSession(timeout=make_aiohttp_timeout()) as session:
             while attempt < self.MAX_RETRIES:
                 try:
                     await self.async_wait_for_network_slot(f'Moodle API {function}')

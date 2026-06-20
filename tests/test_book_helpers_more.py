@@ -130,6 +130,12 @@ class FakeChapterClientSession:
     error = None
     requested = []
 
+    def __init__(self, *args, **kwargs):
+        # Accept (and ignore) all kwargs like `timeout` from
+        # make_aiohttp_timeout(), so the test can patch the real
+        # ClientSession without rewriting every caller.
+        pass
+
     async def __aenter__(self):
         return self
 
@@ -137,7 +143,10 @@ class FakeChapterClientSession:
         return False
 
     def get(self, url, timeout):
-        FakeChapterClientSession.requested.append((url, timeout.total))
+        # Accept either an aiohttp.ClientTimeout (with `.total`) or
+        # a plain int/float (the new timeout=30 shorthand).
+        recorded = getattr(timeout, 'total', timeout)
+        FakeChapterClientSession.requested.append((url, recorded))
         if FakeChapterClientSession.error is not None:
             raise FakeChapterClientSession.error
         return FakeChapterClientSession.response

@@ -195,6 +195,64 @@ def part_file_size_or_none(part_path: str) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# aiohttp TCPConnector with explicit timeouts
+# ---------------------------------------------------------------------------
+#: Default per-operation timeout (seconds) for aiohttp. The `total`
+#: parameter in aiohttp.ClientSession.request() only bounds the whole
+#: request, NOT the DNS resolution or TCP connect steps individually.
+#: Without a custom TCPConnector, an unreachable host can sit in DNS
+#: resolution for 75+ seconds (the OS default) before any timeout kicks
+#: in. Combined with aiohttp's connection pooling, this caused the
+#: moodle-dl process to deadlock on hosts like keats.kcl.ac.uk (DNS
+#: times out from China, SSL handshake never starts, the executor
+#: thread is starved, all other downloads queue indefinitely).
+#:
+#: We use a single ClientTimeout with conservative bounds for each
+#: phase. If the host is slow but reachable, the total ceiling still
+#: bounds the call. If the host is unreachable, DNS / connect fail
+#: fast and the download loop can fall back to .part resume / shortcut.
+DEFAULT_AIOHTTP_CONNECT_TIMEOUT_S = 10.0   # TCP connect (incl. DNS) per attempt
+DEFAULT_AIOHTTP_SOCK_READ_TIMEOUT_S = 30.0  # per-chunk read deadline
+DEFAULT_AIOHTTP_TOTAL_TIMEOUT_S = 300.0    # whole request (matches the old default)
+
+
+def make_aiohttp_timeout(
+    total_s: float = DEFAULT_AIOHTTP_TOTAL_TIMEOUT_S,
+    connect_s: float = DEFAULT_AIOHTTP_CONNECT_TIMEOUT_S,
+    sock_read_s: float = DEFAULT_AIOHTTP_SOCK_READ_TIMEOUT_S,
+) -> 'aiohttp.ClientTimeout':
+    """Build a ClientTimeout with explicit DNS / connect / read limits.
+
+    aiohttp's stock `ClientTimeout(total=...)` only bounds the *total*
+    request, so an unreachable host (DNS hangs) can sit on the
+    connect phase for the OS-default ~75s before any timeout fires.
+    This builder fills in per-phase ceilings so the whole request
+    fails fast on a stuck DNS or TCP handshake.
+
+    Args:
+        total_s: ceiling for the whole request (incl. redirects,
+            body read). Default 300s.
+        connect_s: ceiling for a single TCP connect (includes DNS).
+            Default 10s.
+        sock_read_s: ceiling for a single read of incoming bytes
+            from the socket. Default 30s.
+
+    Returns:
+        aiohttp.ClientTimeout instance ready to pass to
+        ClientSession(timeout=...).
+    """
+    # Local import to keep this module importable without aiohttp
+    # (tests can construct a fake timeout by mocking).
+    import aiohttp  # noqa: WPS433 — intentional local import
+
+    return aiohttp.ClientTimeout(
+        total=total_s,
+        connect=connect_s,
+        sock_read=sock_read_s,
+    )
+
+
+# ---------------------------------------------------------------------------
 # SQLite inspection (used by tests and by some production paths)
 # ---------------------------------------------------------------------------
 def query_count(conn_or_recorder, table: str, where: str = '', params: tuple = ()) -> int:

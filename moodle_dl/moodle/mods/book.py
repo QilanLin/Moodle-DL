@@ -11,6 +11,7 @@ import urllib.parse
 from typing import Dict, List, Tuple
 
 from moodle_dl.config import ConfigHelper
+from moodle_dl.downloader._patterns import make_aiohttp_timeout
 from moodle_dl.downloader.kaltura_patterns import (
     IFRAME_RE,
     IFRAME_WITH_CLASS_RE,
@@ -548,8 +549,8 @@ class BookMod(MoodleMod):
             authenticated_url = f"{fileurl}{separator}token={self.client.token}"
 
             await self._wait_for_network_slot(f'book chapter HTML {fileurl}')
-            async with aiohttp.ClientSession() as session:
-                async with session.get(authenticated_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
+            async with aiohttp.ClientSession(timeout=make_aiohttp_timeout()) as session:
+                async with session.get(authenticated_url, timeout=30) as response:
                     if response.status == 200:
                         # Read as text with proper encoding
                         html_content = await response.text(encoding='utf-8')
