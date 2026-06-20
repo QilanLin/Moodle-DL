@@ -2082,20 +2082,28 @@ class Task:
             return file_obj, total_bytes_received, content_length, content_range
 
     async def download_url(self, dl_url: str, dest_path: str, timeout: int = None):
-        # 🔧 Ctrl-C / kill resilience:
-        # Wrap the entire download in a try/except that catches BOTH
-        # asyncio.CancelledError (raised when the event loop is being
-        # torn down, e.g. by signal handlers) AND BaseException
-        # (KeyboardInterrupt at the top of the loop). On cancellation
-        # we MUST save the partial .part file to disk + record an
-        # incomplete_downloads row so the next run can resume.
+        # 🔧 Ctrl-C / kill resilience (v2 — restart-from-scratch):
+        # When the user Ctrl-C's in the middle of a download, the
+        # default behavior (restart_incomplete_on_kill = True) is
+        # to DELETE the partial .part file so the next run
+        # re-downloads the same file from byte 0. The remaining
+        # queued files are not affected — only the one in-flight
+        # download is dropped and retried from scratch.
+        #
+        # To restore the older "resume from byte N" behavior, set
+        # ``restart_incomplete_on_kill = False`` in config.json or
+        # via the ``MOODLE_DL_KEEP_INCOMPLETE_ON_KILL`` env var.
         self._open_file_handle = None  # 🔧 tracked for finally cleanup
         try:
             return await self._download_url_impl(dl_url, dest_path, timeout)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            # Reached on Ctrl-C / SIGTERM / task.cancel(). The file
-            # is at .part, partial. Save the resume record and re-raise.
-            await self._save_incomplete_on_kill(dl_url, dest_path)
+            if getattr(self.opts, 'restart_incomplete_on_kill', True):
+                # User wants clean restart on the killed file.
+                await self._discard_incomplete_on_kill(dest_path)
+            else:
+                # Legacy behavior: save the partial .part + DB row
+                # so the next run can resume from byte N.
+                await self._save_incomplete_on_kill(dl_url, dest_path)
             raise
         finally:
             # 🔧 Ctrl-C resilience: ensure open file handle is closed
@@ -2109,6 +2117,37 @@ class Task:
                     await fh.close()
                 except Exception:
                     pass
+
+    async def _discard_incomplete_on_kill(self, dest_path: str) -> None:
+        """Delete the partial .part file when the user Ctrl-C's.
+
+        Mirror of ``_save_incomplete_on_kill`` but does the OPPOSITE:
+        instead of saving the partial bytes for next-run resume, it
+        throws them away so the next run re-downloads the file from
+        byte 0. This is the user-friendly behavior when the user is
+        impatient: don't keep junk .part files lying around.
+
+        MUST be tolerant of secondary failures: if the disk is full
+        or the file is locked, we still want to re-raise the original
+        cancellation, not mask it with a cleanup error.
+        """
+        from moodle_dl.utils import PathTools as PT
+
+        part_path = dest_path_to_part_path(dest_path)
+        try:
+            if not os.path.exists(part_path):
+                return
+            PT.remove_file(part_path)
+            logging.warning(
+                '[%d] 🔧 Kill detected — deleted incomplete .part %s; '
+                'next run will re-download this file from the start',
+                self.task_id, part_path,
+            )
+        except Exception as cleanup_err:
+            logging.error(
+                '[%d] Failed to delete .part on kill: %s',
+                self.task_id, cleanup_err,
+            )
 
     async def _save_incomplete_on_kill(self, dl_url: str, dest_path: str):
         """Best-effort: record the .part file in incomplete_downloads.
@@ -2166,7 +2205,14 @@ class Task:
         )
 
         # 🆕 尝试恢复之前中断的下载
-        resume_attempted = False
+        # When restart_incomplete_on_kill is True (default), the
+        # .part file is deleted on Ctrl-C / SIGTERM, so there will
+        # never be a resume row to recover from. Skip the resume
+        # probe to save a wasted HEAD request and avoid the
+        # confusing "recovering from byte N" log line.
+        resume_attempted = getattr(
+            self.opts, 'restart_incomplete_on_kill', True
+        )
 
         with Timer() as watch:
             async with aiohttp.ClientSession(cookie_jar=self.get_cookie_jar(), raise_for_status=True, timeout=make_aiohttp_timeout()) as session:

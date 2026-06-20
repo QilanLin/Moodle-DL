@@ -357,6 +357,15 @@ class MoodleDlOpts:
     add_all_visible_courses: bool = False
     retry_failed: bool = False
     resume: bool = False
+    # When True (default), Ctrl-C / SIGTERM during a download
+    # causes the partial .part file to be DELETED and the file
+    # to be re-downloaded from scratch on the next run. The
+    # remaining queued files are NOT re-run from the start.
+    # When False, the original resume-from-byte-N behavior is used.
+    # Set to False via config.json or env var
+    # MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1 to restore the legacy
+    # resume-on-kill behavior.
+    restart_incomplete_on_kill: bool = True
     refresh_cookies: bool = False
     sso: bool = False
     username: str = ''

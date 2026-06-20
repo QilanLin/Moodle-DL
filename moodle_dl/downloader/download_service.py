@@ -253,7 +253,7 @@ class DownloadService:
 
         self.status = DownloadStatus()
         self.all_tasks = self.gen_all_tasks()
-        
+
         # 🆕 增强的进度追踪器
         self.progress_tracker = ProgressTracker()
         self.pause_controller = DownloadPauseController()
@@ -261,6 +261,14 @@ class DownloadService:
         self._status_log_loop = None
         self._last_logged_status_snapshot = None
         self._bytes_downloaded_at_last_status_log_signal = 0
+
+        # 🔧 Ctrl-C resilience: clean up any .part files left from a
+        # previous run that died before saving the resume record (or
+        # before deletion in the new restart-from-scratch flow). If
+        # the user is in the legacy "resume from byte N" mode, the
+        # scan still runs but only deletes truly-orphan files (those
+        # without a corresponding incomplete_downloads row).
+        self._scan_and_clean_orphan_parts(config)
 
     def _configure_task_settings(self) -> tuple:
         """Configure task settings and create thread pool.
@@ -594,6 +602,91 @@ class DownloadService:
                 skipped=0,
             )
             self._display_download_summary()
+
+    def _scan_and_clean_orphan_parts(self, config):
+        """Clean up ``.part`` files left over from a previous run.
+
+        Called once at startup. The behavior depends on the user's
+        ``restart_incomplete_on_kill`` setting:
+
+        * If True (default, new behavior): the scan DELETES every
+          ``.part`` file found. They are orphans by definition —
+          the new code path deletes the .part on Ctrl-C so any .part
+          present at startup must be from a run that died before
+          cleanup (e.g. OOM kill -9). Deleting is the safe default.
+
+        * If False (legacy, opt-in via env var): the scan only
+          deletes ``.part`` files that don't have a corresponding
+          ``incomplete_downloads`` row. Files with a row are left
+          alone so the resume path can pick them up.
+
+        The result is logged for visibility — a user should be able
+        to tell whether stale .part bytes were silently dropped.
+        """
+        from moodle_dl.downloader.task import scan_for_orphan_part_files
+        from moodle_dl.utils import PathTools as PT
+
+        try:
+            workspace_root = config.get_download_path()
+        except Exception:
+            return
+
+        if not workspace_root or not os.path.isdir(workspace_root):
+            return
+
+        recorder = getattr(self, 'database', None)
+        if recorder is None:
+            return
+
+        try:
+            orphans = scan_for_orphan_part_files(workspace_root, recorder)
+        except Exception as scan_err:
+            logging.warning('Failed to scan for orphan .part files: %s', scan_err)
+            return
+
+        if not orphans:
+            return
+
+        restart_mode = bool(getattr(self.opts, 'restart_incomplete_on_kill', True))
+        if restart_mode:
+            # New behavior: delete every orphan .part so the new run
+            # starts clean.
+            deleted = 0
+            for part_path, _expected, _action in orphans:
+                try:
+                    PT.remove_file(part_path)
+                    deleted += 1
+                except Exception as rm_err:
+                    logging.debug(
+                        'Failed to remove orphan .part %s: %s',
+                        part_path, rm_err,
+                    )
+            if deleted:
+                logging.info(
+                    '🔧 Cleaned %d orphan .part file(s) from previous run '
+                    '(restart_incomplete_on_kill=True); the affected files '
+                    'will be re-downloaded from scratch this run.',
+                    deleted,
+                )
+        else:
+            # Legacy mode: only delete .part files that have NO
+            # corresponding incomplete_downloads row. The others are
+            # handled by the resume path.
+            deleted = 0
+            for part_path, _expected, _action in orphans:
+                try:
+                    PT.remove_file(part_path)
+                    deleted += 1
+                except Exception as rm_err:
+                    logging.debug(
+                        'Failed to remove stale .part %s: %s',
+                        part_path, rm_err,
+                    )
+            if deleted:
+                logging.info(
+                    '🔧 Cleaned %d stale .part file(s) (no resume row).',
+                    deleted,
+                )
 
     def _iter_known_files(self):
         seen = set()

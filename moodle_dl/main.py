@@ -1026,6 +1026,30 @@ def get_parser():
         help='Allow connections to unpatched servers. Use this option if your server uses a very old SSL version.',
     )
     parser.add_argument(
+        '-rik',
+        '--restart-incomplete-on-kill',
+        dest='restart_incomplete_on_kill',
+        default=True,
+        action='store_true',
+        help=(
+            'On Ctrl-C / SIGTERM during a download, delete the partial '
+            '.part file so the next run re-downloads the file from '
+            'scratch (default). Set MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1 '
+            'to keep the old resume-from-byte-N behavior.'
+        ),
+    )
+    parser.add_argument(
+        '-keep',
+        '--keep-incomplete-on-kill',
+        dest='restart_incomplete_on_kill',
+        action='store_false',
+        help=(
+            'Opposite of --restart-incomplete-on-kill: keep the '
+            'partial .part file on Ctrl-C / SIGTERM so the next run '
+            'can resume from byte N. Set MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1.'
+        ),
+    )
+    parser.add_argument(
         '-uac',
         '--use-all-ciphers',
         dest='use_all_ciphers',
@@ -1096,6 +1120,17 @@ def post_process_opts(opts: MoodleDlOpts):
 
     # Max 32 yt-dlp threads
     opts.max_parallel_yt_dlp = min(opts.max_parallel_downloads, min(32, opts.max_parallel_yt_dlp))
+
+    # 🔧 Ctrl-C resilience: env var override. The default of True
+    # (delete the .part on kill) is exposed to CLI flags
+    # (--restart-incomplete-on-kill / --keep-incomplete-on-kill);
+    # we also honor the legacy MOODLE_DL_KEEP_INCOMPLETE_ON_KILL
+    # env var for users with pre-existing scripts.
+    if os.environ.get('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL') == '1':
+        opts.restart_incomplete_on_kill = False
+    elif os.environ.get('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL') == '0':
+        opts.restart_incomplete_on_kill = True
+
     return opts
 
 

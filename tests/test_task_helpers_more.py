@@ -3096,6 +3096,11 @@ async def test_download_url_ignores_resume_errors_and_downloads_from_start(task_
 
     task = task_factory()
     task.file.file_id = 123
+    # 🔧 Kill-resilience v2: the new default skips the resume lookup
+    # because the user opted into "restart from scratch" on kill.
+    # The legacy behavior is exercised here by opting out of the
+    # new default.
+    task.opts.restart_incomplete_on_kill = False
     dest_path = tmp_path / 'partial.bin'
     # 🔧 Part-file resume: the resume trigger looks for .part suffix
     from moodle_dl.downloader.task import dest_path_to_part_path
