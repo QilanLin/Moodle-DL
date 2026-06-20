@@ -10,6 +10,8 @@ import time
 import urllib.parse
 from typing import Dict, List, Tuple
 
+import aiofiles
+
 from moodle_dl.config import ConfigHelper
 from moodle_dl.downloader._patterns import make_aiohttp_timeout
 from moodle_dl.downloader.kaltura_patterns import (
@@ -842,8 +844,13 @@ class BookMod(MoodleMod):
                             tempfile.gettempdir(),
                             f'playwright_course_page_{course_id}.{os.getpid()}.{int(time.time())}.html',
                         )
-                        with open(debug_path, 'w', encoding='utf-8') as f:
-                            f.write(init_html)
+                        # 🔧 Use aiofiles to avoid blocking the event
+                        # loop on the synchronous file write. The
+                        # HTML payload can be 100KB+ for a course
+                        # page; on slow disks this could block for
+                        # tens of milliseconds.
+                        async with aiofiles.open(debug_path, 'w', encoding='utf-8') as f:
+                            await f.write(init_html)
                         logging.debug(f'📝 已保存课程页面HTML到: {debug_path}')
                         logging.debug(f'📝 HTML长度: {len(init_html)} 字符')
                         logging.debug(f'📝 标题: {await page.title()}')
@@ -949,8 +956,9 @@ class BookMod(MoodleMod):
                             f'playwright_debug_{module_id}.{os.getpid()}.{int(time.time())}.html',
                         )
                         try:
-                            with open(debug_path, 'w', encoding='utf-8') as f:
-                                f.write(html_content)
+                            # 🔧 Use aiofiles for non-blocking write
+                            async with aiofiles.open(debug_path, 'w', encoding='utf-8') as f:
+                                await f.write(html_content)
                             logging.debug(f'Saved debug HTML to: {debug_path}')
                         except Exception as e:
                             logging.debug(f'Could not save debug HTML: {e}')

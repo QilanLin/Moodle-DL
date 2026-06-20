@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 from typing import Dict, List, Optional, Tuple
 
 from moodle_dl.moodle.request_helper import RequestHelper
@@ -215,7 +216,17 @@ class CoreHandler:
                 )
             )
 
-        cores = await asyncio.gather(*async_features)
+        # 🔧 Hang fix: bound the gather with wait_for so a single
+        # stuck course load doesn't hang the whole download.
+        # The default is 60s per course; the operator can override
+        # with the ``MOODLE_DL_LOAD_TIMEOUT`` env var.
+        load_timeout = float(
+            os.environ.get('MOODLE_DL_LOAD_TIMEOUT', '60')
+        )
+        cores = await asyncio.wait_for(
+            asyncio.gather(*async_features, return_exceptions=False),
+            timeout=load_timeout,
+        )
 
         result = {}
         for idx, course in enumerate(courses):

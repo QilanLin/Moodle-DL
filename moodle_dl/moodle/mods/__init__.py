@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import os
 from typing import Dict, List
 
 from moodle_dl.config import ConfigHelper
@@ -68,8 +69,20 @@ async def fetch_mods_files(
         for mod in mods_to_fetch:
             mods_results.append(await mod.fetch_mod_entries(courses_to_load, core_contents))
     else:
-        mods_results = await asyncio.gather(
-            *[mod.fetch_mod_entries(courses_to_load, core_contents) for mod in mods_to_fetch]
+        # 🔧 Hang fix: bound the gather with wait_for so a single
+        # stuck mod fetch (e.g. Book fetching 1000 pages) doesn't
+        # hang the whole download. The default is 5 minutes per
+        # mod batch; the operator can override with the
+        # ``MOODLE_DL_MOD_FETCH_TIMEOUT`` env var.
+        mod_fetch_timeout = float(
+            os.environ.get('MOODLE_DL_MOD_FETCH_TIMEOUT', '300')
+        )
+        mods_results = await asyncio.wait_for(
+            asyncio.gather(
+                *[mod.fetch_mod_entries(courses_to_load, core_contents) for mod in mods_to_fetch],
+                return_exceptions=False,
+            ),
+            timeout=mod_fetch_timeout,
         )
     result = {}
     for idx, mod in enumerate(mods_to_fetch):

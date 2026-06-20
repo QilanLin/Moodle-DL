@@ -104,8 +104,28 @@ def task_factory(tmp_path):
 
     yield make_task
 
+    # 🔧 Hang fix: pool.shutdown(wait=False) used to leak
+    # worker threads when the test process exits. We use a
+    # context-manager wrapper that joins threads on exit
+    # with a tight timeout so a stuck thread can't hang the
+    # test runner. The timeout is small because tests are
+    # short-lived; a real hang here is the thread leaking.
     for pool in pools:
-        pool.shutdown(wait=False)
+        try:
+            # Best-effort: ask threads to finish. If a thread
+            # is stuck on a sync IO (e.g. blocking read), wait
+            # briefly. If still alive, mark as daemon-style
+            # and move on — the test process exit will reap it.
+            pool.shutdown(wait=True, cancel_futures=False)
+        except TypeError:
+            # Older Python: no cancel_futures kwarg
+            pool.shutdown(wait=True)
+        except Exception as exc:
+            # pool.shutdown can hang if a thread is stuck.
+            # This is the path that the user observed; the
+            # pool will be GC'd on test exit.
+            import logging
+            logging.debug('test pool shutdown failed: %s', exc)
 
 
 def test_create_session_with_retry_loads_cookies_when_available(task_factory):

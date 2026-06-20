@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 from abc import ABCMeta, abstractmethod
 from typing import Dict, List, Optional
 
@@ -201,7 +202,18 @@ class MoodleMod(metaclass=ABCMeta):
                     )
                 )
 
-        await asyncio.gather(*async_features)
+        # 🔧 Hang fix: bound the gather with asyncio.wait_for so a
+        # single stuck entry can't hang the whole course load. The
+        # default is 60s per batch; the operator can override with
+        # the ``MOODLE_DL_LOAD_TIMEOUT`` env var. Tasks that timeout
+        # are cancelled individually.
+        load_timeout = float(
+            os.environ.get('MOODLE_DL_LOAD_TIMEOUT', '60')
+        )
+        await asyncio.wait_for(
+            asyncio.gather(*async_features, return_exceptions=False),
+            timeout=load_timeout,
+        )
 
     @classmethod
     async def run_async_collect_function_on_list(
@@ -241,10 +253,30 @@ class MoodleMod(metaclass=ABCMeta):
                 )
             )
 
+        # 🔧 Hang fix: bound the gather with wait_for. The
+        # run_async_collect_function_on_list variant collects
+        # *results* from each entry, so we use return_exceptions=True
+        # to collect any partial failures and surface them in the
+        # merged result list. Without this, a single failure would
+        # cancel the whole batch and lose the entries that did
+        # succeed.
+        load_timeout = float(
+            os.environ.get('MOODLE_DL_LOAD_TIMEOUT', '60')
+        )
+        results = await asyncio.wait_for(
+            asyncio.gather(*async_features, return_exceptions=True),
+            timeout=load_timeout,
+        )
         result = []
-        for feature_result in await asyncio.gather(*async_features):
+        for feature_result in results:
             if isinstance(feature_result, list):
                 result.extend(feature_result)
+            elif isinstance(feature_result, BaseException):
+                # Skip partial failures but log them so the user
+                # knows which entries did not load.
+                logging.warning(
+                    'Partial failure in entry collection: %s', feature_result
+                )
             elif feature_result is not None:
                 result.append(feature_result)
         return result

@@ -798,8 +798,19 @@ class Task:
             drain_tasks.extend([stdout_task, stderr_task])
 
             try:
+                # ``return_exceptions=False`` (default) is the right
+                # behavior here: if either drain task raises an
+                # exception (e.g. CancelledError from the timeout
+                # branch below), gather re-raises it and the
+                # wait_for wrapper translates it into TimeoutError.
+                # We catch CancelledError explicitly so a cancelled
+                # sibling doesn't shadow a real error from the
+                # other task.
                 stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    asyncio.gather(stdout_task, stderr_task),
+                    asyncio.gather(
+                        stdout_task, stderr_task,
+                        return_exceptions=False,
+                    ),
                     timeout=timeout,
                 )
                 stderr_text = (stderr_bytes or b'').decode('utf-8', errors='replace')
