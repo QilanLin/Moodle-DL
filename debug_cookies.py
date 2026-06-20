@@ -6,12 +6,19 @@
 
 import sys
 import os
-sys.path.insert(0, '/Users/linqilan/CodingProjects/Moodle-DL')
+# 🔧 Portability: use __file__-based path, not a hardcoded
+# user-specific path.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from moodle_dl.utils import MoodleDLCookieJar, SslHelper
 
 KALVIDRES_URL = "https://keats.kcl.ac.uk/mod/kalvidres/view.php?id=9159619"
-COOKIE_FILE = "/Users/linqilan/CodingProjects/Cookies.txt"
+# Cookies file is at the user's parent project dir. Make this
+# configurable via env var or accept it as a CLI arg.
+COOKIE_FILE = os.environ.get(
+    'MOODLE_COOKIES_FILE',
+    os.path.expanduser('~/CodingProjects/Cookies.txt'),
+)
 
 USER_AGENT = (
     'Mozilla/5.0 (Linux; Android 7.1.1; Moto G Play Build/NPIS26.48-43-2; wv) AppleWebKit/537.36'

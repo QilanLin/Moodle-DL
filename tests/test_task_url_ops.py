@@ -10,7 +10,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, '/Users/linqilan/CodingProjects/moodle/Moodle-DL')
+# 🔧 Portability: use __file__ to find the project root, not a
+# hardcoded user-specific path. Pytest's conftest.py also adds
+# the root, but having it in-file makes this test runnable in
+# isolation (e.g. ``python -m unittest``).
+import os.path as _path
+_ROOT = _path.dirname(_path.dirname(_path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 from moodle_dl.downloader.task_url_ops import TaskUrlOps
 

@@ -40,7 +40,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, '/Users/linqilan/CodingProjects/moodle/Moodle-DL')
+# 🔧 Portability: use __file__ to find the project root, not a
+# hardcoded user-specific path. Pytest's conftest.py also adds
+# the root, but having it in-file makes this test runnable in
+# isolation (e.g. ``python -m unittest``).
+import os.path as _path
+_ROOT = _path.dirname(_path.dirname(_path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 
 # =========================================================================
@@ -563,11 +570,13 @@ class TestPoolShutdownGraceful:
         uses pool.shutdown(wait=True) so worker threads are
         properly joined.
         """
-        # Read the test file directly to inspect the fixture
-        from pathlib import Path
+        # Read the test file directly to inspect the fixture.
+        # Use __file__ to find the test directory, not a hardcoded
+        # user-specific path. This makes the test portable across
+        # machines (CI, other developers, etc.).
+        from pathlib import Path as _Path
         test_path = (
-            Path('/Users/linqilan/CodingProjects/moodle/Moodle-DL')
-            / 'tests' / 'test_task_helpers_more.py'
+            _Path(__file__).resolve().parent / 'test_task_helpers_more.py'
         )
         src = test_path.read_text()
         # Must use wait=True (or True as default)
