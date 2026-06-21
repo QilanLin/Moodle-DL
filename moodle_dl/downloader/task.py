@@ -103,6 +103,13 @@ def strip_macos_metadata(path: str) -> None:
     if sys.platform != 'darwin':
         return  # No xattrs / no _._ shadow files on non-macOS
 
+    # Opt-out: if the user wants to keep macOS xattrs (e.g. they
+    # have a downstream tool that reads ``com.apple.provenance``),
+    # they can set MOODLE_DL_KEEP_MACOS_XATTRS=1.
+    import os as _os
+    if _os.environ.get('MOODLE_DL_KEEP_MACOS_XATTRS', '').strip() in ('1', 'true', 'yes'):
+        return
+
     if not path:
         return
 

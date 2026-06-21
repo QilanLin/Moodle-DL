@@ -1,97 +1,88 @@
-# macOS `._*` shadow files in your moodle-dl workspace
+# macOS `._*` shadow files: side-effect analysis
 
-## TL;DR
+## What does moodle-dl actually do?
 
-**moodle-dl automatically strips macOS extended attributes
-after each file write.** This prevents the OS from creating
-`._*` AppleDouble / resource-fork shadow files on non-HFS+
-filesystems. The fix is automatic; you do not need to do
-anything special.
+moodle-dl performs **two** operations on macOS to keep your
+download directory clean:
 
-## What's the problem?
+### 1. `strip_macos_metadata(path)` — automatic, per-write
 
-If you run moodle-dl on macOS, your download directory will
-contain files that look like duplicates:
+**Called automatically** after every file write. Uses `ctypes`
+to call macOS's `removexattr()` directly. Removes the following
+extended attributes that cause macOS to create `._*` shadow
+files:
 
-```
-*05* some_lecture.webloc
-._*05* some_lecture.webloc    <-- this one is "extra"
-*10* another_url.webloc
-._*10* another_url.webloc    <-- this one is "extra"
-```
+| xattr name | What it is | Side effect of stripping |
+|---|---|---|
+| `com.apple.provenance` | macOS internal — tracks which app wrote the file | None (moodle-dl doesn't use it) |
+| `com.apple.quarantine` | macOS Gatekeeper — "this file came from the web" flag | After stripping, macOS won't show the "this file was downloaded from the Internet" dialog when opening. **moodle-dl creates new files, so this never applied anyway.** |
+| `com.apple.metadata:kMDItemWhereFroms` | Spotlight metadata — where the file came from | Spotlight will re-scan and re-create this when the file is opened in Finder |
+| `com.apple.metadata:kMDItemDownloadedDate` | Spotlight metadata — when the file was downloaded | Same as above — Spotlight re-creates |
 
-The `._*` files are **not** created by moodle-dl. They are
-**macOS AppleDouble** (a.k.a. resource fork / "._" file) files
-that the OS creates automatically when a file with extended
-attributes (such as `com.apple.provenance`, a quarantine
-flag, or a custom icon) is written to a non-HFS+ filesystem
-(e.g. exFAT, NTFS, SMB share, FAT32, ext4, etc.).
+**Does NOT touch:**
+- `com.apple.fileprovider.ignore#P` — Finder-only attributes
+- Custom user tags / Spotlight comments
+- File permissions / owner / mode
 
-## The fix
+**Net effect on the file:** the file's content, name, size,
+and timestamps are unchanged. The file's `._*` shadow is
+*prevented from being created* (not deleted after the fact).
 
-After every file write, moodle-dl calls `strip_macos_metadata`,
-which uses `ctypes` to call macOS's `removexattr()` directly
-(no subprocess overhead) to remove the OS-level xattrs that
-trigger the shadow-file creation:
+### 2. `cleanup_macos_shadow_files(directory)` — manual only
 
-```python
-strip_macos_metadata(dest_path)  # called in task.py after each write
-```
+**NOT called automatically.** It's exposed as a Python API
+that the user can call manually to clean up `._*` files left
+from previous runs (e.g. before this fix was added).
 
-The xattrs that are stripped:
-- `com.apple.provenance`
-- `com.apple.quarantine`
-- `com.apple.metadata:kMDItemWhereFroms`
-- `com.apple.metadata:kMDItemDownloadedDate`
+Returns the count of files removed. The function only deletes
+files whose name starts with `._` — never touches real moodle-dl
+files.
 
-These are macOS-internal attributes that moodle-dl doesn't need.
-We do NOT touch user-level attributes like custom Finder tags.
+## What about non-macOS platforms?
 
-## What if `._*` files still appear?
+Both functions are no-ops on Linux/Windows:
+- `strip_macos_metadata` returns immediately if
+  `sys.platform != 'darwin'`
+- `cleanup_macos_shadow_files` returns 0 if
+  `sys.platform != 'darwin'`
 
-If you have old `._*` files from previous runs (with old
-moodle-dl that didn't strip xattrs), you can clean them up
-manually. moodle-dl also exposes `cleanup_macos_shadow_files()`
-which you can call as a one-off:
+So Linux/Windows users see no behavior change.
 
-```python
-from moodle_dl.downloader.task import cleanup_macos_shadow_files
-n = cleanup_macos_shadow_files('/path/to/your/workspace')
-print(f'Removed {n} shadow files')
-```
+## Could stripping break anything?
 
-Or from the shell:
+In practice: **no**. The four xattrs we strip are:
+- Internal to macOS (re-created automatically when needed)
+- Not used by moodle-dl
+- Not used by Finder for display purposes
+- Not used by Spotlight for search
+
+The user's **own** xattrs (custom Finder tags, Spotlight comments,
+third-party metadata) are NOT touched.
+
+## What if the user WANTS the metadata?
+
+If for some reason the user wants to keep `com.apple.provenance`
+on the downloaded files (e.g. they're tracking downloads in a
+script that reads this xattr), they can set the env var:
 
 ```bash
-# Remove all ._ files recursively
-find /path/to/workspace -name '._*' -type f -delete
-
-# Or use the built-in macOS tool
-dot_clean -m /path/to/workspace
-
-# Strip the xattrs (the source of the problem)
-xattr -cr /path/to/workspace
+MOODLE_DL_KEEP_MACOS_XATTRS=1 moodle-dl
 ```
 
-## Why does the OS do this?
+In that case, `strip_macos_metadata` becomes a no-op. The macOS
+shadow file pollution will return, but the user's xattrs are
+preserved.
 
-The OS does this transparently to preserve file-level metadata
-on non-HFS+ filesystems that don't natively support extended
-attributes. The fix is to strip the xattrs after writing.
+## What about `cleanup_macos_shadow_files` — is it safe?
 
-## Section ordering
+**Yes**, but ONLY if called manually. It only deletes files
+matching `fn.startswith('._')` — never touches real files.
+Errors are silently swallowed (best-effort cleanup).
 
-moodle-dl trusts the Moodle server's section order
-(`course_sections.section` column). It does NOT add its own
-sort prefix to section directory names. On macOS Finder or
-`ls`, multi-digit sections like `Week 1, Week 2, ..., Week 10`
-will still appear in alphabetical order (`Week 1, Week 10,
-Week 2, ...`). The in-section natural sort is provided by the
-`*NN*` file prefix (`*01*`, `*02*`, ..., `*10*`) on each
-file.
+## Summary
 
-## See also
-
-- [AppleDouble / Resource Forks on Wikipedia](https://en.wikipedia.org/wiki/AppleSingle_and_AppleDouble_formats)
-- `man dot_clean` (macOS built-in cleanup tool)
-- `man xattr` (macOS extended attribute manipulation)
+| Operation | When | Side effect |
+|---|---|---|
+| `strip_macos_metadata` | After every file write (macOS only) | Removes 4 macOS-internal xattrs, prevents `._*` creation. No user-visible change. |
+| `cleanup_macos_shadow_files` | Never (manual only) | Deletes files matching `._*` (best-effort). User must call it. |
+| Both on Linux/Windows | — | No-op. |
