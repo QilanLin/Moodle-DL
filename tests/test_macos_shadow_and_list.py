@@ -1,17 +1,22 @@
 # -*- coding: utf-8 -*-
 """
-Tests for the new fixes:
+Tests for the macOS ._* shadow-file fix.
 
-  * macOS ``._*`` resource-fork shadow files are stripped
-    automatically after each file write (via strip_macos_metadata)
-  * The moodle-dl --list command runs automatically after each
-    download session completes
+The user reported that the directory listing in moodle-dl was
+polluted by macOS '._*' AppleDouble / resource-fork shadow files
+that the OS creates automatically when a file with extended
+attributes is written to a non-HFS+ filesystem.
 
-The Week-sort / natural-sort prefix was REMOVED after the subagent
-investigation found that the Moodle API already returns sections in
-the correct natural order. We trust the server-side sortorder
-and let the user use `moodle-dl --list` (or their OS's natural-sort
-command) for proper display.
+This commit adds ``strip_macos_metadata`` which removes the
+extended attributes that trigger shadow-file creation
+(com.apple.provenance, com.apple.quarantine, etc.) after each
+file write.
+
+The Week-sort / natural-sort prefix was REMOVED after the
+subagent investigation found that the Moodle API already returns
+sections in the correct natural order. We trust the server-side
+sortorder and use only the ``*NN*`` file-level prefix for
+in-section natural sort.
 """
 import os
 import sqlite3
@@ -39,11 +44,8 @@ class TestStripMacosMetadata:
         from moodle_dl.downloader.task import strip_macos_metadata
         with patch.object(task_mod.sys, 'platform', 'linux'):
             # Should return immediately (no ctypes.CDLL call)
-            # We don't patch ctypes because it's imported lazily
-            # inside the function. We just verify the function
-            # returns without error on non-darwin platforms.
             result = strip_macos_metadata('/anywhere/file.pdf')
-            assert result is None  # function returns None
+            assert result is None
 
     def test_noop_on_windows(self):
         from moodle_dl.downloader import task as task_mod
@@ -55,15 +57,12 @@ class TestStripMacosMetadata:
     def test_empty_path_noop(self):
         from moodle_dl.downloader import task as task_mod
         from moodle_dl.downloader.task import strip_macos_metadata
-        # No crash, no error
         with patch.object(task_mod.sys, 'platform', 'darwin'):
             strip_macos_metadata('')
-            # None is not acceptable; just test the empty string.
 
     def test_calls_removexattr_on_darwin(self):
         from moodle_dl.downloader import task as task_mod
         from moodle_dl.downloader.task import strip_macos_metadata
-        # Mock ctypes at the standard library level
         import ctypes as real_ctypes
         mock_libc = MagicMock()
         mock_libc.removexattr.return_value = 0
@@ -71,11 +70,9 @@ class TestStripMacosMetadata:
             with patch.object(real_ctypes, 'CDLL', return_value=mock_libc), \
                  patch.object(real_ctypes.util, 'find_library', return_value='c'):
                 strip_macos_metadata('/test/file.pdf')
-        # removexattr was called at least once (4 known xattrs)
         assert mock_libc.removexattr.call_count >= 1
 
     def test_swallows_errors(self):
-        """xattr removal must never crash the download."""
         from moodle_dl.downloader import task as task_mod
         from moodle_dl.downloader.task import strip_macos_metadata
         import ctypes as real_ctypes
@@ -93,18 +90,16 @@ class TestCleanupMacosShadowFiles:
 
     def test_removes_underscore_files(self, tmp_path):
         from moodle_dl.downloader.task import cleanup_macos_shadow_files
-        # Create a real file and a shadow file
         (tmp_path / 'real.pdf').write_text('hi')
         (tmp_path / '._real.pdf').write_bytes(b'\x00\x05\x16')
         (tmp_path / 'sub').mkdir()
         (tmp_path / 'sub' / 'foo.pdf').touch()
         (tmp_path / 'sub' / '._foo.pdf').touch()
 
-        with patch('moodle_dl.downloader.task.sys.platform', 'darwin'):
+        with patch.object(sys, 'platform', 'darwin'):
             deleted = cleanup_macos_shadow_files(str(tmp_path))
-        assert deleted == 2  # two ._ files
+        assert deleted == 2
 
-        # Verify they're gone
         assert (tmp_path / 'real.pdf').exists()
         assert not (tmp_path / '._real.pdf').exists()
         assert (tmp_path / 'sub' / 'foo.pdf').exists()
@@ -113,25 +108,23 @@ class TestCleanupMacosShadowFiles:
     def test_noop_on_non_macos(self, tmp_path):
         from moodle_dl.downloader.task import cleanup_macos_shadow_files
         (tmp_path / '._foo').touch()
-        with patch('moodle_dl.downloader.task.sys.platform', 'linux'):
+        with patch.object(sys, 'platform', 'linux'):
             deleted = cleanup_macos_shadow_files(str(tmp_path))
         assert deleted == 0
-        assert (tmp_path / '._foo').exists()  # not deleted
+        assert (tmp_path / '._foo').exists()
 
     def test_noop_on_missing_dir(self):
         from moodle_dl.downloader.task import cleanup_macos_shadow_files
-        with patch('moodle_dl.downloader.task.sys.platform', 'darwin'):
+        with patch.object(sys, 'platform', 'darwin'):
             deleted = cleanup_macos_shadow_files('/no/such/path')
         assert deleted == 0
 
     def test_swallows_oserror(self, tmp_path):
-        """If os.remove fails, we should not crash."""
         from moodle_dl.downloader.task import cleanup_macos_shadow_files
         (tmp_path / '._foo').touch()
-        with patch('moodle_dl.downloader.task.sys.platform', 'darwin'):
-            with patch('moodle_dl.downloader.task.os.remove', side_effect=OSError('locked')):
+        with patch.object(sys, 'platform', 'darwin'):
+            with patch.object(os, 'remove', side_effect=OSError('locked')):
                 deleted = cleanup_macos_shadow_files(str(tmp_path))
-        # The error was swallowed; we count it as not deleted
         assert deleted == 0
 
 
@@ -152,7 +145,7 @@ class TestGenPathUsesServerOrder:
         course.create_directory_structure = True
         file = MagicMock()
         file.section_name = 'Week 10: Clustering'
-        file.section_id = 12345  # would be used as prefix if we did that
+        file.section_id = 12345
         file.module_modname = 'resource'
         file.module_name = 'mod'
         file.content_filepath = '/'
@@ -170,89 +163,21 @@ class TestGenPathUsesServerOrder:
         course.overwrite_name_with = None
         course.create_directory_structure = True
         file = MagicMock()
-        file.section_name = 'Week 1： Introduction'  # NB: full-width ：
+        file.section_name = 'Week 1： Introduction'
         file.section_id = 999
         file.module_modname = 'resource'
         file.module_name = 'mod'
         file.content_filepath = '/'
         result = ops.gen_path(str(tmp_path), course, file)
-        # The directory should contain the section name
         assert 'Week 1' in result
         assert 'Introduction' in result
-        # No __<section_id>__ prefix
         assert '__999__' not in result
         assert '__000000000999__' not in result
-        # The path doesn't end with a weird prefix
-        # (just check that the basename has no __NNN__ pattern)
         basename = os.path.basename(result)
         import re
         assert not re.match(r'^__\d+__', basename), (
             f'Path basename has unwanted __NNN__ prefix: {basename!r}'
         )
-
-
-# =========================================================================
-# moodle-dl --list filters macOS shadow files
-# =========================================================================
-class TestListFiltersMacosShadow:
-    """``moodle-dl --list`` must filter out ``._*`` files from the
-    file listing, but should still report the count in stats.
-    """
-
-    def test_list_filters_underscore_from_files_section(self, capsys, tmp_path):
-        from moodle_dl.cli.list_files import print_workspace_listing
-        from moodle_dl.config import ConfigHelper
-        from moodle_dl.types import MoodleDlOpts
-
-        # Build a course with a ._ shadow file
-        course_path = tmp_path / 'C' / 'S'
-        course_path.mkdir(parents=True)
-        (course_path / 'real.webloc').touch()
-        (course_path / '._real.webloc').touch()  # macOS shadow
-
-        opts = MoodleDlOpts()
-        opts.path = str(tmp_path)
-        with patch('moodle_dl.config.ConfigHelper.__init__', return_value=None):
-            config = ConfigHelper(opts)
-        config.get_misc_files_path = MagicMock(return_value=str(tmp_path))
-
-        print_workspace_listing(config, opts)
-        captured = capsys.readouterr().out
-
-        # The real file is listed
-        assert 'real.webloc' in captured
-        # But the ._ line never appears as a file
-        for line in captured.split('\n'):
-            stripped = line.lstrip()
-            # The pattern "[<section>]" or "      <name>" lists files
-            # and the macOS shadow count line is the only place
-            # ._foo may appear. Check that the ._ file isn't
-            # listed as a regular file.
-            if stripped.startswith('._'):
-                # OK if it appears in the stats line
-                if 'macOS' not in line and 'shadow' not in line:
-                    pytest.fail(
-                        f'macOS shadow appeared as a file: {line!r}'
-                    )
-
-
-# =========================================================================
-# Auto-run --list after download
-# =========================================================================
-class TestAutoListAfterDownload:
-    """The download loop should auto-run --list at the end,
-    unless MOODLE_DL_SKIP_POST_LIST is set.
-    """
-
-    def test_skip_post_list_env_var(self, monkeypatch):
-        """When MOODLE_DL_SKIP_POST_LIST=1, --list should not run."""
-        monkeypatch.setenv('MOODLE_DL_SKIP_POST_LIST', '1')
-        assert os.environ.get('MOODLE_DL_SKIP_POST_LIST', '').strip()
-
-    def test_auto_list_runs_by_default(self, monkeypatch):
-        """By default, --list auto-runs after the download."""
-        monkeypatch.delenv('MOODLE_DL_SKIP_POST_LIST', raising=False)
-        assert not os.environ.get('MOODLE_DL_SKIP_POST_LIST', '').strip()
 
 
 # =========================================================================
@@ -269,7 +194,6 @@ class TestXattrStrippedAfterEachWrite:
         """
         import inspect
         from moodle_dl.downloader import task
-        # Find any coroutine with both os.replace and strip_macos_metadata
         found = False
         for name, method in inspect.getmembers(
             task.Task, predicate=inspect.iscoroutinefunction
@@ -279,7 +203,6 @@ class TestXattrStrippedAfterEachWrite:
             except (OSError, TypeError):
                 continue
             if 'os.replace' in src and 'strip_macos_metadata' in src:
-                # Find the position of os.replace
                 replace_pos = src.find('os.replace(')
                 strip_pos = src.find('strip_macos_metadata(', replace_pos)
                 assert replace_pos > 0, f'{name} does not call os.replace'
@@ -293,3 +216,4 @@ class TestXattrStrippedAfterEachWrite:
             'No coroutine in Task has both os.replace and '
             'strip_macos_metadata in correct order'
         )
+

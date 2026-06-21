@@ -357,10 +357,6 @@ class MoodleDlOpts:
     add_all_visible_courses: bool = False
     retry_failed: bool = False
     resume: bool = False
-    # When True, ``moodle-dl --list`` prints a natural-sort,
-    # ._-filtered, DB-cross-referenced listing of the workspace.
-    # Does not download anything.
-    list_files: bool = False
     # When True (default), Ctrl-C / SIGTERM during a download
     # causes the partial .part file to be DELETED and the file
     # to be re-downloaded from scratch on the next run. The

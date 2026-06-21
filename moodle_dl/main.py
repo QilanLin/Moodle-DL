@@ -891,21 +891,6 @@ def get_parser():
         help='Print program version and exit',
     )
 
-    group.add_argument(
-        '-l',
-        '--list',
-        dest='list_files',
-        default=False,
-        action='store_true',
-        help=(
-            'List the files in the download directory (cross-references '
-            'the SQLite database). Shows files in natural-sort order, '
-            'filters out macOS ._ resource-fork shadow files, and reports '
-            'any DB/FS inconsistencies (e.g. files in DB but not on disk, '
-            'and vice versa). Does not download anything.'
-        ),
-    )
-
     parser.add_argument(
         '-sso',
         '--sso',
@@ -1160,18 +1145,6 @@ def main(args=None):
     config = ConfigHelper(opts)
     if opts.init:
         init_config(config, opts)
-        sys.exit(0)
-    elif opts.list_files:
-        # 🔧 New: ``moodle-dl --list`` reads the SQLite database
-        # and the workspace filesystem, prints a natural-sort
-        # listing of the modules/files, filters macOS ._ shadow
-        # files, and reports any DB↔FS inconsistencies. This was
-        # added in response to user reports that the default
-        # Finder/``ls`` sort interleaves ._ shadow files with
-        # real moodle-dl output and (for multi-digit weeks) sorts
-        # 'Week 10' between 'Week 1' and 'Week 2'.
-        from moodle_dl.cli.list_files import print_workspace_listing
-        print_workspace_listing(config, opts)
         sys.exit(0)
     else:
         try:

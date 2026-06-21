@@ -1,5 +1,15 @@
 # macOS `._*` shadow files in your moodle-dl workspace
 
+## TL;DR
+
+**moodle-dl automatically strips macOS extended attributes
+after each file write.** This prevents the OS from creating
+`._*` AppleDouble / resource-fork shadow files on non-HFS+
+filesystems. The fix is automatic; you do not need to do
+anything special.
+
+## What's the problem?
+
 If you run moodle-dl on macOS, your download directory will
 contain files that look like duplicates:
 
@@ -12,63 +22,45 @@ contain files that look like duplicates:
 
 The `._*` files are **not** created by moodle-dl. They are
 **macOS AppleDouble** (a.k.a. resource fork / "._" file) files
-that Finder (and other macOS apps) automatically create whenever
-a regular file is written to a non-HFS+ filesystem (e.g. exFAT,
-NTFS, SMB share, FAT32, ext4, etc.).
+that the OS creates automatically when a file with extended
+attributes (such as `com.apple.provenance`, a quarantine
+flag, or a custom icon) is written to a non-HFS+ filesystem
+(e.g. exFAT, NTFS, SMB share, FAT32, ext4, etc.).
 
-## Why does this happen?
+## The fix
 
-When macOS writes a file with extended attributes (such as
-`com.apple.provenance` for download provenance, or a custom
-icon, or a quarantine flag), it stores the attributes in a
-**second file** named `._<original-filename>`. The OS does
-this transparently — Finder hides them in the GUI, but `ls`
-shows them.
+After every file write, moodle-dl calls `strip_macos_metadata`,
+which uses `ctypes` to call macOS's `removexattr()` directly
+(no subprocess overhead) to remove the OS-level xattrs that
+trigger the shadow-file creation:
 
-## Are they a problem?
-
-Only visually:
-
-- They **double the file count** in `ls` / `moodle-dl --list`
-- They make `git status` noisy if the workspace is in a repo
-- They confuse the natural-sort of a directory listing
-  (e.g. `Week 10` sorting between `Week 1` and `Week 2` is a
-  separate issue, not caused by `._*` files, but the `._*`
-  pollution makes the listing look worse)
-
-The `._*` files are **harmless** — they do not contain
-duplicates of your moodle content. They are 4KB of metadata
-per file.
-
-## Solutions
-
-### 1. Use `moodle-dl --list` (recommended)
-
-```bash
-moodle-dl --list
+```python
+strip_macos_metadata(dest_path)  # called in task.py after each write
 ```
 
-This command:
-- filters out `._*` files automatically
-- sorts entries naturally (`Week 1`, `Week 2`, ..., `Week 10`)
-- cross-references the SQLite database and the filesystem
-- reports any DB↔FS inconsistencies
+The xattrs that are stripped:
+- `com.apple.provenance`
+- `com.apple.quarantine`
+- `com.apple.metadata:kMDItemWhereFroms`
+- `com.apple.metadata:kMDItemDownloadedDate`
 
-### 2. Hide in Finder
+These are macOS-internal attributes that moodle-dl doesn't need.
+We do NOT touch user-level attributes like custom Finder tags.
 
-In Finder, go to **View → Show View Options → Show these items on
-the Desktop** and uncheck "Show External Disks" / uncheck
-"Show all filename extensions" — actually the right setting is
-**View → Hide Resource Forks** (only available in some Finder
-versions).
+## What if `._*` files still appear?
 
-Or run in Terminal:
-```bash
-defaults write com.apple.finder AppleShowAllFiles -bool NO
-killall Finder
+If you have old `._*` files from previous runs (with old
+moodle-dl that didn't strip xattrs), you can clean them up
+manually. moodle-dl also exposes `cleanup_macos_shadow_files()`
+which you can call as a one-off:
+
+```python
+from moodle_dl.downloader.task import cleanup_macos_shadow_files
+n = cleanup_macos_shadow_files('/path/to/your/workspace')
+print(f'Removed {n} shadow files')
 ```
 
-### 3. Remove them
+Or from the shell:
 
 ```bash
 # Remove all ._ files recursively
@@ -76,37 +68,29 @@ find /path/to/workspace -name '._*' -type f -delete
 
 # Or use the built-in macOS tool
 dot_clean -m /path/to/workspace
-```
 
-### 4. Strip the extended attributes that cause them
-
-```bash
-# Strip the xattrs that trigger the ._ file creation
+# Strip the xattrs (the source of the problem)
 xattr -cr /path/to/workspace
 ```
 
-This is the most thorough fix — it removes the original cause.
+## Why does the OS do this?
 
-### 5. Use a native macOS filesystem (HFS+/APFS)
+The OS does this transparently to preserve file-level metadata
+on non-HFS+ filesystems that don't natively support extended
+attributes. The fix is to strip the xattrs after writing.
 
-If you use a macOS-native filesystem (HFS+ or APFS), no `._*`
-files are created at all. This is the best option if you have
-control over the storage.
+## Section ordering
 
-## Does moodle-dl plan to fix this?
+moodle-dl trusts the Moodle server's section order
+(`course_sections.section` column). It does NOT add its own
+sort prefix to section directory names. On macOS Finder or
+`ls`, multi-digit sections like `Week 1, Week 2, ..., Week 10`
+will still appear in alphabetical order (`Week 1, Week 10,
+Week 2, ...`). The in-section natural sort is provided by the
+`*NN*` file prefix (`*01*`, `*02*`, ..., `*10*`) on each
+file.
 
-**No.** The `._*` files are an OS-level behavior and removing
-them would:
-
-1. Strip legitimate macOS metadata (download provenance,
-   custom icons, etc.)
-2. Hide a real problem (you may have legitimately wanted those
-   attributes for the file)
-
-Instead, moodle-dl provides **`--list`** to give you a clean
-view, and this doc explains how to clean up if you want.
-
-## References
+## See also
 
 - [AppleDouble / Resource Forks on Wikipedia](https://en.wikipedia.org/wiki/AppleSingle_and_AppleDouble_formats)
 - `man dot_clean` (macOS built-in cleanup tool)

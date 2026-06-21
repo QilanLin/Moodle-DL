@@ -603,34 +603,6 @@ class DownloadService:
             )
             self._display_download_summary()
 
-        # 🔧 Auto-run the equivalent of ``moodle-dl --list`` after
-        # all downloads finish. This gives the user a clean,
-        # natural-sort, DB-cross-referenced view of what was
-        # downloaded, including:
-        #   * macOS ``._*`` shadow-file filter
-        #   * natural sort (Week 1, Week 2, ..., Week 10)
-        #   * DB↔FS consistency check
-        # Without this auto-run, the user has to remember to run
-        # ``moodle-dl --list`` separately. Since this is a read-only
-        # print, it adds no risk to the download flow.
-        # To opt out, set the env var MOODLE_DL_SKIP_POST_LIST=1.
-        if not os.environ.get('MOODLE_DL_SKIP_POST_LIST', '').strip():
-            try:
-                from moodle_dl.cli.list_files import print_workspace_listing
-                # The summary already printed; add a blank line
-                # before the listing for readability.
-                print()
-                print_workspace_listing(
-                    config=self.config,
-                    opts=self.opts,
-                )
-            except Exception as list_err:
-                # Don't let --list errors mask the download result
-                logging.debug(
-                    'moodle-dl --list post-run failed (non-fatal): %s',
-                    list_err,
-                )
-
     def _scan_and_clean_orphan_parts(self, config):
         """Clean up ``.part`` files left over from a previous run.
 
