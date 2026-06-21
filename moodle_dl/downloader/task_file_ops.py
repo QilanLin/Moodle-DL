@@ -102,6 +102,33 @@ class TaskFileOps:
 
         Same as the original Task.gen_path, but extracted so the
         path logic can be tested and reused independently.
+
+        Section ordering
+        ----------------
+        The Moodle API (``core_course_get_contents``) returns
+        sections already sorted by their sequential ``section``
+        number (0, 1, 2, 3, ..., 10) — see
+        ``course_sections.section`` in
+        ``moodle_official_repo_for_reference/public/lib/db/install.xml``.
+        So ``moodle-dl`` does not need to impose its own sort
+        order on directory names.
+
+        On-disk multi-digit sections (e.g. ``Week 1``, ``Week 2``,
+        ``..., Week 10``) WILL appear in alphabetical order on
+        macOS Finder and Windows Explorer (``Week 1, Week 10,
+        Week 2, ...``) because alphabetical sort does not match
+        natural sort for multi-digit numbers. The ``moodle-dl
+        --list`` command (added in the same commit family)
+        displays sections in natural-sort order, hides any
+        macOS ``._*`` shadow files, and cross-references the
+        SQLite database. Users who want natural sort in Finder
+        can:
+          * Sort Finder by ``sortorder`` if their filesystem
+            supports it, or
+          * Use the official moodle.org UI which uses natural
+            sort, or
+          * Use ``ls -v`` (BSD/macOS) / ``ls -1 --group-directories-first``
+            (Linux) which provide natural sort.
         """
         from moodle_dl.utils import PathTools as PT
         from moodle_dl.downloader.kaltura_patterns import (

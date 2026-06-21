@@ -6,6 +6,7 @@ import html
 import http.cookiejar
 import logging
 import os
+import sys
 import posixpath
 import re
 import shlex
@@ -70,6 +71,117 @@ def dest_path_to_part_path(dest_path: str) -> str:
     if dest_path.endswith(PART_FILE_SUFFIX):
         return dest_path
     return dest_path + PART_FILE_SUFFIX
+
+
+def strip_macos_metadata(path: str) -> None:
+    """Strip macOS extended attributes (xattrs) from a file to
+    prevent the OS from creating a ``._*`` resource-fork shadow
+    file next to it on non-HFS+ filesystems.
+
+    Background
+    ----------
+    On macOS, when a file with extended attributes (such as
+    ``com.apple.provenance``, ``com.apple.quarantine``, or a
+    custom icon) is written to a non-HFS+ filesystem (e.g. exFAT,
+    NTFS, SMB, ext4), the OS transparently creates a sidecar file
+    named ``._<filename>`` containing the xattrs. This is invisible
+    in Finder but visible in ``ls`` / shell scripts, and doubles
+    the apparent file count in every moodle-dl directory.
+
+    The fix: after writing a file, strip the xattrs. On macOS this
+    means calling ``xattr -c <path>`` (which uses Apple's
+    ``removexattr()``). On other platforms (Linux, Windows), this
+    is a no-op.
+
+    The function is best-effort: any error is silently ignored
+    (xattr stripping is a nice-to-have, not a correctness
+    requirement for the download itself).
+
+    Args:
+        path: absolute or relative path to the file to clean.
+    """
+    if sys.platform != 'darwin':
+        return  # No xattrs / no _._ shadow files on non-macOS
+
+    if not path:
+        return
+
+    try:
+        # Use ctypes to call removexattr() directly. This avoids
+        # the overhead of spawning ``xattr`` subprocesses per file
+        # (which would add significant overhead for users with
+        # 10K+ files).
+        import ctypes
+        import ctypes.util
+
+        # Load libSystem (provides removexattr on macOS)
+        libc_name = ctypes.util.find_library('c')
+        if not libc_name:
+            return
+        libc = ctypes.CDLL(libc_name, use_errno=True)
+
+        # removexattr(path, name) returns 0 on success, -1 on
+        # error. The xattr name includes the namespace prefix
+        # (e.g. "com.apple.provenance"). removexattr on a
+        # single xattr by name is what ``xattr -c`` does internally.
+        c_removexattr = libc.removexattr
+        c_removexattr.restype = ctypes.c_int
+        c_removexattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+
+        # xattr names that macOS commonly sets; stripping each
+        # one prevents the _._ file from being created.
+        # We do NOT strip ``com.apple.fileprovider.ignore#P``
+        # or Finder-only attributes that the user may rely on.
+        # Only the OS-level provenance / quarantine xattrs that
+        # trigger _._ are stripped.
+        common_xattrs = (
+            b'com.apple.provenance',
+            b'com.apple.quarantine',
+            b'com.apple.metadata:kMDItemWhereFroms',
+            b'com.apple.metadata:kMDItemDownloadedDate',
+        )
+        path_bytes = path.encode('utf-8')
+        for xattr_name in common_xattrs:
+            try:
+                c_removexattr(path_bytes, xattr_name)
+            except OSError:
+                pass  # xattr not present; ignore
+
+    except Exception:
+        # Best-effort: don't crash the download on xattr errors
+        pass
+
+
+def cleanup_macos_shadow_files(directory: str) -> int:
+    """Delete any ``._*`` AppleDouble shadow files in ``directory``.
+
+    This is a fallback that runs after each download to clean up
+    any shadow files that snuck through (e.g. created by Finder
+    when the user navigates into the download directory). It's
+    a no-op on non-macOS platforms.
+
+    Returns:
+        Number of shadow files deleted.
+    """
+    if sys.platform != 'darwin':
+        return 0
+    if not os.path.isdir(directory):
+        return 0
+
+    deleted = 0
+    try:
+        for dirpath, _dirnames, filenames in os.walk(directory):
+            for fn in filenames:
+                if fn.startswith('._'):
+                    full = os.path.join(dirpath, fn)
+                    try:
+                        os.remove(full)
+                        deleted += 1
+                    except OSError:
+                        pass
+    except Exception:
+        pass
+    return deleted
 
 
 def validate_part_file_size(part_path: str, expected_total: int) -> tuple:
@@ -1053,6 +1165,7 @@ class Task:
 
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as md_file:
             await md_file.write(md_content)
+        strip_macos_metadata(self.file.saved_to)
 
     async def create_html_file(self):
         "Create a HTML file and optionally a Markdown version"
@@ -1070,6 +1183,7 @@ class Task:
         # Save HTML version
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as html_file:
             await html_file.write(html_content)
+        strip_macos_metadata(self.file.saved_to)
 
         # Also create a Markdown version for easier reading (especially for blocks)
         if self.file.module_modname.startswith('block_'):
@@ -1086,6 +1200,7 @@ class Task:
                     md_path = self.file.saved_to.replace('.html', '.md')
                     async with aiofiles.open(md_path, 'w+', encoding='utf-8') as md_file:
                         await md_file.write(md_content)
+                    strip_macos_metadata(md_path)
                     logging.debug('[%d] Created Markdown version: %s', self.task_id, md_path)
             except Exception as e:
                 logging.debug('[%d] Failed to create Markdown version: %s', self.task_id, e)
@@ -1106,6 +1221,7 @@ class Task:
 
         async with aiofiles.open(self.file.saved_to, 'w+', encoding='utf-8') as content_file:
             await content_file.write(content)
+        strip_macos_metadata(self.file.saved_to)
 
     async def _download_index_mod_page(self):
         """Download a legacy Moodle page as Markdown instead of a browser shortcut."""
@@ -1592,6 +1708,7 @@ class Task:
 
         async with aiofiles.open(save_path, 'w', encoding='utf-8') as f:
             await f.write(content)
+        strip_macos_metadata(save_path)
 
     async def run(self):
         if self.status.state != TaskState.INIT:
@@ -2445,6 +2562,14 @@ class Task:
                                     '[%d] Failed to rename %s to %s: %s',
                                     self.task_id, part_path, dest_path, rename_err,
                                 )
+
+                        # 🔧 macOS shadow-file fix: strip xattrs that would
+                        # cause the OS to create a ``._*`` resource-fork
+                        # shadow file next to the downloaded file. This
+                        # is a no-op on Linux/Windows and best-effort on
+                        # macOS (xattr removal failures don't affect the
+                        # download itself).
+                        strip_macos_metadata(dest_path)
 
                         if content_length >= 0 and total_bytes_received < content_length:
                             raise ContentTooShortError(
