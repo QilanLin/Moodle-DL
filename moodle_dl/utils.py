@@ -7,6 +7,7 @@ import email.utils
 import getpass
 import html
 import http
+import http.cookiejar
 import io
 import itertools
 import logging
@@ -596,7 +597,36 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
                     logging.info('WARNING: Skipping cookie file entry due to %s: %r', cookie_err, line)
                     continue
         cf.seek(0)
-        self._really_load(cf, filename, ignore_discard, ignore_expires)
+        # 🔧 Workaround for stdlib cookiejar bug (Python 3.12):
+        # When loading a malformed cookie file, the stdlib
+        # _really_load() calls _warn_unhandled_exception() which
+        # prints a confusing UserWarning + raises LoadError that
+        # crashes moodle-dl. We catch the LoadError here and use
+        # warnings.catch_warnings() to suppress the noisy warning
+        # (we'll handle it gracefully ourselves).
+        #
+        # This means a malformed cookie file entry is silently
+        # filtered (logged) instead of crashing the whole load.
+        # Better UX: the user keeps all the other cookies, just
+        # loses the broken one.
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            # The stdlib cookiejar emits this warning even when
+            # we're handling the error gracefully. Suppress it.
+            _warnings.filterwarnings(
+                'ignore',
+                message='http.cookiejar bug!',
+            )
+            try:
+                self._really_load(cf, filename, ignore_discard, ignore_expires)
+            except (AssertionError, http.cookiejar.LoadError) as load_err:
+                # First-pass load failed — retry with line filtering
+                logging.info(
+                    'Cookie load: first-pass failed (%s); '
+                    'retrying with line filtering.',
+                    type(load_err).__name__,
+                )
+                self._load_with_filtering(filename, ignore_discard, ignore_expires)
         # Session cookies are denoted by either `expires` field set to
         # an empty string or 0. MozillaCookieJar only recognizes the former
         # (see [1]). So we need force the latter to be recognized as session
@@ -611,6 +641,80 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
             if cookie.expires == 0:
                 cookie.expires = None
                 cookie.discard = True
+
+    def _load_with_filtering(self, filename, ignore_discard, ignore_expires):
+        """Fallback loader that filters out malformed cookie lines.
+
+        Used when the stdlib ``_really_load`` crashes with
+        AssertionError due to the ``domain_specified ==
+        initial_dot`` bug (see Python issue tracker; affects
+        Python 3.12 cookiejar).
+
+        Strategy:
+          1. Read the cookie file
+          2. Skip any line where ``domain_specified`` ('TRUE'/'FALSE')
+             doesn't match whether the domain starts with '.'
+          3. Also skip lines with wrong field count
+          4. Try to load again from the cleaned buffer
+
+        This is best-effort: a malformed cookie line is dropped
+        rather than crashing the whole load.
+        """
+        import io as _io
+        import logging as _logging
+
+        cf = _io.StringIO()
+        with self.open(filename) as input_file:
+            for line in input_file:
+                # Skip header lines, comments, blanks
+                stripped = line.strip()
+                if stripped.startswith('#') or stripped.startswith('$') or not stripped:
+                    cf.write(line)
+                    continue
+
+                parts = stripped.split('\t')
+                if len(parts) != self._ENTRY_LEN:
+                    # Wrong number of fields — skip
+                    _logging.info(
+                        'Filtering out cookie line with wrong field count: %r',
+                        stripped,
+                    )
+                    continue
+
+                domain = parts[0]
+                domain_specified = parts[1]
+                initial_dot = domain.startswith('.')
+                if domain_specified == 'TRUE' and not initial_dot:
+                    # Stdlib would assert here; we filter instead
+                    _logging.info(
+                        'Filtering out cookie line: '
+                        'domain_specified=TRUE but domain %r does not start with "."',
+                        domain,
+                    )
+                    continue
+                if domain_specified == 'FALSE' and initial_dot:
+                    # Reverse mismatch — also invalid for stdlib
+                    _logging.info(
+                        'Filtering out cookie line: '
+                        'domain_specified=FALSE but domain %r starts with "."',
+                        domain,
+                    )
+                    continue
+
+                cf.write(line)
+
+        cf.seek(0)
+        try:
+            self._really_load(cf, filename, ignore_discard, ignore_expires)
+        except (AssertionError, http.cookiejar.LoadError, Exception) as final_err:
+            # Stdlib cookiejar uses _warn_unhandled_exception which
+            # just logs a warning and raises LoadError. We catch
+            # both here and try the filtering fallback.
+            _logging.info(
+                'First-pass load failed (%s); retrying with line filtering.',
+                type(final_err).__name__,
+            )
+            self._load_with_filtering(filename, ignore_discard, ignore_expires)
 
 
 class Timer:
