@@ -21,20 +21,118 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # =========================================================================
-# Discord shooter — SSRF risks
+# Discord shooter — SSRF protection (FIXED)
 # =========================================================================
 class TestDiscordShooterSSRF:
-    """Discord webhook URL is user-supplied — SSRF risk."""
+    """Discord webhook URLs are validated for SSRF at construction."""
 
-    def test_send_data_does_not_validate_url(self):
-        """DiscordShooter doesn't validate the webhook URL.
-        This is a known SSRF risk — we document it."""
+    def test_public_discord_webhook_accepted(self):
+        """A normal Discord webhook URL (discord.com) is accepted."""
         from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
-        # Just verify it doesn't crash on weird URLs
-        shooter = DiscordShooter(['http://192.168.1.1/admin'])
-        # The shooter will TRY to POST to this URL
-        # We don't actually let it (no network)
-        # Just verify instantiation works
+        shooter = DiscordShooter(['https://discord.com/api/webhooks/123/abc'])
+        assert shooter.discord_webhooks == ['https://discord.com/api/webhooks/123/abc']
+
+    def test_localhost_blocked(self):
+        """A localhost webhook URL is blocked (SSRF risk)."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://localhost:8080/webhook'])
+
+    def test_127_0_0_1_blocked(self):
+        """127.0.0.1 is loopback and is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://127.0.0.1:8080/webhook'])
+
+    def test_private_ip_192_168_blocked(self):
+        """A 192.168.x.x private IP is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://192.168.1.1:8080/webhook'])
+
+    def test_private_ip_10_blocked(self):
+        """A 10.x.x.x private IP is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://10.0.0.1:8080/webhook'])
+
+    def test_link_local_blocked(self):
+        """169.254.x.x (link-local) is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://169.254.169.254/webhook'])
+
+    def test_ipv6_loopback_blocked(self):
+        """::1 is IPv6 loopback and is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://[::1]:8080/webhook'])
+
+    def test_file_scheme_blocked(self):
+        """file:// is blocked (not a valid HTTP scheme)."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['file:///etc/passwd'])
+
+    def test_ftp_scheme_blocked(self):
+        """ftp:// is blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['ftp://example.com/file'])
+
+    def test_userinfo_blocked(self):
+        """URLs with userinfo (user:pass@host) are blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['https://user:pass@discord.com/webhook'])
+
+    def test_opt_out_env_var(self, monkeypatch):
+        """MOODLE_DL_ALLOW_PRIVATE_WEBHOOK=1 disables the check."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        monkeypatch.setenv('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', '1')
+        # Should accept localhost
+        shooter = DiscordShooter(['http://localhost:8080/webhook'])
+        assert shooter.discord_webhooks == ['http://localhost:8080/webhook']
+
+    def test_opt_out_env_var_true(self, monkeypatch):
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        monkeypatch.setenv('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', 'true')
+        shooter = DiscordShooter(['http://10.0.0.1:8080/webhook'])
+        assert shooter.discord_webhooks == ['http://10.0.0.1:8080/webhook']
+
+    def test_opt_out_env_var_yes(self, monkeypatch):
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        monkeypatch.setenv('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', 'yes')
+        shooter = DiscordShooter(['http://192.168.1.1:8080/webhook'])
+        assert shooter.discord_webhooks == ['http://192.168.1.1:8080/webhook']
+
+    def test_opt_out_partial_value_keeps_protection(self, monkeypatch):
+        """A partial env value (like 'maybe') does NOT opt out."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        monkeypatch.setenv('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', 'maybe')
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://localhost:8080/webhook'])
+
+    def test_one_bad_url_in_list_blocks_all(self):
+        """If ANY URL in the list is risky, all are rejected."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter([
+                'https://discord.com/api/webhooks/123/abc',
+                'http://localhost:8080/webhook',  # bad
+            ])
+
+    def test_localhost_name_blocked(self):
+        """The hostname 'localhost' is blocked (not just IPs)."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://localhost/webhook'])
+
+    def test_dot_local_blocked(self):
+        """*.local hostnames are blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF|private|loopback'):
+            DiscordShooter(['http://myservice.local/webhook'])
 
     def test_send_data_handles_connection_error(self):
         """A connection error should raise ConnectionError gracefully."""
@@ -210,30 +308,34 @@ class TestShootersPerformance:
 # SSRF comprehensive check
 # =========================================================================
 class TestSSRFSecurity:
-    """Document the SSRF risk in webhook URLs."""
+    """Document the SSRF protection in webhook URLs (FIXED)."""
 
-    def test_discord_webhook_accepts_localhost(self):
-        """A webhook URL pointing to localhost is accepted (SSRF).
-        The user's responsibility to not put localhost webhooks.
+    def test_discord_webhook_rejects_localhost(self):
+        """A webhook URL pointing to localhost is rejected (SSRF fix).
+        This is now blocked at construction time.
         """
         from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF'):
+            DiscordShooter(['http://localhost:8080/webhook'])
+
+    def test_discord_webhook_rejects_private_ip(self):
+        """A webhook URL pointing to 192.168.1.1 is rejected (SSRF fix)."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF'):
+            DiscordShooter(['http://192.168.1.1/webhook'])
+
+    def test_discord_webhook_rejects_file_scheme(self):
+        """A webhook URL with file:// scheme is rejected (SSRF fix)."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        with pytest.raises(ValueError, match='SSRF'):
+            DiscordShooter(['file:///etc/passwd'])
+
+    def test_discord_webhook_opt_out_allows_localhost(self, monkeypatch):
+        """With MOODLE_DL_ALLOW_PRIVATE_WEBHOOK=1, localhost is allowed."""
+        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
+        monkeypatch.setenv('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', '1')
         shooter = DiscordShooter(['http://localhost:8080/webhook'])
-        # No validation — this is the documented SSRF risk
-
-    def test_discord_webhook_accepts_private_ip(self):
-        """A webhook URL pointing to 192.168.1.1 is accepted (SSRF)."""
-        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
-        shooter = DiscordShooter(['http://192.168.1.1/webhook'])
-        # No validation — SSRF risk
-
-    def test_discord_webhook_accepts_file_scheme(self):
-        """A webhook URL with file:// scheme is accepted (SSRF).
-        file:// is not a valid HTTP scheme, so requests may fail,
-        but it's still parsed.
-        """
-        from moodle_dl.notifications.discord.discord_shooter import DiscordShooter
-        shooter = DiscordShooter(['file:///etc/passwd'])
-        # Will fail at request time (not a valid URL)
+        assert shooter.discord_webhooks == ['http://localhost:8080/webhook']
 
 
 # =========================================================================

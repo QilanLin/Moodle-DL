@@ -1,10 +1,89 @@
 # -*- coding: utf-8 -*-
 import json
+import os
+from ipaddress import ip_address
 from typing import Dict, List
+from urllib.parse import urlparse
 
 from requests.exceptions import RequestException
 
 from moodle_dl.utils import SslHelper
+
+
+def _is_ssrf_risky(url: str) -> bool:
+    """Return True if the URL targets a private/loopback/link-local
+    address that could be used for SSRF.
+
+    Discords webhook URLs are user-supplied. By default we
+    **block** URLs that target:
+      - Private IP ranges (RFC 1918)
+      - Loopback (127.0.0.0/8, ::1)
+      - Link-local (169.254.0.0/16, fe80::/10)
+      - Multicast, reserved, unspecified
+      - file://, ftp://, gopher://, dict://, etc. (non-http)
+      - Userinfo (user:pass@host) — phishing risk
+      - Localhost names (localhost, *.local)
+
+    Opt-out:
+      Set MOODLE_DL_ALLOW_PRIVATE_WEBHOOK=1 to disable SSRF
+      protection (for self-hosted webhooks on a private network).
+    """
+    # Opt-out check
+    if os.environ.get('MOODLE_DL_ALLOW_PRIVATE_WEBHOOK', '').strip() in (
+        '1', 'true', 'yes',
+    ):
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except (ValueError, TypeError):
+        return True  # Unparseable → treat as risky
+
+    scheme = (parsed.scheme or '').lower()
+    if scheme not in ('http', 'https'):
+        return True  # file://, ftp://, gopher://, etc.
+
+    # Userinfo (user:pass@host) is a phishing vector
+    if parsed.username or parsed.password:
+        return True
+
+    hostname = (parsed.hostname or '').lower()
+    if not hostname:
+        return True
+
+    # Hostname-based local checks
+    if hostname in ('localhost', 'localhost.localdomain'):
+        return True
+    if hostname.endswith('.local') or hostname.endswith('.internal'):
+        return True
+    if hostname.endswith('.localhost'):
+        return True
+
+    # IP-based checks
+    try:
+        # Strip brackets for IPv6
+        ip_str = hostname.strip('[]')
+        ip = ip_address(ip_str)
+        # Block private, loopback, link-local, multicast, reserved
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            return True
+    except ValueError:
+        # Not an IP — could be a public DNS name (e.g.
+        # discord.com) which we allow.
+        pass
+
+    # DNS rebinding mitigation: resolve hostname and check the
+    # resolved IPs too. But this is async — we skip it for
+    # performance (the IP block list covers most attacks).
+
+    return False
 
 
 class DiscordShooter:
@@ -16,6 +95,19 @@ class DiscordShooter:
     }
 
     def __init__(self, discord_webhooks: List[str]):
+        # 🔧 SSRF protection: validate webhook URLs at construction
+        # time. By default we reject URLs that target private IPs,
+        # loopback, file://, etc. To allow self-hosted Discord
+        # webhooks on private networks, set the env var
+        # MOODLE_DL_ALLOW_PRIVATE_WEBHOOK=1.
+        risky = [u for u in discord_webhooks if _is_ssrf_risky(u)]
+        if risky:
+            raise ValueError(
+                f'Discord webhook URL(s) appear to target private/loopback addresses, '
+                f'which is a security risk (SSRF): {risky}. '
+                f'If you are running a self-hosted Discord webhook on a private network, '
+                f'set the env var MOODLE_DL_ALLOW_PRIVATE_WEBHOOK=1 to disable this check.'
+            )
         self.discord_webhooks = discord_webhooks
 
     def send_msg(self, text):
