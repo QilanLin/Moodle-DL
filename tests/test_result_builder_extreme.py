@@ -120,24 +120,31 @@ class TestIsSystemFileAdversarial:
             # All `.json` files are considered system files
             assert ResultBuilder._is_system_file('../../metadata.json') is True
 
-            # 🚨 KNOWN BUG (documented regression pin):
-            # `_is_system_file` checks `filename.startswith('.')` to
-            # detect hidden files. But `../../passwd` ALSO starts with
-            # `.` (because `..` starts with `.`), so it gets classified
-            # as a hidden file. This means path-traversal filenames are
-            # treated as system files (and won't get the *NN* prefix).
-            # This is benign because:
-            #   1. Files in moodle-dl come from `content_filename`
-            #      which never has `../` (Moodle wouldn't return that)
-            #   2. The result is just "no *NN* prefix" — the file is
-            #      still downloaded, just without the prefix.
-            # We pin this behavior so any future change is intentional.
-            assert ResultBuilder._is_system_file('../../passwd') is True
-
-            # Plain filenames without path components
-            assert ResultBuilder._is_system_file('passwd') is False
+            # ✅ FIXED bug (was a regression risk):
+            # Previously `_is_system_file('../../passwd')` returned True
+            # because the path `../../passwd` starts with `.` (from `..`)
+            # and the function checked `filename.startswith('.')`. This
+            # meant path-traversal filenames were silently exempted from
+            # the *NN* prefix logic. The fix extracts the basename first
+            # so only the actual filename is checked, not its parent
+            # directory components.
+            #
+            # This is important because: while Moodle's API doesn't
+            # return path-traversal names today, a future API change
+            # or a malicious course / Moodle instance could. Using
+            # basename() means we only check the file's own name.
+            assert ResultBuilder._is_system_file('../../passwd') is False
             assert ResultBuilder._is_system_file('/etc/passwd') is False
+            assert ResultBuilder._is_system_file('passwd') is False
             assert ResultBuilder._is_system_file('regular_file.pdf') is False
+
+            # Hidden files (basename starts with .) are still detected
+            assert ResultBuilder._is_system_file('.hidden') is True
+            assert ResultBuilder._is_system_file('subdir/.hidden') is True
+
+            # Hidden files with .json extension
+            assert ResultBuilder._is_system_file('.foo.json') is True
+            assert ResultBuilder._is_system_file('subdir/.foo.json') is True
     def test_unicode_lookalike_metadata_json(self):
         from moodle_dl.moodle.result_builder import ResultBuilder
         result = ResultBuilder._is_system_file('ｍetadata.json')

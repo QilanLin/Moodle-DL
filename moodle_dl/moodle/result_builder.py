@@ -127,7 +127,7 @@ class ResultBuilder:
     def _is_system_file(filename: str) -> bool:
         """
         判断是否为系统文件（不应添加索引前缀）
-        
+
         系统文件包括：
         - 隐藏文件（以 . 开头）
         - Moodle 生成的元数据文件（*_metadata.json、metadata.json 等）
@@ -139,10 +139,23 @@ class ResultBuilder:
         @param filename: 文件名（已转为小写）
         @return: True 如果是系统文件
         """
+        import os as _os
+
         filename_lower = filename.lower()
-        
+
+        # 🔧 Path-traversal fix: extract just the basename before
+        # checking for hidden files. Without this, `'../../passwd'`
+        # would be classified as a hidden file (because it starts
+        # with `.` from the `..`), which means path-traversal
+        # filenames get the system-file exemption. This is a
+        # **security concern**: while Moodle's API doesn't return
+        # such paths today, a future API change or a man-in-the-
+        # middle could. Using basename() means we only look at the
+        # actual filename, not its parent directory components.
+        basename = _os.path.basename(filename_lower)
+
         # 隐藏文件（以 . 开头）
-        if filename_lower.startswith('.'):
+        if basename.startswith('.'):
             return True
 
         # 元数据文件 - 通用模式
