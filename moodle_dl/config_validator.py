@@ -214,6 +214,18 @@ class ConfigValidator:
     
     def _validate_config_data(self, config: Dict[str, Any], result: ValidationResult):
         """内部验证逻辑"""
+        # 🔧 Type guard: config must be a dict, not a list/str/etc.
+        # Without this, _validate_structure crashes with
+        # 'list' object has no attribute 'keys' when given
+        # a JSON array or scalar at the top level.
+        if not isinstance(config, dict):
+            result.add_error(
+                '_root_',
+                f'配置文件必须是 JSON 对象 (dict)，得到 {type(config).__name__}',
+                suggestion='配置文件最外层必须是 {...}，不能是 [...] 或其他类型',
+            )
+            return
+
         # 层次 1: 结构验证
         self._validate_structure(config, result)
         
