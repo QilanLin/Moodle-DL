@@ -248,10 +248,11 @@ class TestMixedSystemAndRealFiles:
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
+        # All real files are in the same module → share one slot (0).
         assert files[0].position_in_section is None
         assert files[1].position_in_section == 0
         assert files[2].position_in_section is None
-        assert files[3].position_in_section == 1
+        assert files[3].position_in_section == 0
         assert files[4].position_in_section is None
 
     def test_real_files_start_at_0_when_system_files_interleave(self):
@@ -267,8 +268,9 @@ class TestMixedSystemAndRealFiles:
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Real files in input order: 0, 1, 2
-        assert [f.position_in_section for f in files] == [0, None, 1, 2]
+        # All real files are in the same module → share one slot (0).
+        # The system file (metadata.json) is None.
+        assert [f.position_in_section for f in files] == [0, None, 0, 0]
 
 
 # =========================================================================

@@ -99,6 +99,26 @@ class ResultBuilder:
         perspective — opening a book chapter in moodle-dl should look
         the same as opening it in the Moodle web UI).
 
+        Module-folder handling (commit ab20833 + folder prefix):
+        A module that ends up in a subfolder (has attachments, or its
+        modname triggers the module-folder branch in gen_path) gets
+        ONE position slot for the entire module — not one per file.
+        This keeps the section-wide *NN* numbering continuous when
+        flat files and module folders sort together.
+
+        For example, Week 1's section:
+          *01* LECTURE SLIDES.md
+          *02* Lecture 0: About the module/
+              ├── Lecture 0: About the module.html.md  (no prefix)
+              └── Lecture 0: About the module.pdf       (no prefix)
+          *03* Lecture 1: Introduction to Machine Learning/
+              ├── ...
+          *04* Lecture 1: LGT/
+              ...
+          *12* TUTORIAL.md
+          *13* Tutorial 1/
+              ├── ...
+
         Cross-checked against:
           - moodle_official_repo_for_reference/public/course/classes/
             section_info.php:514  (get_sequence_cm_infos)
@@ -107,20 +127,77 @@ class ResultBuilder:
 
         @param files: 文件列表（会被原地修改）
         """
-        positions_by_scope = {}
+        # 🔧 Pin module-level numbering (folder prefix contract):
+        # Each non-book module gets ONE position slot in the
+        # section-wide counter. All files within the same module
+        # share that slot. Module folders (created when the module
+        # has attachments) get the prefix *NN* from this slot.
+        # Flat files (no attachments) also use this slot for their
+        # *NN* prefix.
+        #
+        # Example (Week 1 section, after fix):
+        #   *01* LECTURE SLIDES.md             (slot 0, flat)
+        #   *02* Lecture 0: About the module/  (slot 1, folder, 2 files inside)
+        #   *03* Lecture 1: Introduction.../   (slot 2, folder, 2 files inside)
+        #   *04* Lecture 1: LGT/               (slot 3, folder, 1 file inside)
+        #   *05* Lecture 1 - part 1 of 7: .../  (slot 4, folder, 1 file inside)
+        #   ...
+        #   *12* TUTORIAL.md                   (slot 11, flat)
+        #   *13* Tutorial 1/                    (slot 12, folder, 2 files inside)
+        #   ...
+        #
+        # Book modules keep per-book scope (one counter per book,
+        # not per chapter) so chapter sub-folders don't collide.
+        # See _position_scope_key.
+        non_book_position_by_module = {}  # (section_id, module_id) -> position
+        book_position_by_book = {}  # (section_id, book_module_id) -> position
+        section_non_book_counter = {}  # section_id -> next position
+        book_section_book_counter = {}  # section_id -> next book position
+        # Track the order in which (section_id, module_id) pairs are
+        # first encountered so the section-wide counter advances in
+        # input order (matching server fetch order).
+        ordered_non_book_keys = []
+
         for file in files:
             filename = file.content_filename.lower()
-
-            # 排除系统文件：不分配位置索引
             if self._is_system_file(filename):
                 file.position_in_section = None
                 continue
 
-            # 为普通文件按 section+book-chapter scope 分配位置。
-            scope_key = self._position_scope_key(file)
-            position = positions_by_scope.get(scope_key, 0)
-            file.position_in_section = position
-            positions_by_scope[scope_key] = position + 1
+            section_id = getattr(file, 'section_id', None)
+            modname = getattr(file, 'module_modname', '')
+
+            if modname == 'book':
+                # Book: per-book scope (so chapter content + chapter
+                # images share the same book counter).
+                book_module_id = getattr(file, 'module_id', None)
+                # The book module's content_filepath carries the
+                # chapter identity — but we want one counter PER BOOK,
+                # not per chapter. So we use (section_id, book_module_id).
+                # However, for cross-book section ordering, books
+                # also need their own counter that advances when a
+                # new book is encountered. For now, keep the existing
+                # book_scope behavior: each book has its own counter.
+                book_key = (section_id, book_module_id)
+                if book_key not in book_position_by_book:
+                    book_position_by_book[book_key] = 0
+                pos = book_position_by_book[book_key]
+                file.position_in_section = pos
+                book_position_by_book[book_key] = pos + 1
+            else:
+                # Non-book: each module gets one slot.
+                module_id = getattr(file, 'module_id', None)
+                key = (section_id, module_id)
+                if key not in non_book_position_by_module:
+                    # New (section_id, module_id) → assign next slot
+                    if section_id not in section_non_book_counter:
+                        section_non_book_counter[section_id] = 0
+                    pos = section_non_book_counter[section_id]
+                    section_non_book_counter[section_id] = pos + 1
+                    non_book_position_by_module[key] = pos
+                    ordered_non_book_keys.append(key)
+                # All files in the same module share the same slot
+                file.position_in_section = non_book_position_by_module[key]
 
     @classmethod
     def _position_scope_key(cls, file: File) -> tuple:
@@ -153,6 +230,15 @@ class ResultBuilder:
 
         @param file: The File being indexed.
         @return: ``(section_id, book_module_id)`` tuple.
+
+        Module-level scoping for non-book modules is handled
+        separately by ``_assign_positions_to_files``: see how it
+        groups files by (section_id, module_id) before assigning
+        the counter. Book modules keep their per-book scope because
+        Moodle's book module uses different content_filepath values
+        for chapter content vs chapter image sub-folders, and
+        per-filepath scoping would collide *NN* numbers within a
+        single chapter.
         """
         module_modname = getattr(file, 'module_modname', '')
         # Only the book modname gets a per-module scope (the

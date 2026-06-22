@@ -77,14 +77,14 @@ def test_get_files_in_sections_adds_summary_positions_and_kaltura_total():
     video = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
 
     assert summary.content_filename == 'Section summary'
-    # With section-wide indexing, the order is:
-    #   1. _get_files_in_modules processes the kalvidres module first → video
-    #   2. _handle_description appends summary + summary_url after
-    # All three share the same section-wide scope (none of them is a
-    # book modname), so they get sequential indices in input order.
+    # With module-level numbering:
+    #   - kalvidres module: 1 slot (slot 0, video shares it)
+    #   - section_summary module (module_id=0): 1 slot (slot 1,
+    #     summary + summary_url share it)
+    # All files in the same module share one slot.
     assert video.position_in_section == 0
     assert summary.position_in_section == 1
-    assert summary_url.position_in_section == 2
+    assert summary_url.position_in_section == 1
     assert video.content_filename == 'Lecture Video'
 
 
@@ -136,10 +136,12 @@ def test_system_file_detection_and_position_assignment():
     assert all(ResultBuilder._is_system_file(name) for name in system_names)
     assert ResultBuilder._is_system_file('lecture.pdf') is False
 
+    # Files need different module_ids to get different slots
+    # under the module-level numbering contract.
     files = [
-        type('FileLike', (), {'content_filename': 'metadata.json'})(),
-        type('FileLike', (), {'content_filename': 'lecture.pdf'})(),
-        type('FileLike', (), {'content_filename': 'notes.docx'})(),
+        type('FileLike', (), {'content_filename': 'metadata.json', 'module_id': None, 'module_modname': 'resource', 'section_id': 1})(),
+        type('FileLike', (), {'content_filename': 'lecture.pdf', 'module_id': 1, 'module_modname': 'resource', 'section_id': 1})(),
+        type('FileLike', (), {'content_filename': 'notes.docx', 'module_id': 2, 'module_modname': 'resource', 'section_id': 1})(),
     ]
     builder._assign_positions_to_files(files)
 

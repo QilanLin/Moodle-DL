@@ -237,8 +237,14 @@ class TestStateRecorderInvariants(unittest.TestCase):
     @given(
         st.lists(file_strategy(), min_size=1, max_size=10),
     )
-    def test_invariant_I3_positions_are_unique_within_scope(self, files):
-        """Within a single scope, every file must get a distinct position."""
+    def test_invariant_I3_module_positions_are_dense(self, files):
+        """Module-level numbering contract: positions advance once
+        per module (not per file). All files in the same module
+        share one slot.
+
+        Verify the new contract: positions are dense across
+        modules within a section.
+        """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
         for f in files:
@@ -250,10 +256,16 @@ class TestStateRecorderInvariants(unittest.TestCase):
         rb._uses_module_directory = staticmethod(lambda modname: modname in ResultBuilder.MODULE_DIRECTORY_SUFFIXES)
         rb._assign_positions_to_files(files)
         positions = [f.position_in_section for f in files]
+        # Number of unique positions should equal number of unique
+        # (section_id, module_id) pairs (one slot per module).
+        module_pairs = set()
+        for f in files:
+            module_pairs.add((getattr(f, 'section_id', None), getattr(f, 'module_id', None)))
+        unique_positions = set(p for p in positions if p is not None)
         self.assertEqual(
-            len(positions),
-            len(set(positions)),
-            f"Duplicate positions assigned: {positions}",
+            len(unique_positions),
+            len(module_pairs),
+            f"Expected {len(module_pairs)} unique module slots, got {len(unique_positions)}: positions={positions}, modules={module_pairs}",
         )
 
     @settings(max_examples=20, deadline=5000, suppress_health_check=[HealthCheck.too_slow])

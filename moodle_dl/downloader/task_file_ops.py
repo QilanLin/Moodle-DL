@@ -121,6 +121,38 @@ class TaskFileOps:
 
         return f'*{index_str}* {original_filename}'
 
+    @staticmethod
+    def _module_folder_name_with_prefix(file) -> str:
+        """Build the module folder name with optional *NN* prefix.
+
+        The folder name gets a *NN* prefix based on the module's
+        first file's section position, so flat files and module
+        folders sort together in the same sequence:
+
+          *01* LECTURE SLIDES.md
+          *02* Lecture 0: About the module/
+              ├── Lecture 0: About the module.html.md
+              └── Lecture 0: About the module.pdf
+
+        Position is 0-based internally; the prefix is 1-based to
+        match human-readable ordering. Sections with >99 files use
+        3-digit padding (matches generate_filename_with_index).
+
+        Sentinel: if file.position_in_section is None (not yet
+        assigned) or not a real int (test mock), no prefix is added
+        — the folder keeps the original module_name. This preserves
+        backward compatibility with code paths that haven't been
+        migrated yet.
+        """
+        position = getattr(file, 'position_in_section', None)
+        if not isinstance(position, int):
+            return file.module_name
+        if position < 99:
+            prefix = f'*{position + 1:02d}*'
+        else:
+            prefix = f'*{position + 1:03d}*'
+        return f'{prefix} {file.module_name}'
+
     def gen_path(self, storage_path: str, course, file) -> str:
         """Generate the directory path where a file should be stored.
 
@@ -198,14 +230,27 @@ class TaskFileOps:
             # (the folder name itself encodes the module's
             # position in the section).
             file._in_module_folder = True
+            # 🔧 Pin module folder *NN* prefix: the folder name
+            # should also carry a *NN* prefix based on the
+            # module's first file's section position. This way,
+            # flat files and module folders sort together in the
+            # same sequence: *01* LECTURE SLIDES.md,
+            # *02* Lecture 0: About the module/,
+            # *04* Lecture 1: Introduction to Machine Learning/, etc.
+            # Without this fix, module folders have no prefix and
+            # float freely in the section dir, breaking the
+            # section-wide *NN* ordering.
+            folder_name = self._module_folder_name_with_prefix(file)
             return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
+                storage_path, course_name, file.section_name, folder_name, file.content_filepath
             )
 
         if file.module_modname in COOKIE_MOD_MODNAMES:
             file._in_module_folder = True
+            # Same fix for cookie_mod (Kaltura / Helixmedia) folders.
+            folder_name = self._module_folder_name_with_prefix(file)
             return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, file.module_name, file.content_filepath
+                storage_path, course_name, file.section_name, folder_name, file.content_filepath
             )
 
         file._in_module_folder = False

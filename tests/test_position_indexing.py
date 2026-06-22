@@ -92,9 +92,15 @@ class TestSectionWideIndexingIsDefault:
 
         assert [f.position_in_section for f in files] == [0, 1, 2]
 
-    def test_multiple_files_in_same_module_get_sequential_indices(self):
-        """A single module with 3 files gets 0, 1, 2 (the section-
-        wide counter is shared across files in the same module too).
+    def test_multiple_files_in_same_module_share_one_slot(self):
+        """A single module with 3 files shares ONE slot (the module
+        gets one counter slot, regardless of file count). This
+        makes section-wide *NN* numbering dense across flat files
+        and module folders.
+
+        All 3 files have position_in_section=0 (they share the
+        module's slot). The module folder gets *01* prefix; the
+        internal files don't get any prefix (per commit ab20833).
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -110,7 +116,9 @@ class TestSectionWideIndexingIsDefault:
         rb = _make_result_builder()
         rb._assign_positions_to_files(files)
 
-        assert [f.position_in_section for f in files] == [0, 1, 2]
+        # All 3 files share the module's ONE slot (position 0).
+        # This is the new contract: module-level numbering.
+        assert [f.position_in_section for f in files] == [0, 0, 0]
 
     def test_sections_are_independent(self):
         """Even with section-wide indexing, DIFFERENT sections
@@ -358,9 +366,13 @@ class TestSingletonParticipatesInSectionWideOrdering:
         rb = _make_result_builder()
         rb._assign_positions_to_files(files)
 
-        # ALL files share section-wide counter, including the
-        # singleton. The singleton does NOT reset the counter.
-        assert [f.position_in_section for f in files] == [0, 1, 2, 3, 4]
+        # Each module gets ONE slot (module-level numbering):
+        # Module A: 2 files → 1 slot (slot 0)
+        # Singleton B: 1 file → 1 slot (slot 1)
+        # Module C: 2 files → 1 slot (slot 2)
+        # The singleton does NOT reset the counter.
+        # Files within the same module share the slot.
+        assert [f.position_in_section for f in files] == [0, 0, 1, 2, 2]
 
     def test_singleton_at_section_start(self):
         """A singleton label is the FIRST file in the section —
@@ -381,7 +393,9 @@ class TestSingletonParticipatesInSectionWideOrdering:
         rb = _make_result_builder()
         rb._assign_positions_to_files([singleton, a1, a2])
 
-        assert [f.position_in_section for f in (singleton, a1, a2)] == [0, 1, 2]
+        # Module-level numbering:
+        # Singleton (slot 0), Module A (slot 1, 2 files share slot)
+        assert [f.position_in_section for f in (singleton, a1, a2)] == [0, 1, 1]
 
     def test_singleton_at_section_end(self):
         """A singleton label is the LAST file in the section —
@@ -402,7 +416,9 @@ class TestSingletonParticipatesInSectionWideOrdering:
         rb = _make_result_builder()
         rb._assign_positions_to_files([a1, a2, singleton])
 
-        assert [f.position_in_section for f in (a1, a2, singleton)] == [0, 1, 2]
+        # Module-level numbering:
+        # Module A (slot 0, 2 files share), Singleton (slot 1)
+        assert [f.position_in_section for f in (a1, a2, singleton)] == [0, 0, 1]
 
 
 # =========================================================================

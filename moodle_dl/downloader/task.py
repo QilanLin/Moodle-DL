@@ -1074,7 +1074,31 @@ class Task:
             new_extension = '.bin'
 
         if self.file.content_type == 'description-url' and new_name != '':
-            self.filename = new_name + new_extension
+            # 🔧 Pin description-url prefix preservation: the
+            # TaskFileOps.generate_filename_with_index already
+            # computed the *NN* prefix and put it in self.filename.
+            # The HTTP-derived name (new_name + new_extension)
+            # overwrites it, dropping the prefix and breaking the
+            # section-wide ordering for external downloads (e.g.
+            # Tom Mitchell PDF, RSS PDFs, etc.). Preserve the prefix
+            # here by detecting it in the original self.filename
+            # and re-applying it to the new HTTP-derived name.
+            #
+            # Example:
+            #   Original self.filename = '*02* https：⧸⧸...TomMitchell.pdf'
+            #   new_name = 'MachineLearningTomMitchell'
+            #   new_extension = '.pdf'
+            #   → 'MachineLearningTomMitchell.pdf' (BUG: prefix lost)
+            #   After fix:
+            #   → '*02* MachineLearningTomMitchell.pdf' (prefix preserved)
+
+            # Extract the *NN* prefix (if any) from the current filename
+            prefix_match = re.match(r'^(\*\d+\*)\s+', self.filename)
+            if prefix_match:
+                prefix = prefix_match.group(1)
+                self.filename = f'{prefix} {new_name}{new_extension}'
+            else:
+                self.filename = new_name + new_extension
 
         _old_name, old_extension = os.path.splitext(self.filename)
         if old_extension != new_extension:

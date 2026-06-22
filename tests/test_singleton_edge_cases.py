@@ -353,9 +353,9 @@ class TestModuleWithDescriptionPlusAttachment:
         rb = _make_result_builder()
         rb._assign_positions_to_files([desc, attach])
 
-        # Both share the section-wide counter
+        # Module-level numbering: both files share the module's one slot.
         assert desc.position_in_section == 0
-        assert attach.position_in_section == 1
+        assert attach.position_in_section == 0
 
 
 # =========================================================================
@@ -462,9 +462,9 @@ class TestPageModuleWithSubfolder:
         from moodle_dl.moodle.result_builder import ResultBuilder
         rb = _make_result_builder()
         rb._assign_positions_to_files([f1, f2])
-        # Both share section scope
+        # Module-level numbering: both files share the module's one slot.
         assert f1.position_in_section == 0
-        assert f2.position_in_section == 1
+        assert f2.position_in_section == 0
 
 
 # =========================================================================

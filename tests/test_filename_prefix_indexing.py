@@ -80,10 +80,12 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
 
     def test_assign_positions_basic(self):
         """测试基本的位置分配"""
+        # Use different module_ids so each file gets its own slot
+        # under the module-level numbering contract.
         files = [
-            self._create_file("file1.pdf"),
-            self._create_file("file2.pdf"),
-            self._create_file("file3.pdf"),
+            self._create_file("file1.pdf", module_id=1),
+            self._create_file("file2.pdf", module_id=2),
+            self._create_file("file3.pdf", module_id=3),
         ]
 
         self.result_builder._assign_positions_to_files(files)
@@ -94,18 +96,23 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
 
     def test_assign_positions_with_system_files(self):
         """测试包含系统文件时的位置分配"""
+        # Use different module_ids so each file gets its own slot
+        # (under the module-level numbering contract).
         files = [
-            self._create_file("file1.pdf"),
-            self._create_file("metadata.json"),  # 系统文件
-            self._create_file("file2.pdf"),
-            self._create_file("Table of Contents.html"),  # 系统文件
-            self._create_file("file3.pdf"),
-            self._create_file(".hidden"),  # 系统文件
+            self._create_file("file1.pdf", module_id=1),
+            self._create_file("metadata.json", module_id=1),  # 系统文件
+            self._create_file("file2.pdf", module_id=2),
+            self._create_file("Table of Contents.html", module_id=2),  # 系统文件
+            self._create_file("file3.pdf", module_id=3),
+            self._create_file(".hidden", module_id=3),  # 系统文件
         ]
 
         self.result_builder._assign_positions_to_files(files)
 
-        # 普通文件应获得连续的位置索引
+        # Module-level numbering: each module gets one slot.
+        # file1.pdf (mod 1) → slot 0
+        # file2.pdf (mod 2) → slot 1
+        # file3.pdf (mod 3) → slot 2
         self.assertEqual(files[0].position_in_section, 0)  # file1.pdf
         self.assertIsNone(files[1].position_in_section)  # metadata.json
         self.assertEqual(files[2].position_in_section, 1)  # file2.pdf
