@@ -74,17 +74,41 @@ class TaskFileOps:
         """
         生成带索引前缀的文件名。
 
-        如果文件有 position_in_section，则在原始文件名前添加位置索引前缀。
-        ⚠️ 核心原则：保留原始文件名，只添加前缀。
+        文件位于 section 目录 (扁平) 时,使用位置索引前缀 *NN*:
+          position=0, original="lecture.pdf" → "*01* lecture.pdf"
+          position=4, original="01-intro.pdf" → "*05* 01-intro.pdf"
+          position=None → "lecture.pdf" (无索引)
 
-        示例:
-            position=0, original="lecture.pdf" → "*01* lecture.pdf"
-            position=4, original="01-intro.pdf" → "*05* 01-intro.pdf" (保留原名中的 "01-")
-            position=None → "lecture.pdf" (无索引)
+        文件位于 module 子目录 (有附件的 module) 时,**不**使用 *NN*
+        前缀 — 模块文件夹名本身在 section 内是唯一的 (按 server
+        顺序排列),已经表达了模块的位置. 例:
+          section_dir/Lecture 3： Probabilistic methods 1/
+            Lecture 3： Probabilistic methods 1.html.md
+            Lecture 3： Probabilistic methods 1.pdf
+
+        (User explicit contract 2026-06-22: 'Lecture 3： Probabilistic
+        methods 1 文件夹下的 .pdf 和 .html.md 就不再需要*xx*前缀
+        序号了')
         """
         from moodle_dl.utils import PathTools as PT
 
+        # ⚠️ Always sanitize the filename first — to_valid_name
+        # converts characters that are illegal on Windows filesystems
+        # (e.g. ``*`` → ``＊``) so the resulting filename is portable.
+        # Without this, module-folder files would still contain raw
+        # ``*`` characters that Windows refuses to create.
         original_filename = PT.to_valid_name(file.content_filename, is_file=True)
+
+        # 如果文件在 module 子目录内 (gen_path 设置了 _in_module_folder=True),
+        # 跳过 *NN* 前缀.
+        #
+        # 注意: 我们用 ``is True`` 而**不是** truthy 检查. ``MagicMock``
+        # (测试用) 没设置 _in_module_folder 时, ``getattr(...)`` 返回一个
+        # MagicMock 实例 (truthy),如果用 truthy 检查会**永远**进 if 分支.
+        # 用 ``is True`` 保证只有 gen_path 显式设了 True 才跳过.
+        _in_module_folder = getattr(file, '_in_module_folder', None)
+        if _in_module_folder is True:
+            return original_filename
 
         if file.position_in_section is None:
             return original_filename
@@ -100,9 +124,6 @@ class TaskFileOps:
     def gen_path(self, storage_path: str, course, file) -> str:
         """Generate the directory path where a file should be stored.
 
-        Same as the original Task.gen_path, but extracted so the
-        path logic can be tested and reused independently.
-
         Section ordering
         ----------------
         The Moodle API (``core_course_get_contents``) returns
@@ -113,22 +134,26 @@ class TaskFileOps:
         So ``moodle-dl`` does not need to impose its own sort
         order on directory names.
 
-        On-disk multi-digit sections (e.g. ``Week 1``, ``Week 2``,
-        ``..., Week 10``) WILL appear in alphabetical order on
-        macOS Finder and Windows Explorer (``Week 1, Week 10,
-        Week 2, ...``) because alphabetical sort does not match
-        natural sort for multi-digit numbers. The ``moodle-dl
-        --list`` command (added in the same commit family)
-        displays sections in natural-sort order, hides any
-        macOS ``._*`` shadow files, and cross-references the
-        SQLite database. Users who want natural sort in Finder
-        can:
-          * Sort Finder by ``sortorder`` if their filesystem
-            supports it, or
-          * Use the official moodle.org UI which uses natural
-            sort, or
-          * Use ``ls -v`` (BSD/macOS) / ``ls -1 --group-directories-first``
-            (Linux) which provide natural sort.
+        Module folder flattening
+        ------------------------
+        If the module has only ONE file (the description HTML
+        preview, no resource_file / label_file / assign_file
+        attachments), the file is FLATTENED into the section
+        directory. No module-name subfolder is created, because
+        a single-file folder with the same name as its sole file
+        is visual noise.
+
+        Example (label with description only):
+          Section/                          ← was
+          └── Module X/
+              └── *02* Module X.html.md
+        Now becomes:
+          Section/                          ← after this fix
+          └── *02* Module X.html.md
+
+        The module's ``_module_has_attachments`` flag (set by
+        ``result_builder._get_files_in_modules``) determines
+        whether the file goes in a subfolder or stays flat.
         """
         from moodle_dl.utils import PathTools as PT
         from moodle_dl.downloader.kaltura_patterns import (
@@ -142,6 +167,23 @@ class TaskFileOps:
         if not course.create_directory_structure:
             return PT.flat_path_of_file(storage_path, course_name, file.content_filepath)
 
+        # 🔧 Singleton-description flattening: if the module has no
+        # attachments and the file is the module's description HTML,
+        # flatten it into the section directory. Mark the file as
+        # "in module folder = False" so generate_filename_with_index
+        # adds the *NN* prefix (the folder name doesn't carry the
+        # position info in this case — the prefix does).
+        #
+        # Sentinel: ``None`` means "not computed yet" (e.g. tests
+        # that don't go through ``_get_files_in_modules``). In that
+        # case, fall back to the historical module-folder behavior
+        # to avoid regressions in callers that haven't been
+        # migrated yet.
+        _has_attachments = getattr(file, '_module_has_attachments', None)
+        if _has_attachments is False:
+            file._in_module_folder = False
+            return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
+
         if file.module_modname.endswith(
             (
                 'assign', 'book', 'data', 'folder', 'forum', 'lesson',
@@ -150,15 +192,23 @@ class TaskFileOps:
         ) or file.module_modname in (
             'resource', 'page', 'url', 'label',
         ):
+            # Module has attachments → keep module folder. Mark
+            # file as "in module folder = True" so
+            # generate_filename_with_index skips the *NN* prefix
+            # (the folder name itself encodes the module's
+            # position in the section).
+            file._in_module_folder = True
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath
             )
 
         if file.module_modname in COOKIE_MOD_MODNAMES:
+            file._in_module_folder = True
             return PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name, file.module_name, file.content_filepath
             )
 
+        file._in_module_folder = False
         return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
 
     def add_token_to_url(self, url: str) -> str:

@@ -166,6 +166,46 @@ class ResultBuilder:
     def _uses_module_directory(cls, module_modname: str) -> bool:
         return module_modname.endswith(cls.MODULE_DIRECTORY_SUFFIXES) or module_modname in cls.MODULE_DIRECTORY_MODNAMES
 
+    # Attachment content types — a file with one of these types
+    # counts as a "real" attachment (not just the description HTML
+    # preview that every module gets). Used by
+    # ``_module_has_attachments`` to decide whether the module
+    # needs its own subfolder.
+    ATTACHMENT_CONTENT_TYPES = frozenset({
+        'resource_file',  # resource module's actual file (PDF/ZIP/etc.)
+        'label_file',      # label module's inline image / attachment
+        'assign_file',     # assign module's submission template
+        'cookie_mod',      # Kaltura / Helixmedia video
+        'url_introfile',   # URL module's intro file
+        'file',            # generic file (page module's index.html, etc.)
+        'description-html', # description that has been rendered as HTML
+        'video',           # direct video file
+        'audio',           # direct audio file
+    })
+
+    @classmethod
+    def _module_has_attachments(cls, files_for_module) -> bool:
+        """Return True if any file in the module is a real
+        attachment (not just the description HTML preview).
+
+        Used to decide whether the module needs its own
+        subfolder. Modules with only their description HTML
+        preview are flattened into the section directory (no
+        subfolder with a single file is visually noisy).
+
+        @param files_for_module: List of File objects for a single
+            module.
+        @return: True if at least one file has an attachment
+            content type.
+        """
+        if not files_for_module:
+            return False
+        for f in files_for_module:
+            content_type = getattr(f, 'content_type', None)
+            if content_type in cls.ATTACHMENT_CONTENT_TYPES:
+                return True
+        return False
+
     @staticmethod
     def _is_system_file(filename: str) -> bool:
         """
@@ -248,6 +288,15 @@ class ResultBuilder:
     def _get_files_in_modules(self, section_modules: List, fetched_mods: Dict[str, Dict], **location) -> List[File]:
         """
         Iterates over all modules to find files (or content) in them.
+
+        For each module, the resulting files are tagged with
+        ``_module_has_attachments`` (True if the module has any
+        real attachment beyond its description HTML preview).
+        This flag drives the on-disk folder structure: a module
+        without attachments is FLATTENED into the section
+        directory (no subfolder with a single file), while a
+        module with attachments keeps its own subfolder.
+
         @param section_modules: The modules of the section.
         @param fetched_mods: Contains the fetched mods of the course
         @param location: contains
@@ -258,6 +307,7 @@ class ResultBuilder:
         import logging
         files = []
         for module in section_modules:
+            module_files_before = len(files)
             location['module_id'] = module.get('id', 0)
             location['module_name'] = module.get('name', '')
             location['module_modname'] = module.get('modname', '')
@@ -329,6 +379,18 @@ class ResultBuilder:
                         module_url,
                     )
 
+            # Tag this module's files with _module_has_attachments
+            # so gen_path can decide folder vs flat. Book modules
+            # are special: book.py already sets content_filepath per
+            # chapter, so gen_path's flat-vs-folder logic does not
+            # apply (book keeps its chapter folder structure).
+            module_files_after = len(files)
+            module_files = files[module_files_before:module_files_after]
+            if module_files and location['module_modname'] != 'book':
+                has_attach = self._module_has_attachments(module_files)
+                for f in module_files:
+                    f._module_has_attachments = has_attach
+
         total_files_count = len(files)
         kalvidres_in_section = 0
         for f in files:
@@ -372,6 +434,7 @@ class ResultBuilder:
             for _, module in mod_modules.items():
                 if 'on_main_page' in module:
                     continue
+                module_files_before = len(files)
                 location.update(
                     {
                         'module_id': module.get('id', 0),
@@ -389,6 +452,14 @@ class ResultBuilder:
                     location['module_modname'] = 'index_mod-' + location['module_modname']
 
                 files += self._handle_files(module.get('files', []), **location)
+
+                # Tag this module's files with _module_has_attachments
+                module_files_after = len(files)
+                module_files = files[module_files_before:module_files_after]
+                if module_files and mod_name != 'book':
+                    has_attach = self._module_has_attachments(module_files)
+                    for f in module_files:
+                        f._module_has_attachments = has_attach
 
         return files
 
