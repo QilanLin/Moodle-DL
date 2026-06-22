@@ -1108,6 +1108,23 @@ def get_parser():
         ),
     )
 
+    parser.add_argument(
+        '-gsi',
+        '--global-section-indexing',
+        dest='global_section_indexing',
+        default=False,
+        action='store_true',
+        help=(
+            'Number files (*NN* prefix) sequentially across the whole section '
+            'instead of restarting the counter in each sub-folder. '
+            'E.g. "Week 2 - Inductive learning" gets files numbered '
+            '*01*, *02*, *03*, ... across all sub-folders, instead of '
+            'each sub-folder having its own *01*, *02*, ... that look '
+            'duplicated. Book chapters keep per-chapter scope regardless '
+            'of this flag. Default: off (preserves historical behavior).'
+        ),
+    )
+
     return parser
 
 
@@ -1130,6 +1147,14 @@ def post_process_opts(opts: MoodleDlOpts):
         opts.restart_incomplete_on_kill = False
     elif os.environ.get('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL') == '0':
         opts.restart_incomplete_on_kill = True
+
+    # Section-wide indexing: env var override for users who want
+    # to enable the new section-wide *NN* numbering without editing
+    # their config.json or CLI scripts.
+    if os.environ.get('MOODLE_DL_GLOBAL_SECTION_INDEXING') == '1':
+        opts.global_section_indexing = True
+    elif os.environ.get('MOODLE_DL_GLOBAL_SECTION_INDEXING') == '0':
+        opts.global_section_indexing = False
 
     return opts
 
