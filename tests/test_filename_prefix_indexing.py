@@ -114,7 +114,15 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         self.assertIsNone(files[5].position_in_section)  # .hidden
 
     def test_assign_positions_are_scoped_to_logical_output_folder(self):
-        """不同输出目录的文件应各自从 0 开始编号"""
+        """不同输出目录的文件应各自从 0 开始编号
+
+        With section-wide indexing (the default), files in the
+        same section share one 0-based counter. The exception is
+        the book modname: each book module is a single scope, so
+        all files in the same book module (across content_filepath
+        boundaries) share a 0-based counter. Different books (different
+        module_ids) and different sections get independent counters.
+        """
         section_file_1 = self._create_file("section-a.pdf", module_id=1, module_modname="resource")
         book_root = self._create_file(
             "Book overview.html",
@@ -144,11 +152,24 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
             section_file_2,
         ])
 
+        # section_file_1 is a resource module → shares section counter
+        # with section_file_2 (and book_root, which is book module_id=2
+        # so it's per-book, NOT in the section counter).
+        # Wait: book_root/chapter_index/chapter_attachment are all module_id=2,
+        # so they share the book scope. section_file_1 is module_id=1 (resource).
+        # section_file_2 is module_id=3 (resource). section_file_1 and
+        # section_file_2 are both resources, so they share the section counter.
+        # Order in the input list:
+        #   1. section_file_1 (resource, section counter) → 0
+        #   2. book_root       (book, book counter)        → 0
+        #   3. chapter_index   (book, book counter)        → 1
+        #   4. chapter_attach  (book, book counter)        → 2
+        #   5. section_file_2  (resource, section counter) → 1
         self.assertEqual(section_file_1.position_in_section, 0)
         self.assertEqual(section_file_2.position_in_section, 1)
         self.assertEqual(book_root.position_in_section, 0)
-        self.assertEqual(chapter_index.position_in_section, 0)
-        self.assertEqual(chapter_attachment.position_in_section, 1)
+        self.assertEqual(chapter_index.position_in_section, 1)
+        self.assertEqual(chapter_attachment.position_in_section, 2)
 
     def test_filename_generation_with_position(self):
         """测试带位置索引的文件名生成"""

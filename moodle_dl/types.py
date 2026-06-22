@@ -386,23 +386,6 @@ class MoodleDlOpts:
     quiet: bool = False
     log_to_file: bool = False
     log_file_path: str = ''
-    # When True, position indices (*NN* prefix in filenames) are
-    # assigned across the WHOLE section instead of being scoped per
-    # (section_id, module_id, content_filepath). This makes the
-    # *NN* numbering read as a single sequential numbering for the
-    # section, e.g. "Week 2 - Inductive learning" gets files named
-    # *01*, *02*, *03*, ... across all sub-folders, instead of each
-    # sub-folder having its own *01*, *02*, ... that look duplicated
-    # but have no obvious ordering.
-    #
-    # Default False preserves the historical behavior for backward
-    # compatibility — users who have already organized their files
-    # don't get a sudden renumbering.
-    #
-    # Book modname always keeps per-chapter scope (each book chapter
-    # is a standalone "booklet" and gets its own 0-based counter)
-    # regardless of this opt-in.
-    global_section_indexing: bool = False
 
 
 class TaskState(Enum):

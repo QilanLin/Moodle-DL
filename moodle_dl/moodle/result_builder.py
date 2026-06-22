@@ -41,42 +41,6 @@ class ResultBuilder:
         self.moodle_base_url = moodle_url.url_base
         self.mod_plurals = mod_plurals
         self.token = token or ''
-        # Opt-in (default False to preserve historical behavior):
-        # when True, position indices (*NN* prefix) are assigned
-        # across the WHOLE section, ignoring content_filepath. This
-        # makes the *NN* prefix read as a single sequential numbering
-        # for the whole section, matching the user's mental model of
-        # "files in Week 2 are numbered 1, 2, 3, ...".
-        #
-        # When False (default), the historical scoped behavior is used:
-        # each (section_id, module_scope, content_filepath) triple
-        # gets its own 0-based counter, which produces visually
-        # confusing *NN* numbers (e.g. *02* in one sub-folder, *04*
-        # in another) because each sub-folder starts at 0.
-        #
-        # Book modname is always treated as a per-chapter scope
-        # (each book chapter gets its own 0-based counter) regardless
-        # of this opt-in — this preserves the historical "book
-        # chapter is a standalone booklet" contract.
-        self._section_wide_indexing = False
-
-    def set_section_wide_indexing(self, enabled: bool) -> None:
-        """Enable or disable the section-wide position-indexing opt-in.
-
-        When enabled, position indices assigned by
-        :meth:`_assign_positions_to_files` run across the whole
-        section instead of being scoped per (section_id, module_id,
-        content_filepath). Book chapters remain independent (per-
-        chapter counters) regardless of this opt-in.
-
-        The flag is plumbed in from :class:`MoodleDlOpts` via the
-        ``global_section_indexing`` config key (and the equivalent
-        CLI flag). Default is False for backward compatibility.
-
-        @param enabled: True to enable section-wide indexing, False
-            to use the historical scoped behavior.
-        """
-        self._section_wide_indexing = bool(enabled)
 
     def get_files_in_sections(self, course_sections: List[Dict], fetched_mods: Dict[str, Dict]) -> List[File]:
         """
@@ -126,24 +90,24 @@ class ResultBuilder:
         系统文件（metadata.json、Table of Contents.html、隐藏文件）不分配索引。
         其他文件按照在列表中的顺序分配从 0 开始的递增索引。
 
-        Indexing scope (controlled by :attr:`_section_wide_indexing`):
-          * False (default): scope is
-            ``(section_id, module_scope, content_filepath)``. Each
-            sub-folder in a section gets its own 0-based counter.
-          * True (opt-in): scope is
-            ``(section_id, module_scope)``. The whole section
-            shares one 0-based counter; content_filepath is
-            ignored. Book chapters remain per-chapter because
-            ``module_scope`` is set for the book modname.
+        Scope is ``(section_id, book_module_id)``: position indices run
+        sequentially across the WHOLE section, matching the Moodle
+        server's ``course_sections.sequence`` order. The only per-module
+        exception is the **book** modname: each book chapter is a
+        standalone "booklet" that gets its own 0-based counter
+        (preserves the historical book contract from the user's
+        perspective — opening a book chapter in moodle-dl should look
+        the same as opening it in the Moodle web UI).
+
+        Cross-checked against:
+          - moodle_official_repo_for_reference/public/course/classes/
+            section_info.php:514  (get_sequence_cm_infos)
+          - moodle_official_repo_for_reference/public/course/classes/
+            modinfo.php:1271       (calculate_section_weights)
 
         @param files: 文件列表（会被原地修改）
         """
         positions_by_scope = {}
-        scope_fn = (
-            self._position_scope_key_section_wide
-            if getattr(self, '_section_wide_indexing', False)
-            else self._position_scope_key
-        )
         for file in files:
             filename = file.content_filename.lower()
 
@@ -152,105 +116,46 @@ class ResultBuilder:
                 file.position_in_section = None
                 continue
 
-            # 为普通文件按 scope 分配位置。
-            scope_key = scope_fn(file)
+            # 为普通文件按 section+book-chapter scope 分配位置。
+            scope_key = self._position_scope_key(file)
             position = positions_by_scope.get(scope_key, 0)
             file.position_in_section = position
             positions_by_scope[scope_key] = position + 1
 
     @classmethod
     def _position_scope_key(cls, file: File) -> tuple:
-        """Compute the historical (default) scope key for a file's
-        position index.
+        """Compute the scope key for a file's position index.
 
-        Returns ``(section_id, module_scope, content_filepath)``: each
-        sub-folder in a section gets its own 0-based counter. This
-        produces visually confusing ``*NN*`` numbers (e.g. ``*02*``
-        in one sub-folder, ``*04*`` in another) because each sub-
-        folder starts at 0.
+        Returns ``(section_id, book_module_id)``:
+          * section_id: every file in the same Moodle section shares
+            one 0-based counter, matching the order the Moodle server
+            returns them in (see section_info.php:514
+            ``get_sequence_cm_infos`` in the official Moodle repo).
+          * book_module_id: only set for the 'book' modname. Every
+            book chapter is its own booklet and gets its own
+            0-based counter. All other modnames — including
+            page, assign, quiz, forum, label, url, and the
+            cookie_mod-kalvidres / cookie_mod-helixmedia video
+            modules — share the section-wide counter.
 
-        For the section-wide opt-in (see
-        :meth:`_position_scope_key_section_wide`), this method is
-        bypassed and the section-wide variant is used instead.
-
-        @param file: The File being indexed.
-        @return: A tuple ``(section_id, module_scope, content_filepath)``.
-        """
-        module_modname = getattr(file, 'module_modname', '')
-        module_scope = getattr(file, 'module_id', None) if cls._uses_module_directory(module_modname) else None
-        content_filepath = getattr(file, 'content_filepath', '/') or '/'
-        content_filepath = '/' + content_filepath.strip('/')
-        if content_filepath != '/':
-            content_filepath = content_filepath.rstrip('/')
-        return getattr(file, 'section_id', None), module_scope, content_filepath
-
-    @classmethod
-    def _position_scope_key_section_wide(cls, file: File) -> tuple:
-        """Section-wide variant of :meth:`_position_scope_key`.
-
-        Drops ``content_filepath`` from the scope, so the whole
-        section shares one 0-based counter. Module scope is also
-        dropped for everything EXCEPT book chapters (each book
-        chapter is a standalone "booklet" that gets its own 0-based
-        counter to match the historical book contract).
-
-        This aligns the *NN* numbering with the Moodle server's
-        ``course_sections.sequence`` order — see the official
-        ``get_sequence_cm_infos`` in
-        ``moodle_official_repo_for_reference/public/course/classes/
-        section_info.php:514`` and ``calculate_section_weights`` in
-        ``modinfo.php:1271``.
+        The net effect on disk: within a section, the *NN* prefix
+        runs sequentially across all sub-folders, in server order.
+        The only places where the counter resets are book chapter
+        boundaries (preserving the per-chapter contract).
 
         @param file: The File being indexed.
-        @return: ``(section_id, module_scope)`` tuple, where
-            ``module_scope`` is set only for book modname.
+        @return: ``(section_id, book_module_id)`` tuple.
         """
         module_modname = getattr(file, 'module_modname', '')
-        module_scope = (
-            getattr(file, 'module_id', None)
-            if cls._uses_module_directory_scoped(module_modname)
-            else None
-        )
-        return getattr(file, 'section_id', None), module_scope
+        # Only the book modname gets a per-chapter scope. Everything
+        # else (page, assign, quiz, label, url, cookie_mod videos,
+        # etc.) shares the section-wide counter.
+        book_scope = getattr(file, 'module_id', None) if module_modname == 'book' else None
+        return getattr(file, 'section_id', None), book_scope
 
     @classmethod
     def _uses_module_directory(cls, module_modname: str) -> bool:
         return module_modname.endswith(cls.MODULE_DIRECTORY_SUFFIXES) or module_modname in cls.MODULE_DIRECTORY_MODNAMES
-
-    @classmethod
-    def _uses_module_directory_scoped(cls, module_modname: str) -> bool:
-        """Return True if the module modname gets a per-module
-        scope (i.e., its own 0-based counter) in the SECTION-WIDE
-        indexing mode.
-
-        Only the book modname returns True here. Every other
-        module type — including assign, page, quiz, forum, label,
-        url, and the cookie_mod-kalvidres/helixmedia video modules
-        — returns False, meaning their files participate in the
-        section's sequential numbering rather than restarting
-        per module.
-
-        Rationale (cross-checked against the moodle_official_repo
-        section_info.php:514 `get_sequence_cm_infos` and
-        modinfo.php:1271 `calculate_section_weights`): the Moodle
-        server returns modules within a section in the order
-        defined by `course_sections.sequence`, a flat list of
-        cm_ids. Every module is one entry in that list, including
-        book chapters. The user expects the *NN* numbering to
-        follow the SAME order so the on-disk directory matches
-        the on-screen course page.
-
-        The one exception is book chapters: when a user opens a
-        book chapter, they navigate within the chapter as if it
-        were a small standalone booklet, so chapter 1 and chapter 2
-        should each restart from *01*. This preserves the historical
-        book contract.
-
-        @param module_modname: The module's modname (e.g. 'page',
-            'book', 'cookie_mod-kalvidres', 'label').
-        @return: True only for 'book'; False for everything else.
-        """
-        return module_modname == 'book'
 
     @staticmethod
     def _is_system_file(filename: str) -> bool:

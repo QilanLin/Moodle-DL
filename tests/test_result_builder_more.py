@@ -77,9 +77,14 @@ def test_get_files_in_sections_adds_summary_positions_and_kaltura_total():
     video = next(file for file in files if file.module_modname == 'cookie_mod-kalvidres')
 
     assert summary.content_filename == 'Section summary'
+    # With section-wide indexing, the order is:
+    #   1. _get_files_in_modules processes the kalvidres module first → video
+    #   2. _handle_description appends summary + summary_url after
+    # All three share the same section-wide scope (none of them is a
+    # book modname), so they get sequential indices in input order.
     assert video.position_in_section == 0
-    assert summary.position_in_section == 0
-    assert summary_url.position_in_section == 1
+    assert summary.position_in_section == 1
+    assert summary_url.position_in_section == 2
     assert video.content_filename == 'Lecture Video'
 
 

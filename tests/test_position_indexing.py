@@ -2,116 +2,62 @@
 """
 Tests for the section-wide position_index assignment behavior.
 
-Background:
+The *NN* filename prefix that moodle-dl prepends to downloaded
+files is assigned at the point of file discovery (in
+``ResultBuilder._assign_positions_to_files``), and then consumed
+by the downloader when the actual filename is generated (in
+``task_file_ops.TaskFileOps.generate_filename_with_index``).
 
-    When moodle-dl downloads a Moodle section (e.g. "Week 2 - Inductive
-    learning"), the section may contain multiple modules (resource,
-    label, page, etc.) and each module may have multiple files. The
-    moodle-dl code uses the `position_in_section` field on each
-    File object to generate a `*NN*` prefix in the filename, where
-    NN is 1-based, 0-padded.
+Position indices are assigned as the files are being added to the
+download queue — i.e. "边下载边 global-section-indexing", as the
+user requested. There is no opt-in flag: section-wide indexing is
+the default behavior.
 
-    The historical behavior (and the default today) is to compute
-    the position index SCOPED to a (section_id, module_id, content_filepath)
-    triple. This means a single section like Week 2 produces multiple
-    independent index counters — one per sub-folder. Concretely:
+The scope key is ``(section_id, book_module_id)``:
 
-        Week 2/
-        ├── ADDITIONAL READING/
-        │   ├── *11* ADDITIONAL READING.md            <-- index 0 in scope
-        │   └── ...
-        ├── Lecture 2： Inductive learning/
-        │   ├── *02* Lecture 2：...html.md              <-- index 0 in scope
-        │   └── *03* Lecture 2：...pdf
-        ├── Lecture 2： LGT/
-        │   └── *04* Lecture 2： LGT.pdf
-        ...
-        └── Practical 2： Regression.../
-            ├── *18* Practical 2：...html.md            <-- index 0 in scope
-            └── *19* Practical 2：...pdf
+  * section_id: every file in the same Moodle section shares one
+    0-based counter, matching the order the Moodle server
+    returns them in (the official ``get_sequence_cm_infos`` in
+    ``moodle_official_repo_for_reference/public/course/classes/
+    section_info.php:514`` uses ``course_sections.sequence``).
+  * book_module_id: only set for the 'book' modname. Every book
+    chapter is its own "booklet" and gets its own 0-based
+    counter. All other modnames (page, assign, quiz, label, url,
+    cookie_mod-kalvidres, cookie_mod-helixmedia, ...) share the
+    section-wide counter.
 
-    In the user's mental model, the section is one ordered list, so
-    they expect `*01*`, `*02*`, ..., `*NN*` running across the whole
-    section. The historical scoped behavior is technically correct
-    ("each sub-folder starts at *01*") but visually confusing.
-
-    The opt-in fix: when `opts.global_section_indexing = True`,
-    position indices are assigned across the WHOLE section,
-    ignoring content_filepath. The book modname remains a special
-    case (each book chapter is a standalone "booklet" and gets its
-    own 0-based counter — preserving the historical per-chapter
-    contract from the book's perspective).
-
-These tests pin the contract.
+The net effect on disk: within a section, the *NN* prefix runs
+sequentially across all sub-folders, in server order. The only
+places where the counter resets are book chapter boundaries
+(preserving the per-chapter contract).
 """
 import os
 import sys
-from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 # =========================================================================
-# Position-scope semantics: scoped (default) vs section-wide (opt-in)
+# Default behavior: section-wide indexing is the ONLY behavior
 # =========================================================================
-class TestScopedIndexingDefault:
-    """Pin the historical 'each scope gets its own 0-based counter'
-    behavior. This is the default; tests in
-    TestSectionWideIndexingOptIn verify the opt-in behavior.
+class TestSectionWideIndexingIsDefault:
+    """Pin the contract: section-wide indexing is the default
+    behavior, with no opt-in flag. The ResultBuilder must apply
+    section-wide position_index assignment on every call to
+    ``_assign_positions_to_files`` — there is no alternative
+    scope function, no opt-in setter, no CLI flag.
+
+    Cross-checked against:
+      - moodle_official_repo_for_reference/public/course/classes/
+        section_info.php:514 (get_sequence_cm_infos)
+      - moodle_official_repo_for_reference/public/course/classes/
+        modinfo.php:1271 (calculate_section_weights)
     """
-
-    def _make_builder(self, section_wide: bool):
-        from moodle_dl.moodle.result_builder import ResultBuilder
-        rb = ResultBuilder.__new__(ResultBuilder)
-        rb._section_wide_indexing = section_wide
-        return rb
-
-    def test_two_modules_in_same_section_get_independent_indices(self):
-        """Without the opt-in flag, two modules with different
-        content_filepath in the same section get INDEPENDENT
-        counters. Both start at 0. This is the current (default)
-        behavior.
-        """
-        from moodle_dl.moodle.result_builder import ResultBuilder
-
-        # Two modules in the same section, each landing in a
-        # different sub-folder (different content_filepath)
-        f1 = _make_file(section_id=1, module_id=10, filepath='/A/',
-                        filename='a.pdf', modname='resource')
-        f2 = _make_file(section_id=1, module_id=11, filepath='/B/',
-                        filename='b.pdf', modname='resource')
-
-        from moodle_dl.moodle.result_builder import ResultBuilder
-        rb = self._make_builder(section_wide=False)
-        rb._assign_positions_to_files([f1, f2])
-
-        # Both start at 0 because the scopes are different
-        assert f1.position_in_section == 0
-        assert f2.position_in_section == 0
-
-
-class TestSectionWideIndexingOptIn:
-    """Pin the opt-in behavior: when
-    ResultBuilder is initialized with a ResultBuilder._SECTION_WIDE_INDEXING
-    class flag, position indices are assigned across the whole
-    section, ignoring content_filepath. Book chapters remain
-    independent (per-chapter counter preserved).
-    """
-
-    def _make_builder(self, section_wide: bool):
-        """Return a ResultBuilder with the section-wide opt-in
-        set/unset. We bypass __init__ and set the flag directly
-        so we don't need a real MoodleURL/version.
-        """
-        from moodle_dl.moodle.result_builder import ResultBuilder
-        rb = ResultBuilder.__new__(ResultBuilder)
-        rb._section_wide_indexing = section_wide
-        return rb
 
     def test_two_modules_in_same_section_get_sequential_indices(self):
-        """Opt-in: two modules in the same section, each in a
-        different sub-folder, get SEQUENTIAL indices (0, 1)
-        instead of both being 0.
+        """Two modules in the same section, each in a different
+        sub-folder, get SEQUENTIAL indices (0, 1) — not
+        independent (0, 0) per sub-folder.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -120,10 +66,9 @@ class TestSectionWideIndexingOptIn:
         f2 = _make_file(section_id=1, module_id=11, filepath='/B/',
                         filename='b.pdf', modname='resource')
 
-        rb = self._make_builder(section_wide=True)
+        rb = _make_result_builder()
         rb._assign_positions_to_files([f1, f2])
 
-        # Sequential, not independent
         assert f1.position_in_section == 0
         assert f2.position_in_section == 1
 
@@ -142,15 +87,14 @@ class TestSectionWideIndexingOptIn:
                         filename='c.pdf', modname='resource'),
         ]
 
-        rb = self._make_builder(section_wide=True)
+        rb = _make_result_builder()
         rb._assign_positions_to_files(files)
 
         assert [f.position_in_section for f in files] == [0, 1, 2]
 
     def test_multiple_files_in_same_module_get_sequential_indices(self):
-        """A single module with 3 files gets 0, 1, 2 (this is the
-        same as the default behavior; the opt-in doesn't change
-        same-module ordering).
+        """A single module with 3 files gets 0, 1, 2 (the section-
+        wide counter is shared across files in the same module too).
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -163,91 +107,37 @@ class TestSectionWideIndexingOptIn:
                         filename='three.pdf', modname='resource'),
         ]
 
-        rb = self._make_builder(section_wide=True)
+        rb = _make_result_builder()
         rb._assign_positions_to_files(files)
 
         assert [f.position_in_section for f in files] == [0, 1, 2]
 
-    def test_sections_are_still_independent(self):
+    def test_sections_are_independent(self):
         """Even with section-wide indexing, DIFFERENT sections
         still get independent counters (otherwise Week 1 and
         Week 2 would both start at *01* and collide).
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
-        # Section 1: 2 files → indices 0, 1
         s1a = _make_file(section_id=1, module_id=10, filepath='/A/',
                         filename='a.pdf', modname='resource')
         s1b = _make_file(section_id=1, module_id=11, filepath='/B/',
                         filename='b.pdf', modname='resource')
-        # Section 2: 2 files → indices 0, 1 (NOT 2, 3)
         s2a = _make_file(section_id=2, module_id=20, filepath='/X/',
                         filename='x.pdf', modname='resource')
         s2b = _make_file(section_id=2, module_id=21, filepath='/Y/',
                         filename='y.pdf', modname='resource')
 
-        rb = self._make_builder(section_wide=True)
+        rb = _make_result_builder()
         rb._assign_positions_to_files([s1a, s1b, s2a, s2b])
 
         assert (s1a.position_in_section, s1b.position_in_section) == (0, 1)
         assert (s2a.position_in_section, s2b.position_in_section) == (0, 1)
 
-    def test_book_chapters_remain_independent(self):
-        """The book modname is special: each chapter is a
-        standalone 'booklet' and must get its own 0-based
-        counter. This preserves the historical book contract.
-        Even with section-wide opt-in, two book chapters in
-        the same section get INDEPENDENT counters (each starts
-        at 0).
-        """
-        from moodle_dl.moodle.result_builder import ResultBuilder
-
-        # Two book chapters (each is its own module_id) in the same section
-        f1 = _make_file(section_id=1, module_id=10, filepath='/Chapter 1/',
-                        filename='page.html', modname='book')
-        f2 = _make_file(section_id=1, module_id=11, filepath='/Chapter 2/',
-                        filename='page.html', modname='book')
-
-        rb = self._make_builder(section_wide=True)
-        rb._assign_positions_to_files([f1, f2])
-
-        # Book chapters still independent: both at 0
-        assert f1.position_in_section == 0
-        assert f2.position_in_section == 0
-
-    def test_book_and_resource_in_same_section_sequential(self):
-        """A book chapter (independent scope) and a page module
-        (section-wide scope) in the same section should get
-        SEQUENTIAL indices across the whole section, because
-        the section-wide counter treats page as part of the
-        section. The book chapter keeps its own 0-based counter
-        (per-chapter is its own booklet).
-        Pin the contract: book IS independent even in section-wide mode.
-        """
-        from moodle_dl.moodle.result_builder import ResultBuilder
-
-        # Section: [page1, page2, book_chapter1, book_chapter2]
-        r1 = _make_file(section_id=1, module_id=10, filepath='/',
-                        filename='a.html', modname='page')
-        r2 = _make_file(section_id=1, module_id=11, filepath='/',
-                        filename='b.html', modname='page')
-        b1 = _make_file(section_id=1, module_id=20, filepath='/Ch1/',
-                        filename='p.html', modname='book')
-        b2 = _make_file(section_id=1, module_id=21, filepath='/Ch2/',
-                        filename='p.html', modname='book')
-
-        rb = self._make_builder(section_wide=True)
-        rb._assign_positions_to_files([r1, r2, b1, b2])
-
-        # Page modules: 0, 1 (section-wide, sequential)
-        # Book chapters: 0, 0 (each chapter is its own booklet)
-        assert (r1.position_in_section, r2.position_in_section) == (0, 1)
-        assert (b1.position_in_section, b2.position_in_section) == (0, 0)
-
     def test_system_files_remain_unindexed(self):
         """System files (metadata.json, .* hidden files, etc.) get
-        position_in_section = None regardless of the opt-in.
-        Pin: opt-in does NOT change system-file handling.
+        position_in_section = None regardless of the indexing
+        mode. Pin: system-file handling is unaffected.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -256,7 +146,7 @@ class TestSectionWideIndexingOptIn:
         hidden = _make_file(section_id=1, module_id=10, filepath='/',
                             filename='.hidden_file', modname='resource')
 
-        rb = self._make_builder(section_wide=True)
+        rb = _make_result_builder()
         rb._assign_positions_to_files([normal, hidden])
 
         assert normal.position_in_section == 0
@@ -264,44 +154,165 @@ class TestSectionWideIndexingOptIn:
 
 
 # =========================================================================
-# Integration with get_files_in_sections
+# Book modname is the ONE per-module exception
 # =========================================================================
-class TestGetFilesInSectionsRespectsOptIn:
-    """Pin that the opt-in flag flows through from MoodleDlOpts
-    to get_files_in_sections, so the user can enable it from
-    config.json or the CLI.
+class TestBookModnamePerChapterException:
+    """Pin the only per-module exception: book chapters each get
+    their own 0-based counter. The book modname is special because
+    each book chapter is a standalone "booklet" the user navigates
+    as its own entity — opening a book chapter in moodle-dl should
+    look the same as opening it in the Moodle web UI.
     """
 
-    def test_opts_flag_propagates_to_section_wide_indexing(self):
-        """When MoodleDlOpts.global_section_indexing = True, the
-        ResultBuilder uses section-wide indexing.
+    def test_two_book_chapters_stay_independent(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+
+        files = [
+            _make_file(section_id=1, module_id=100, filepath='/Ch1/',
+                        filename='p.html', modname='book'),
+            _make_file(section_id=1, module_id=200, filepath='/Ch2/',
+                        filename='p.html', modname='book'),
+        ]
+
+        rb = _make_result_builder()
+        rb._assign_positions_to_files(files)
+
+        # Both chapters start at 0 (each chapter is its own booklet)
+        assert [f.position_in_section for f in files] == [0, 0]
+
+    def test_book_and_page_in_same_section(self):
+        """Page modules share the section-wide counter; book
+        chapters keep their per-chapter counter. So a page file
+        gets a non-zero position while a book file gets 0.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
-        from moodle_dl.types import MoodleURL
-        from unittest.mock import MagicMock
 
-        # A real ResultBuilder
-        rb = ResultBuilder(
-            moodle_url=MoodleURL(use_http=False, domain='keats.kcl.ac.uk', path='/'),
-            version=2024010100,
-            mod_plurals={},
-            token='t',
+        page_file = _make_file(section_id=1, module_id=10, filepath='/',
+                                filename='p.html', modname='page')
+        book_file = _make_file(section_id=1, module_id=20, filepath='/Ch1/',
+                                filename='b.html', modname='book')
+
+        rb = _make_result_builder()
+        rb._assign_positions_to_files([page_file, book_file])
+
+        # Page is index 0 in the section. Book is also index 0
+        # because book is per-chapter scoped, not section-scoped.
+        assert page_file.position_in_section == 0
+        assert book_file.position_in_section == 0
+
+
+# =========================================================================
+# Integration with ResultBuilder public API
+# =========================================================================
+class TestNoOptInSetter:
+    """Pin: there is no opt-in setter for section-wide indexing.
+    The section-wide behavior is hard-coded; you cannot toggle it
+    off. This is the contract the user requested: no CLI flag,
+    no env var, no setter — just section-wide indexing, always.
+    """
+
+    def test_no_set_section_wide_indexing_method(self):
+        """ResultBuilder must not expose a set_section_wide_indexing
+        method (it was removed when the opt-in was deleted).
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        assert not hasattr(ResultBuilder, 'set_section_wide_indexing'), (
+            'ResultBuilder.set_section_wide_indexing must not exist — '
+            'section-wide indexing is the only behavior, no opt-in.'
         )
-        # Opt-in should be False by default (backward compat)
-        assert getattr(rb, '_section_wide_indexing', False) is False
 
-        # Setter enables it
-        rb.set_section_wide_indexing(True)
-        assert rb._section_wide_indexing is True
+    def test_no_section_wide_indexing_instance_attr(self):
+        """ResultBuilder instances must not have a _section_wide_indexing
+        attribute (it was removed when the opt-in was deleted).
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        rb = ResultBuilder.__new__(ResultBuilder)
+        assert not hasattr(rb, '_section_wide_indexing'), (
+            'ResultBuilder must not have _section_wide_indexing attribute.'
+        )
 
-        # Disable
-        rb.set_section_wide_indexing(False)
-        assert rb._section_wide_indexing is False
+
+# =========================================================================
+# Position-scope key: must be (section_id, book_module_id) only
+# =========================================================================
+class TestPositionScopeKey:
+    """Pin the scope key for a file's position index. Returns
+    ``(section_id, book_module_id)``: section_id groups all files
+    in the same Moodle section; book_module_id resets the counter
+    for each book chapter. Every other modname (page, label, url,
+    cookie_mod, ...) shares the section-wide counter.
+    """
+
+    def test_page_module_uses_section_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/A/',
+                       filename='a.html', modname='page')
+        sk = ResultBuilder._position_scope_key(f)
+        # (section_id, None) — page shares the section-wide counter
+        assert sk == (5, None)
+
+    def test_label_module_uses_section_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/A/',
+                       filename='a.md', modname='label')
+        sk = ResultBuilder._position_scope_key(f)
+        assert sk == (5, None)
+
+    def test_url_module_uses_section_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/A/',
+                       filename='a.url', modname='url')
+        sk = ResultBuilder._position_scope_key(f)
+        assert sk == (5, None)
+
+    def test_cookie_mod_kalvidres_uses_section_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/A/',
+                       filename='a.mp4', modname='cookie_mod-kalvidres')
+        sk = ResultBuilder._position_scope_key(f)
+        # cookie_mod-kalvidres is NOT a book, so it shares the section counter
+        assert sk == (5, None)
+
+    def test_assign_module_uses_section_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/A/',
+                       filename='a.pdf', modname='assign')
+        sk = ResultBuilder._position_scope_key(f)
+        assert sk == (5, None)
+
+    def test_book_module_uses_per_chapter_scope(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        f = _make_file(section_id=5, module_id=100, filepath='/Ch1/',
+                       filename='b.html', modname='book')
+        sk = ResultBuilder._position_scope_key(f)
+        # Book modname uses its own module_id as the second key,
+        # giving each chapter its own 0-based counter.
+        assert sk == (5, 100)
+
+    def test_two_book_chapters_have_different_scope_keys(self):
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        ch1 = _make_file(section_id=5, module_id=100, filepath='/Ch1/',
+                         filename='b.html', modname='book')
+        ch2 = _make_file(section_id=5, module_id=200, filepath='/Ch2/',
+                         filename='b.html', modname='book')
+        # Different module_ids → different scope keys → independent counters
+        assert ResultBuilder._position_scope_key(ch1) != ResultBuilder._position_scope_key(ch2)
 
 
 # =========================================================================
 # Helpers
 # =========================================================================
+def _make_result_builder():
+    """Build a ResultBuilder with the minimum init needed to call
+    ``_assign_positions_to_files``. We bypass __init__ and set the
+    required attributes directly because __init__ requires a
+    real MoodleURL/version/...).
+    """
+    from moodle_dl.moodle.result_builder import ResultBuilder
+    rb = ResultBuilder.__new__(ResultBuilder)
+    return rb
+
+
 def _make_file(*, section_id, module_id, filepath, filename, modname):
     """Build a File object with the minimum fields needed for
     position assignment.

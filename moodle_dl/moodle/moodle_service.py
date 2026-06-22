@@ -216,9 +216,6 @@ class MoodleService:
         logging.debug('正在合并 API 结果...')
         moodle_url = self.config.get_moodle_URL()
         result_builder = ResultBuilder(moodle_url, len(courses), get_mod_plurals(), token=self.config.get_token())
-        result_builder.set_section_wide_indexing(
-            getattr(self.opts, 'global_section_indexing', False)
-        )
         result_builder.add_files_to_courses(courses, core_contents, fetched_mods_files)
         
         # Debug: 验证 Kalvidres 文件数量
@@ -238,9 +235,6 @@ class MoodleService:
         logging.debug('正在获取课程 blocks...')
         moodle_url = self.config.get_moodle_URL()
         result_builder = ResultBuilder(moodle_url, len(courses), get_mod_plurals(), token=self.config.get_token())
-        result_builder.set_section_wide_indexing(
-            getattr(self.opts, 'global_section_indexing', False)
-        )
 
         for course in courses:
             try:

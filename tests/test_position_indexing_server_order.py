@@ -10,10 +10,12 @@ within a section in the order defined by `course_sections.sequence`,
 a comma-separated list of course_module ids. The mobile app and
 moodle-dl consume this order directly from the API response.
 
-These tests pin the position_index assignment so that, when the
-section-wide opt-in is enabled, the resulting *NN* numbers run
-sequentially across the section in the SAME order as the Moodle
-server's course_sections.sequence.
+These tests pin the position_index assignment so that the
+resulting *NN* numbers run sequentially across the section in
+the SAME order as the Moodle server's course_sections.sequence.
+This is the default behavior of moodle-dl (no opt-in, no CLI flag,
+no env var) — as the files are discovered, they get the next
+position_in_section in the order the Moodle server returns them.
 
 Two important properties:
   1. cookie_mod-kalvidres / cookie_mod-helixmedia videos are part
@@ -40,12 +42,11 @@ class TestCookieModVideosInSectionWideOrder:
     per-chapter counters.
 
     Real-world reproducer: a "Week 2" section may have 6 lecture-
-    part modules, each containing one Kaltura video. With the
-    opt-in, those 6 videos should be *05*, *06*, *07*, *08*,
-    *09*, *10* (continuing from previous modules), NOT *01* × 6
-    (which is what the historical scoped behavior produces because
-    cookie_mod-kalvidres is in MODULE_DIRECTORY_MODNAMES, giving
-    each video its own module_scope).
+    part modules, each containing one Kaltura video. Section-wide
+    indexing makes those 6 videos *05*, *06*, *07*, *08*, *09*,
+    *10* (continuing from previous modules), NOT *01* × 6
+    (cookie_mod-kalvidres is NOT treated as a per-module scope;
+    only 'book' is).
     """
 
     def _make_builder(self, section_wide: bool):
@@ -60,7 +61,7 @@ class TestCookieModVideosInSectionWideOrder:
 
         # 3 label modules (each its own scope) followed by 6
         # cookie_mod-kalvidres modules, each with one file.
-        # With section-wide opt-in, the 6 videos should get
+        # With section-wide indexing, the 6 videos should get
         # numbers 3, 4, 5, 6, 7, 8 (continuous), NOT 0, 0, 0, 0, 0, 0.
         files = []
         # 3 label files (server-sorted)
