@@ -2350,26 +2350,28 @@ class Task:
             return file_obj, total_bytes_received, content_length, content_range
 
     async def download_url(self, dl_url: str, dest_path: str, timeout: int = None):
-        # 🔧 Ctrl-C / kill resilience (v2 — restart-from-scratch):
+        # 🔧 Ctrl-C / kill resilience (v2 default — resume-from-byte-N):
         # When the user Ctrl-C's in the middle of a download, the
-        # default behavior (restart_incomplete_on_kill = True) is
-        # to DELETE the partial .part file so the next run
-        # re-downloads the same file from byte 0. The remaining
-        # queued files are not affected — only the one in-flight
-        # download is dropped and retried from scratch.
+        # default behavior (restart_incomplete_on_kill = False) is
+        # to SAVE the partial .part file so the next run RESUMES
+        # from the last downloaded byte. This is the bandwidth-
+        # friendly behavior — a 32 MiB / 151 MiB textbook PDF that
+        # the user Ctrl-C'd after 1.5 hours should resume from
+        # byte 32 MiB on the next run, not re-download the 32 MiB.
         #
-        # To restore the older "resume from byte N" behavior, set
-        # ``restart_incomplete_on_kill = False`` in config.json or
-        # via the ``MOODLE_DL_KEEP_INCOMPLETE_ON_KILL`` env var.
+        # To restore the restart-from-scratch behavior, set
+        # ``restart_incomplete_on_kill = True`` in config.json,
+        # pass ``--restart-incomplete-on-kill`` on the CLI, or set
+        # ``MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=0`` in the env.
         self._open_file_handle = None  # 🔧 tracked for finally cleanup
         try:
             return await self._download_url_impl(dl_url, dest_path, timeout)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            if getattr(self.opts, 'restart_incomplete_on_kill', True):
-                # User wants clean restart on the killed file.
+            if getattr(self.opts, 'restart_incomplete_on_kill', False):
+                # User opted into clean restart on the killed file.
                 await self._discard_incomplete_on_kill(dest_path)
             else:
-                # Legacy behavior: save the partial .part + DB row
+                # Default: save the partial .part + DB row
                 # so the next run can resume from byte N.
                 await self._save_incomplete_on_kill(dl_url, dest_path)
             raise

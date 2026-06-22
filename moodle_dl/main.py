@@ -1029,13 +1029,15 @@ def get_parser():
         '-rik',
         '--restart-incomplete-on-kill',
         dest='restart_incomplete_on_kill',
-        default=True,
+        default=False,
         action='store_true',
         help=(
             'On Ctrl-C / SIGTERM during a download, delete the partial '
             '.part file so the next run re-downloads the file from '
-            'scratch (default). Set MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1 '
-            'to keep the old resume-from-byte-N behavior.'
+            'scratch. By default the partial .part is RESUMED from the '
+            'last downloaded byte (more bandwidth-friendly for large '
+            'files like textbook PDFs). Use --restart-incomplete-on-kill '
+            'if you want to discard partial files instead.'
         ),
     )
     parser.add_argument(
@@ -1044,9 +1046,11 @@ def get_parser():
         dest='restart_incomplete_on_kill',
         action='store_false',
         help=(
-            'Opposite of --restart-incomplete-on-kill: keep the '
-            'partial .part file on Ctrl-C / SIGTERM so the next run '
-            'can resume from byte N. Set MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1.'
+            'Default behavior: keep the partial .part file on Ctrl-C / '
+            'SIGTERM so the next run can resume from byte N. This is '
+            'the default; --keep-incomplete-on-kill is provided for '
+            'scripting clarity. Use --restart-incomplete-on-kill to '
+            'opt out.'
         ),
     )
     parser.add_argument(

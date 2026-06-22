@@ -794,20 +794,44 @@ class TestEnvVarOverrides:
     so users with pre-existing scripts can keep their old behavior.
     """
 
-    def test_env_var_one_flips_to_legacy(self, monkeypatch):
-        import importlib
-        import moodle_dl.main
-        monkeypatch.setenv('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL', '1')
-        # Re-import the post_process_opts to pick up the env
-        # (in real usage, the user runs moodle-dl from a fresh shell
-        # with the env var set)
-        # Just verify the post_process_opts helper honors the env.
+    def test_env_var_unset_uses_default_resume(self, monkeypatch):
+        """Default behavior (no env var set): resume from byte N.
+        The user-friendly behavior for long-running downloads.
+        """
         from moodle_dl.main import post_process_opts
         from moodle_dl.types import MoodleDlOpts
-        opts = MoodleDlOpts()  # defaults: restart_incomplete_on_kill=True
-        assert opts.restart_incomplete_on_kill is True
+        monkeypatch.delenv('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL', raising=False)
+        opts = MoodleDlOpts()  # defaults: restart_incomplete_on_kill=False (resume)
+        assert opts.restart_incomplete_on_kill is False
         out = post_process_opts(opts)
+        assert out.restart_incomplete_on_kill is False  # unchanged by env var
+
+    def test_env_var_one_unchanged_with_resume_default(self, monkeypatch):
+        """With the new default (resume), MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=1
+        does NOT change the behavior — both the new default and the env
+        var set the same value (resume). Setting env var=1 is a no-op now.
+        """
+        monkeypatch.setenv('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL', '1')
+        from moodle_dl.main import post_process_opts
+        from moodle_dl.types import MoodleDlOpts
+        opts = MoodleDlOpts()  # default False
+        assert opts.restart_incomplete_on_kill is False
+        out = post_process_opts(opts)
+        # Both env=1 and default = False (resume). Same value.
         assert out.restart_incomplete_on_kill is False
+
+    def test_env_var_zero_enables_restart_from_scratch(self, monkeypatch):
+        """MOODLE_DL_KEEP_INCOMPLETE_ON_KILL=0 enables the old
+        restart-from-scratch behavior.
+        """
+        monkeypatch.setenv('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL', '0')
+        from moodle_dl.main import post_process_opts
+        from moodle_dl.types import MoodleDlOpts
+        opts = MoodleDlOpts()  # default False (resume)
+        assert opts.restart_incomplete_on_kill is False
+        out = post_process_opts(opts)
+        # Env var=0 flips to restart-from-scratch (True)
+        assert out.restart_incomplete_on_kill is True
 
     def test_env_var_zero_keeps_new_default(self, monkeypatch):
         from moodle_dl.main import post_process_opts
@@ -818,10 +842,4 @@ class TestEnvVarOverrides:
         # 0 is a valid value that explicitly says "use the new default"
         assert out.restart_incomplete_on_kill is True
 
-    def test_env_var_unset_keeps_new_default(self, monkeypatch):
-        from moodle_dl.main import post_process_opts
-        from moodle_dl.types import MoodleDlOpts
-        monkeypatch.delenv('MOODLE_DL_KEEP_INCOMPLETE_ON_KILL', raising=False)
-        opts = MoodleDlOpts()
-        out = post_process_opts(opts)
-        assert out.restart_incomplete_on_kill is True
+

@@ -609,16 +609,18 @@ class DownloadService:
         Called once at startup. The behavior depends on the user's
         ``restart_incomplete_on_kill`` setting:
 
-        * If True (default, new behavior): the scan DELETES every
-          ``.part`` file found. They are orphans by definition —
-          the new code path deletes the .part on Ctrl-C so any .part
-          present at startup must be from a run that died before
-          cleanup (e.g. OOM kill -9). Deleting is the safe default.
+        * If False (default, new behavior): the scan KEEPS .part
+          files so the resume path can pick them up on the next
+          run. Files with no matching ``incomplete_downloads`` row
+          (truly orphaned .part, e.g. from OOM kill -9) are
+          deleted because no resume path will pick them up.
 
-        * If False (legacy, opt-in via env var): the scan only
-          deletes ``.part`` files that don't have a corresponding
-          ``incomplete_downloads`` row. Files with a row are left
-          alone so the resume path can pick them up.
+        * If True (opt-in via --restart-incomplete-on-kill or env
+          var): the scan DELETES every .part file found. They are
+          orphans by definition — the new code path deletes the
+          .part on Ctrl-C so any .part present at startup must be
+          from a run that died before cleanup. Use this if disk
+          space is tight or if you suspect the .part is corrupted.
 
         The result is logged for visibility — a user should be able
         to tell whether stale .part bytes were silently dropped.
@@ -647,10 +649,10 @@ class DownloadService:
         if not orphans:
             return
 
-        restart_mode = bool(getattr(self.opts, 'restart_incomplete_on_kill', True))
+        restart_mode = bool(getattr(self.opts, 'restart_incomplete_on_kill', False))
         if restart_mode:
-            # New behavior: delete every orphan .part so the new run
-            # starts clean.
+            # Opt-in restart-from-scratch: delete every orphan
+            # .part so the new run starts clean.
             deleted = 0
             for part_path, _expected, _action in orphans:
                 try:
