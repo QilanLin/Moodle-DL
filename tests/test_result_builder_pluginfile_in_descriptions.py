@@ -492,12 +492,22 @@ class TestPluginfileUrlsUnusualEdgeCases:
             f"treated as pluginfile URL. Got: {[f.content_fileurl for f in files]}"
         )
 
-    def test_url_with_pluginfile_php_as_substring_of_other_word_is_kept(self):
+    def test_url_with_pluginfile_php_as_substring_of_other_word_is_NOT_kept(self):
         """A URL like /webservice/mypluginfile.php/... has 'pluginfile.php'
-        as a substring of the path. Pin that the substring check is
-        correct here (this is the current behavior; if a future refactor
-        uses a stricter match, this test will need updating to reflect
-        the new contract).
+        as a substring of the path BUT it is NOT a real pluginfile URL
+        (the path component is 'mypluginfile.php', not 'pluginfile.php').
+
+        Pin the leading-slash convention that aligns with the moodle-dl
+        SSOT helper UrlHelper.is_pluginfile_url AND the official Moodle
+        mobile app (CoreUrl.isPluginFileUrl): a URL is a pluginfile URL
+        only if it contains '/pluginfile.php' (with leading slash) as
+        a path component. '/webservice/mypluginfile.php/...' is rejected
+        as a false positive.
+
+        This is the same fix applied to description_url_extractor in
+        June 2026, when we discovered the substring match was letting
+        false positives through. Pin the contract so a future refactor
+        doesn't reintroduce the bug.
         """
         builder = make_builder()
         url = 'https://keats.kcl.ac.uk/webservice/mypluginfile.php/1/mod_resource/content/0/file.pdf?token=T'
@@ -505,9 +515,14 @@ class TestPluginfileUrlsUnusualEdgeCases:
 
         files = call_find_all_urls(builder, html, make_location(module_name='m'))
 
-        # Substring match: 'pluginfile.php' IS in the path, so this is kept.
-        # This is the current behavior.
-        assert len(files) == 1
+        # Leading-slash convention: 'mypluginfile.php' is NOT a pluginfile URL
+        # (no '/pluginfile.php' as a complete path component).
+        # The URL is on a Moodle domain, not kaltura/helixmedia, not a real
+        # pluginfile → the early-skip fires and no File is created.
+        assert files == [], (
+            f'mypluginfile.php must NOT be treated as a pluginfile URL '
+            f'(leading-slash convention). Got: {[f.content_fileurl for f in files]}'
+        )
 
     # ----- Defensive: the URL must come back as a description-url type -----
 

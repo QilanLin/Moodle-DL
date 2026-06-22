@@ -70,11 +70,36 @@ from urllib.parse import ParseResult
 # Constants
 # ---------------------------------------------------------------------------
 
-#: pluginfile.php is the Moodle endpoint for serving resource attachments
-#: (PDF/ZIP/PNG/DOCX/MP3/...) from a description page. The host part of
-#: the URL is always the Moodle domain, but the path identifies the URL
-#: as a downloadable file rather than an internal page link.
-PLUGINFILE_PATH_FRAGMENT = 'pluginfile.php'
+#: Path fragments identifying Moodle's three file-serving endpoints.
+#: All three serve the same kind of resource attachment (PDF / ZIP /
+#: PNG / DOCX / MP3 / ...) — they differ only in auth (session cookie
+#: for /pluginfile.php, webservice token for /webservice/pluginfile.php,
+#: access key for /tokenpluginfile.php).
+#:
+#: These follow the official Moodle mobile app convention
+#: (https://github.com/moodlehq/moodle-mobile-app — CoreUrl.isPluginFileUrl
+#: in src/core/static/url.ts):
+#:
+#:     static isPluginFileUrl(url: string): boolean {
+#:         return url.indexOf('/pluginfile.php') !== -1;
+#:     }
+#:
+#:     static isTokenPluginFileUrl(url: string): boolean {
+#:         return url.indexOf('/tokenpluginfile.php') !== -1;
+#:     }
+#:
+#: The leading slash matters: '/pluginfile.php' (with slash) is a
+#: complete path component, while 'pluginfile.php' (no slash) could
+#: match '/mypluginfile.php/' — a path that is NOT a real pluginfile
+#: URL. Aligning with the official convention eliminates this false
+#: positive.
+#:
+#: These constants are also aligned with the moodle-dl SSOT helper
+#: moodle_dl.utils.UrlHelper.is_pluginfile_url(url) — both the
+#: description_url_extractor and the rest of moodle-dl must agree
+#: on what counts as a pluginfile URL.
+PLUGINFILE_PATH_FRAGMENT = '/pluginfile.php'
+TOKENPLUGINFILE_PATH_FRAGMENT = '/tokenpluginfile.php'
 
 #: The `book` modname is special: its chapter images are rewritten by
 #: the HTML localizer after the chapter is downloaded as a single HTML
@@ -142,6 +167,29 @@ def extract_urls_from_html(content_html: str) -> List[str]:
 # 2. should_skip_url
 # ---------------------------------------------------------------------------
 
+def _is_pluginfile_path(path: str) -> bool:
+    """Return True if a URL path matches one of Moodle's three
+    file-serving endpoints: /pluginfile.php, /webservice/pluginfile.php,
+    or /tokenpluginfile.php.
+
+    This is a thin wrapper around the substring checks defined in
+    PLUGINFILE_PATH_FRAGMENT and TOKENPLUGINFILE_PATH_FRAGMENT. The
+    actual production-level helper (with empty-URL guards, type
+    guards, edge cases like case sensitivity) lives in
+    moodle_dl.utils.UrlHelper.is_pluginfile_url; this function
+    assumes a non-empty, well-formed path and is only used inside
+    the should_skip_url / assign_modname_for_url pure functions
+    that already do their own validation.
+
+    @param path: The URL path component (urlparse(...).path). Must be
+        a string; the helper does no validation because the caller
+        has already done it.
+    @return: True if the path contains /pluginfile.php or
+        /tokenpluginfile.php as a substring.
+    """
+    return PLUGINFILE_PATH_FRAGMENT in path or TOKENPLUGINFILE_PATH_FRAGMENT in path
+
+
 def _is_moodle_domain_url(url_parts: ParseResult, moodle_domain: str) -> bool:
     """Return True if the URL's host is the configured Moodle domain.
 
@@ -197,9 +245,16 @@ def should_skip_url(
     """
     is_moodle_url = _is_moodle_domain_url(url_parts, moodle_domain)
     if is_moodle_url and not is_embedded_media:
-        # The pluginfile.php exemption only applies outside the `book`
+        # The pluginfile exemption only applies outside the `book`
         # modname (book chapter images are handled by the HTML localizer).
-        is_pluginfile_url = PLUGINFILE_PATH_FRAGMENT in url_parts.path
+        # We delegate the 'is this a pluginfile URL?' decision to the
+        # moodle-dl SSOT helper UrlHelper.is_pluginfile_url so that
+        # description_url_extractor and the rest of moodle-dl agree
+        # on what counts as a pluginfile URL (matches the 3 forms
+        # pinned by the official Moodle mobile app:
+        # /pluginfile.php, /webservice/pluginfile.php,
+        # /tokenpluginfile.php).
+        is_pluginfile_url = _is_pluginfile_path(url_parts.path)
         if not (is_pluginfile_url and original_modname != BOOK_MODNAME):
             # Keep the historical behavior: no shortcut files for
             # ordinary internal Moodle links.
@@ -267,7 +322,13 @@ def assign_modname_for_url(
     if is_helixmedia:
         return MODULE_COOKIE_HELIXMEDIA
     if _is_moodle_domain_url(url_parts, moodle_domain):
-        if WEBSERVICE_PATH_FRAGMENT in url_parts.path:
+        # The three file-serving endpoints (/pluginfile.php,
+        # /webservice/pluginfile.php, /tokenpluginfile.php) all
+        # share the same download path (webservice endpoint with
+        # token-aware auth), so they dispatch to the same modname
+        # prefix. This aligns with the official Moodle mobile app
+        # convention.
+        if _is_pluginfile_path(url_parts.path):
             return MODNAME_PREFIX_INDEX_MOD_DESCRIPTION + original_modname
         return MODNAME_PREFIX_COOKIE_MOD_DESCRIPTION + original_modname
     return MODNAME_PREFIX_URL_DESCRIPTION + original_modname

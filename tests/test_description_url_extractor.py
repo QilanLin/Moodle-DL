@@ -392,3 +392,227 @@ class TestAssignModnameForUrl:
                 f'Modname for original={original!r} should end with '
                 f'"{original}". Got: {result!r}'
             )
+
+
+# =========================================================================
+# tokenpluginfile.php (Moodle 4.5+) — official mobile app convention
+# =========================================================================
+class TestTokenPluginfileUrl:
+    """Pin the contract for the third file-serving endpoint.
+
+    Moodle 4.5+ adds /tokenpluginfile.php/<accessKey>/<contextid>/...
+    as a token-based alternative to the cookie-based /webservice/
+    pluginfile.php. The official Moodle mobile app treats it as a
+    pluginfile URL (it has the same /pluginfile.php structure with
+    an accessKey prefix), and moodle-dl's own UrlHelper.is_pluginfile_url
+    recognizes all three forms.
+
+    These tests pin that:
+      1. should_skip_url() keeps tokenpluginfile URLs (they are
+         downloadable resources, not internal page links)
+      2. assign_modname_for_url() dispatches them to the
+         index_mod-description-* branch (same as /webservice/pluginfile)
+    """
+
+    def test_tokenpluginfile_url_kept_for_resource_module(self):
+        """tokenpluginfile.php URL on the Moodle domain must be kept,
+        same as webservice/pluginfile.php — it's a downloadable
+        resource attachment.
+        """
+        from moodle_dl.moodle.description_url_extractor import should_skip_url
+        url = 'https://keats.kcl.ac.uk/tokenpluginfile.php/abc123def/2696283/mod_resource/content/0/cw1.pdf'
+        parts = urlparse(url)
+        assert should_skip_url(
+            url=url,
+            url_parts=parts,
+            moodle_domain='keats.kcl.ac.uk',
+            original_modname='resource',
+            is_embedded_media=False,
+        ) is False
+
+    def test_tokenpluginfile_url_dispatches_to_index_mod(self):
+        """tokenpluginfile URL should dispatch to index_mod-description-*
+        just like /webservice/pluginfile.php does (the file is
+        downloaded via the webservice endpoint with token-aware auth).
+        """
+        from moodle_dl.moodle.description_url_extractor import assign_modname_for_url
+        url = 'https://keats.kcl.ac.uk/tokenpluginfile.php/abc123def/2696283/mod_resource/content/0/cw1.pdf'
+        parts = urlparse(url)
+        result = assign_modname_for_url(
+            url=url,
+            url_parts=parts,
+            moodle_domain='keats.kcl.ac.uk',
+            original_modname='resource',
+            is_kaltura=False,
+            is_helixmedia=False,
+        )
+        assert result == 'index_mod-description-resource'
+
+    def test_tokenpluginfile_url_skipped_for_book_module(self):
+        """The book-modname exception applies to tokenpluginfile URLs
+        too — book chapter images are handled by the HTML localizer.
+        """
+        from moodle_dl.moodle.description_url_extractor import should_skip_url
+        url = 'https://keats.kcl.ac.uk/tokenpluginfile.php/abc123def/1/mod_book/chapter/2/img.png'
+        parts = urlparse(url)
+        assert should_skip_url(
+            url=url,
+            url_parts=parts,
+            moodle_domain='keats.kcl.ac.uk',
+            original_modname='book',
+            is_embedded_media=False,
+        ) is True
+
+
+# =========================================================================
+# SSOT alignment with UrlHelper.is_pluginfile_url
+# =========================================================================
+class TestSsotAlignment:
+    """Pin that description_url_extractor agrees with the
+    moodle-dl-wide SSOT UrlHelper.is_pluginfile_url() for what
+    counts as a 'pluginfile URL'.
+
+    Why: the existing helper in moodle_dl/utils.py accepts 3
+    endpoint forms (pluginfile.php, webservice/pluginfile.php,
+    tokenpluginfile.php), and the official Moodle mobile app
+    uses the same 3 forms. The description_url_extractor must
+    not silently disagree with either — that would create
+    routes that look right in one layer but fail in another.
+
+    These tests run the same URL set through both
+    is_pluginfile_url() and should_skip_url() to verify they
+    reach the same answer for the same input shape.
+    """
+
+    def test_ssot_pluginfile_url_kept_under_all_three_forms(self):
+        """All three official pluginfile forms (standard, webservice,
+        token) must be treated identically: kept for non-book modnames.
+        """
+        from moodle_dl.moodle.description_url_extractor import should_skip_url
+        from moodle_dl.utils import UrlHelper
+
+        urls = [
+            'https://keats.kcl.ac.uk/pluginfile.php/1/mod_resource/content/0/x.pdf',
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_resource/content/0/x.pdf?token=T',
+            'https://keats.kcl.ac.uk/tokenpluginfile.php/abc/1/mod_resource/content/0/x.pdf',
+        ]
+        for url in urls:
+            # Both helpers must agree: this IS a pluginfile URL
+            assert UrlHelper.is_pluginfile_url(url), f'UrlHelper says NO to {url}'
+            # ... and description_url_extractor must KEEP it (for non-book modname)
+            parts = urlparse(url)
+            kept = not should_skip_url(
+                url=url,
+                url_parts=parts,
+                moodle_domain='keats.kcl.ac.uk',
+                original_modname='resource',
+                is_embedded_media=False,
+            )
+            assert kept, f'should_skip_url says SKIP to {url}'
+
+    def test_ssot_assign_modname_agrees_with_webservice_branch(self):
+        """All three pluginfile forms must dispatch to the same
+        modname prefix (index_mod-description-*) because they all
+        go through the webservice endpoint with token-aware auth.
+        """
+        from moodle_dl.moodle.description_url_extractor import assign_modname_for_url
+        modnames = []
+        for url in [
+            'https://keats.kcl.ac.uk/pluginfile.php/1/mod_resource/content/0/x.pdf',
+            'https://keats.kcl.ac.uk/webservice/pluginfile.php/1/mod_resource/content/0/x.pdf?token=T',
+            'https://keats.kcl.ac.uk/tokenpluginfile.php/abc/1/mod_resource/content/0/x.pdf',
+        ]:
+            parts = urlparse(url)
+            modnames.append(assign_modname_for_url(
+                url=url,
+                url_parts=parts,
+                moodle_domain='keats.kcl.ac.uk',
+                original_modname='resource',
+                is_kaltura=False,
+                is_helixmedia=False,
+            ))
+        # All three should be the same modname (they all route to
+        # the same download path)
+        assert len(set(modnames)) == 1, f'Expected all 3 forms to share modname, got: {modnames}'
+
+
+# =========================================================================
+# Defensive: /pluginfile.php (leading slash) vs pluginfile.php (no slash)
+# =========================================================================
+class TestLeadingSlashConvention:
+    """Pin the moodle-dl-internal convention: pluginfile.php is
+    always checked as a path-segment substring, never as a bare
+    substring.
+
+    Rationale (per UrlHelper.is_pluginfile_url in moodle_dl/utils.py
+    and CoreUrl.isPluginFileUrl in the official Moodle mobile app):
+    the URL is only a pluginfile URL if it contains '/pluginfile.php'
+    or '/tokenpluginfile.php' as a complete path component. A URL
+    like 'https://evil.com/foo-pluginfile.php' (where 'pluginfile.php'
+    is a substring of a different path component) must NOT match.
+
+    This convention is the one used by the SSOT helper, and the
+    description_url_extractor must agree with it.
+
+    The leading-slash convention closes a real false-positive:
+    a URL like /webservice/mypluginfile.php/... contains the substring
+    'pluginfile.php' but is NOT a real pluginfile URL.
+    """
+
+    def test_pluginfile_php_substring_of_other_word_not_a_pluginfile_url(self):
+        """A URL like /webservice/mypluginfile.php/... contains the
+        substring 'pluginfile.php' (the file-extension part of
+        'mypluginfile.php') but is NOT a real pluginfile URL —
+        the leading-slash convention requires '/pluginfile.php' to
+        be a complete path component.
+
+        Pin that both the SSOT and the description_url_extractor
+        agree on this case: both reject 'mypluginfile.php' as a
+        false positive. (The previous substring-match behavior was
+        a real bug — it would have let '/webservice/mypluginfile.php/'
+        slip through as if it were a real pluginfile URL.)
+        """
+        from moodle_dl.moodle.description_url_extractor import should_skip_url
+        from moodle_dl.utils import UrlHelper
+        url = 'https://keats.kcl.ac.uk/webservice/mypluginfile.php/1/x.pdf?token=T'
+        # SSOT says NO (leading-slash convention)
+        assert not UrlHelper.is_pluginfile_url(url), (
+            'SSOT should reject mypluginfile.php (no leading slash '
+            'before pluginfile.php)'
+        )
+        # description_url_extractor must agree
+        parts = urlparse(url)
+        kept = not should_skip_url(
+            url=url,
+            url_parts=parts,
+            moodle_domain='keats.kcl.ac.uk',
+            original_modname='resource',
+            is_embedded_media=False,
+        )
+        assert not kept, (
+            'description_url_extractor should skip mypluginfile.php '
+            '(the leading-slash convention rules it out as a real '
+            'pluginfile URL)'
+        )
+
+    def test_pluginfile_php_uppercase_not_a_pluginfile_url(self):
+        """Pin the case-sensitive convention: /PLUGINFILE.PHP/ is NOT
+        a pluginfile URL (PHP file names are case-sensitive on Linux,
+        and the official mobile app uses case-sensitive matching).
+        """
+        from moodle_dl.moodle.description_url_extractor import should_skip_url
+        from moodle_dl.utils import UrlHelper
+        url = 'https://keats.kcl.ac.uk/PLUGINFILE.PHP/1/mod_resource/content/0/x.pdf'
+        assert not UrlHelper.is_pluginfile_url(url), (
+            'SSOT must reject uppercase pluginfile URL (case-sensitive)'
+        )
+        parts = urlparse(url)
+        # description_url_extractor must agree: skip the URL
+        kept = not should_skip_url(
+            url=url,
+            url_parts=parts,
+            moodle_domain='keats.kcl.ac.uk',
+            original_modname='resource',
+            is_embedded_media=False,
+        )
+        assert not kept, 'description_url_extractor disagrees with is_pluginfile_url SSOT'
