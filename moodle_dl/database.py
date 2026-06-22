@@ -765,7 +765,7 @@ class StateRecorder:
         elif (
             file1.content_type == 'description-url'
             and file1.content_type == file2.content_type
-            and file1.content_fileurl != file2.content_fileurl
+            and StateRecorder._urls_differ_in_path(file1.content_fileurl, file2.content_fileurl)
             # One consideration: or file1.section_name != file2.section_name)
             # But useless if description-links in the course must be unique anyway
         ):
@@ -777,6 +777,50 @@ class StateRecorder:
             logging.debug(f'  Result: files_are_different={result}')
 
         return result
+
+    @staticmethod
+    def _urls_differ_in_path(url1: str, url2: str) -> bool:
+        """Compare two URLs by path only (ignore query string,
+        and treat /webservice/pluginfile.php as equivalent to
+        /pluginfile.php).
+
+        Pluginfile URLs can differ in two ways across stores:
+        1. Query string parameters (token, offline=1) — these are
+           just auth params, not file identifiers.
+        2. /webservice prefix — Moodle has two endpoints that serve
+           the SAME file content: /pluginfile.php (cookie auth) and
+           /webservice/pluginfile.php (token auth). Per the official
+           source (moodle_official_repo_for_reference/public/pluginfile.php
+           and /public/webservice/pluginfile.php), both scripts
+           resolve to the same file storage via get_file_argument().
+
+        Returns True if the URLs differ in canonical file path,
+        False if they are equivalent (same file, different auth).
+        """
+        from urllib.parse import urlparse
+        if url1 == url2:
+            return False
+        if not url1 or not url2:
+            return url1 != url2
+        try:
+            p1 = urlparse(url1)
+            p2 = urlparse(url2)
+
+            # Canonicalize: strip /webservice/ prefix because both
+            # /pluginfile.php and /webservice/pluginfile.php serve
+            # the same file (verified in moodle_official_repo).
+            def canonical_path(parsed_url):
+                path = parsed_url.path
+                if '/webservice/pluginfile.php' in path:
+                    path = path.replace('/webservice/pluginfile.php', '/pluginfile.php')
+                return path
+
+            return (p1.scheme, p1.netloc, canonical_path(p1)) != (
+                p2.scheme, p2.netloc, canonical_path(p2)
+            )
+        except Exception:
+            # If parsing fails, fall back to literal comparison
+            return url1 != url2
 
     @staticmethod
     def files_are_moveable(file1: File, file2: File) -> bool:
