@@ -502,6 +502,21 @@ class ResultBuilder:
     ) -> List[File]:
         """Parses a html string to find all urls in it. Then it creates for every url a file entry.
 
+        This method is now a thin orchestrator over three pure helpers
+        in :mod:`moodle_dl.moodle.description_url_extractor`:
+
+          * :func:`extract_urls_from_html` — regex HTML → List[url]
+          * :func:`should_skip_url` — multi-condition "should this URL
+            be dropped?" decision (the 11-line boolean chain the
+            original code had inline)
+          * :func:`assign_modname_for_url` — 3-branch modname dispatch
+            (kaltura / helixmedia / /webservice/ branch / external)
+
+        The pure-function refactor (June 2026) makes each of these
+        decisions unit-testable in isolation. The function-level
+        contract is pinned by tests/test_result_builder_more.py and
+        tests/test_result_builder_pluginfile_in_descriptions.py.
+
         @param location: contains
             section_id: int,
             section_name: str,
@@ -510,58 +525,39 @@ class ResultBuilder:
             module_modname: str,
             content_filepath: str,
         """
+        # Lazy import keeps description_url_extractor's unit tests free
+        # of the heavy ResultBuilder / downloader dependency chain.
+        from moodle_dl.moodle.description_url_extractor import (
+            assign_modname_for_url,
+            extract_urls_from_html,
+            should_skip_url,
+        )
 
         # TODO: Also parse name or alt of an link to get a better name for URLs
-        urls = list(set(re.findall(r'href=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
-        urls += list(set(re.findall(r'<a[^>]*>(http[^<]*)<\/a>', content_html, flags=re.IGNORECASE)))
-        urls += list(set(re.findall(r'src=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
-        urls += list(set(re.findall(r'data=[\'"]?([^\'" >]+)', content_html, flags=re.IGNORECASE)))
-        urls = list(set(urls))
-
-        logging.debug(f'   🔎 _find_all_urls() found {len(urls)} raw URLs in HTML (length={len(content_html)})')
+        raw_urls = extract_urls_from_html(content_html)
+        logging.debug(f'   🔎 _find_all_urls() found {len(raw_urls)} raw URLs in HTML (length={len(content_html)})')
         if 'kaltura' in content_html.lower():
-            logging.debug(f'   🎬 HTML contains "kaltura" - checking if Kaltura URLs are in extracted URLs')
-            kaltura_urls = [u for u in urls if 'kaltura' in u.lower()]
+            kaltura_urls = [u for u in raw_urls if 'kaltura' in u.lower()]
             logging.debug(f'   🎬 Found {len(kaltura_urls)} Kaltura URLs: {kaltura_urls[:2] if kaltura_urls else "None"}')
 
         result = []
         original_module_modname = location['module_modname']
 
-        for url in urls:
-            if url == '':
-                continue
-
+        for url in raw_urls:
             url, url_parts = self._normalize_extracted_html_url(url)
             if not url:
                 continue
 
-            is_moodle_url = url_parts.hostname == self.moodle_domain or url_parts.netloc == self.moodle_domain
-            is_embedded_media_candidate = self._is_kaltura_url_candidate(
-                url, url_parts
-            ) or self._is_helixmedia_url_candidate(url, url_parts)
-            # A Moodle-domain pluginfile.php URL is a downloadable resource
-            # attachment (PDF/ZIP/PNG/DOCX/MP3...) referenced from a
-            # description page. It must always become a File entry, even
-            # though the host matches the Moodle domain, because the
-            # description-page → markdown-only regression it caused (KLaSS
-            # Research Data + 6CCS3ML1, June 2026) silently dropped every
-            # such URL and the real attachment was never downloaded.
-            #
-            # Exception: the `book` modname handles chapter images via the
-            # HTML localizer (book-as-HTML flow), so a chapter pluginfile
-            # image must NOT also become a standalone File entry — doing
-            # so would create a duplicate download. See the historical
-            # `test_find_all_urls_skips_root_relative_moodle_resources_without_shortcuts`
-            # in test_result_builder_more.py for the pinned contract.
-            is_pluginfile_url = 'pluginfile.php' in url_parts.path
-            if (
-                is_moodle_url
-                and not is_embedded_media_candidate
-                and not (is_pluginfile_url and original_module_modname != 'book')
+            is_kaltura = self._is_kaltura_url_candidate(url, url_parts)
+            is_helixmedia = self._is_helixmedia_url_candidate(url, url_parts)
+
+            if should_skip_url(
+                url=url,
+                url_parts=url_parts,
+                moodle_domain=self.moodle_domain,
+                original_modname=original_module_modname,
+                is_embedded_media=is_kaltura or is_helixmedia,
             ):
-                # Keep the historical behavior of not creating shortcut files
-                # for ordinary internal Moodle links, but allow embedded media
-                # launches from labels/pages to become video download tasks.
                 continue
 
             if any(filter_str and filter_str in url for filter_str in filter_urls_containing):
@@ -574,20 +570,22 @@ class ResultBuilder:
                     url,
                 )
 
-            location['module_modname'] = 'url-description-' + original_module_modname
+            location['module_modname'] = assign_modname_for_url(
+                url=url,
+                url_parts=url_parts,
+                moodle_domain=self.moodle_domain,
+                original_modname=original_module_modname,
+                is_kaltura=is_kaltura,
+                is_helixmedia=is_helixmedia,
+            )
 
-            if url_parts.hostname == self.moodle_domain and url_parts.path.find('/webservice/') >= 0:
-                location['module_modname'] = 'index_mod-description-' + original_module_modname
-
-            elif url_parts.hostname == self.moodle_domain:
-                location['module_modname'] = 'cookie_mod-description-' + original_module_modname
-
-            url, entry_id = self._normalize_kaltura_url(url, url_parts)
-            kaltura_converted = entry_id is not None
-            if kaltura_converted:
-                location['module_modname'] = MODULE_COOKIE_KALVIDRES
-            elif self._is_helixmedia_url_candidate(url, url_parts):
-                location['module_modname'] = MODULE_COOKIE_HELIXMEDIA
+            # If a Kaltura launch URL was detected, normalize the URL to
+            # the standard kalvidres form (so the downloader hits the
+            # right endpoint). The is_kaltura flag stays True because
+            # the host / path / entry_id signals don't change.
+            if is_kaltura:
+                url, _entry_id = self._normalize_kaltura_url(url, url_parts)
+            elif is_helixmedia:
                 logging.info(f'🎬 Detected HelixMedia URL in description: {url[:80]}...')
 
             # Determine filename based on URL type
@@ -612,8 +610,10 @@ class ResultBuilder:
                 short_data_hash = m.hexdigest()
 
                 fist_guess_filename = f'embedded_{media_type} ({short_data_hash}){file_extension_guess}'
-            elif kaltura_converted:
-                # Use entry_id for Kaltura videos
+            elif is_kaltura:
+                # Use entry_id for Kaltura videos (extracted upstream by
+                # _normalize_kaltura_url when is_kaltura is True).
+                entry_id = self._extract_kaltura_entry_id(url) or 'unknown'
                 fist_guess_filename = f'Kaltura Video {entry_id}'
             else:
                 fist_guess_filename = url
