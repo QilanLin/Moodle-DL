@@ -48,47 +48,74 @@ class TestBookModnameCrossContentFilepath:
     resets.
     """
 
-    def test_book_with_multiple_sub_folders_get_sequential_indices(self):
+    def test_book_with_multiple_chapters_get_sequential_indices(self):
+        """A book module's content items come back from the Moodle
+        server with different content_filepath values per chapter
+        (and sometimes per sub-folder like /01 - Introduction/images/).
+        The book module is one cm_id in course_sections.sequence.
+
+        Pin the current contract: a book module is one scope, so
+        ALL its files share a 0-based counter regardless of which
+        chapter sub-folder they live in. This prevents the *01*
+        collision that would happen if chapter 1's html (at
+        /01 - Introduction/) and chapter 1's image (at
+        /01 - Introduction/images/) both got *01* (which they
+        would under a per-filepath scope).
+        """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
-        # All five files in the SAME book module (module_id=42)
-        # but across different content_filepath values
+        # 5 files in 3 different "chapters" (filepath values) of the
+        # same book module
         files = [
-            _file('chapter_root.html',   module_id=42, filepath='/',                          modname='book'),
-            _file('index.html',          module_id=42, filepath='/01 - Introduction/',        modname='book'),
-            _file('attachment.pdf',      module_id=42, filepath='/01 - Introduction/',        modname='book'),
-            _file('image.png',           module_id=42, filepath='/01 - Introduction/images/', modname='book'),
-            _file('extra.docx',          module_id=42, filepath='/02 - Background/',          modname='book'),
+            _file('chapter_root.html',  module_id=42, filepath='/',                          modname='book'),
+            _file('index.html',         module_id=42, filepath='/01 - Introduction/',        modname='book'),
+            _file('attachment.pdf',     module_id=42, filepath='/01 - Introduction/',        modname='book'),
+            _file('image.png',          module_id=42, filepath='/01 - Introduction/images/', modname='book'),
+            _file('extra.docx',         module_id=42, filepath='/02 - Background/',          modname='book'),
         ]
 
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Sequential in input order, NO per-sub-folder reset
-        assert [f.position_in_section for f in files] == [0, 1, 2, 3, 4]
+        # Whole book shares one 0-based counter (input order):
+        # chapter_root=0, ch1 index=1, ch1 attach=2, ch1 image=3, ch2 extra=4
+        assert files[0].position_in_section == 0
+        assert files[1].position_in_section == 1
+        assert files[2].position_in_section == 2
+        assert files[3].position_in_section == 3
+        assert files[4].position_in_section == 4
 
     def test_different_book_modules_have_independent_counters(self):
-        """Two different book chapters in the same section get
-        INDEPENDENT 0-based counters, in input order.
+        """Two different book modules (different module_ids) get
+        INDEPENDENT 0-based counters. Each book module is its own
+        scope; the counter resets at every book boundary.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
         files = [
-            # Book 1
-            _file('book1_root.html',   module_id=100, filepath='/', modname='book'),
-            _file('book1_ch1.html',   module_id=100, filepath='/Ch1/', modname='book'),
-            # Book 2
-            _file('book2_root.html',   module_id=200, filepath='/', modname='book'),
-            _file('book2_ch1.html',   module_id=200, filepath='/Ch1/', modname='book'),
+            # Book 1, chapter 1
+            _file('book1_ch1.html',  module_id=100, filepath='/Ch1/', modname='book'),
+            _file('book1_ch1_2.html', module_id=100, filepath='/Ch1/', modname='book'),
+            # Book 2, chapter 1 (same filepath as book 1!)
+            _file('book2_ch1.html',  module_id=200, filepath='/Ch1/', modname='book'),
+            _file('book2_ch1_2.html', module_id=200, filepath='/Ch1/', modname='book'),
             # Book 3
-            _file('book3_root.html',   module_id=300, filepath='/', modname='book'),
+            _file('book3_root.html',  module_id=300, filepath='/', modname='book'),
         ]
 
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Each book module is its own booklet
-        assert [f.position_in_section for f in files] == [0, 1, 0, 1, 0]
+        # Different module_ids → independent counters
+        # Book 1 chapter 1: 0, 1
+        # Book 2 chapter 1: 0, 1 (counter resets, even though
+        #                       same content_filepath as book 1)
+        # Book 3 root: 0
+        assert files[0].position_in_section == 0  # book1 ch1
+        assert files[1].position_in_section == 1  # book1 ch1_2
+        assert files[2].position_in_section == 0  # book2 ch1 (RESET)
+        assert files[3].position_in_section == 1  # book2 ch1_2
+        assert files[4].position_in_section == 0  # book3 root
 
     def test_book_module_among_non_book_files_in_section(self):
         """A book chapter (independent scope) sits between page

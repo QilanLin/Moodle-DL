@@ -280,13 +280,16 @@ class TestPositionScopeKey:
         sk = ResultBuilder._position_scope_key(f)
         assert sk == (5, None)
 
-    def test_book_module_uses_per_chapter_scope(self):
+    def test_book_module_uses_per_book_scope(self):
         from moodle_dl.moodle.result_builder import ResultBuilder
         f = _make_file(section_id=5, module_id=100, filepath='/Ch1/',
                        filename='b.html', modname='book')
         sk = ResultBuilder._position_scope_key(f)
-        # Book modname uses its own module_id as the second key,
-        # giving each chapter its own 0-based counter.
+        # Book modname uses (section_id, module_id) so the whole
+        # book module shares one 0-based counter (NOT per-chapter,
+        # because Moodle's book module uses different content_filepath
+        # values for chapter content vs chapter image sub-folders,
+        # and per-filepath scoping would collide *NN* numbers).
         assert sk == (5, 100)
 
     def test_two_book_chapters_have_different_scope_keys(self):

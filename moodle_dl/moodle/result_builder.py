@@ -131,25 +131,34 @@ class ResultBuilder:
             one 0-based counter, matching the order the Moodle server
             returns them in (see section_info.php:514
             ``get_sequence_cm_infos`` in the official Moodle repo).
-          * book_module_id: only set for the 'book' modname. Every
-            book chapter is its own booklet and gets its own
-            0-based counter. All other modnames — including
-            page, assign, quiz, forum, label, url, and the
-            cookie_mod-kalvidres / cookie_mod-helixmedia video
-            modules — share the section-wide counter.
+          * book_module_id: only set for the 'book' modname. All
+            files in a book module (across all chapter sub-folders
+            and image sub-sub-folders) share one 0-based counter
+            — so a chapter 1 image and the chapter 1 html are
+            numbered *01* and *02*, not both *01*.
 
-        The net effect on disk: within a section, the *NN* prefix
-        runs sequentially across all sub-folders, in server order.
-        The only places where the counter resets are book chapter
-        boundaries (preserving the per-chapter contract).
+        All other modnames (page, assign, quiz, label, url,
+        cookie_mod videos, etc.) share the section-wide counter
+        with book_scope=None.
+
+        Pin: this was previously content_filepath-scoped for
+        non-book modules (every sub-folder got its own counter,
+        producing visually confusing *02* next to *04*). Now every
+        sub-folder within a non-book section shares the section
+        counter, and book modules get one counter per book (not
+        per chapter, because Moodle's book module uses different
+        content_filepath values for chapter content vs chapter
+        image sub-folders, and per-filepath scoping would collide
+        *NN* numbers within a single chapter).
 
         @param file: The File being indexed.
         @return: ``(section_id, book_module_id)`` tuple.
         """
         module_modname = getattr(file, 'module_modname', '')
-        # Only the book modname gets a per-chapter scope. Everything
-        # else (page, assign, quiz, label, url, cookie_mod videos,
-        # etc.) shares the section-wide counter.
+        # Only the book modname gets a per-module scope (the
+        # book module_id). Everything else (page, assign, quiz,
+        # label, url, cookie_mod videos, etc.) shares the
+        # section-wide counter.
         book_scope = getattr(file, 'module_id', None) if module_modname == 'book' else None
         return getattr(file, 'section_id', None), book_scope
 
