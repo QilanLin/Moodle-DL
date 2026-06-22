@@ -520,7 +520,26 @@ class ResultBuilder:
             is_embedded_media_candidate = self._is_kaltura_url_candidate(
                 url, url_parts
             ) or self._is_helixmedia_url_candidate(url, url_parts)
-            if is_moodle_url and not is_embedded_media_candidate:
+            # A Moodle-domain pluginfile.php URL is a downloadable resource
+            # attachment (PDF/ZIP/PNG/DOCX/MP3...) referenced from a
+            # description page. It must always become a File entry, even
+            # though the host matches the Moodle domain, because the
+            # description-page → markdown-only regression it caused (KLaSS
+            # Research Data + 6CCS3ML1, June 2026) silently dropped every
+            # such URL and the real attachment was never downloaded.
+            #
+            # Exception: the `book` modname handles chapter images via the
+            # HTML localizer (book-as-HTML flow), so a chapter pluginfile
+            # image must NOT also become a standalone File entry — doing
+            # so would create a duplicate download. See the historical
+            # `test_find_all_urls_skips_root_relative_moodle_resources_without_shortcuts`
+            # in test_result_builder_more.py for the pinned contract.
+            is_pluginfile_url = 'pluginfile.php' in url_parts.path
+            if (
+                is_moodle_url
+                and not is_embedded_media_candidate
+                and not (is_pluginfile_url and original_module_modname != 'book')
+            ):
                 # Keep the historical behavior of not creating shortcut files
                 # for ordinary internal Moodle links, but allow embedded media
                 # launches from labels/pages to become video download tasks.
