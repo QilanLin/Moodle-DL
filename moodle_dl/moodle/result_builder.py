@@ -189,20 +189,68 @@ class ResultBuilder:
         """Section-wide variant of :meth:`_position_scope_key`.
 
         Drops ``content_filepath`` from the scope, so the whole
-        section shares one 0-based counter. Book chapters remain
-        per-chapter because ``module_scope`` is set for the book
-        modname (book is in ``MODULE_DIRECTORY_SUFFIXES``).
+        section shares one 0-based counter. Module scope is also
+        dropped for everything EXCEPT book chapters (each book
+        chapter is a standalone "booklet" that gets its own 0-based
+        counter to match the historical book contract).
+
+        This aligns the *NN* numbering with the Moodle server's
+        ``course_sections.sequence`` order — see the official
+        ``get_sequence_cm_infos`` in
+        ``moodle_official_repo_for_reference/public/course/classes/
+        section_info.php:514`` and ``calculate_section_weights`` in
+        ``modinfo.php:1271``.
 
         @param file: The File being indexed.
-        @return: ``(section_id, module_scope)`` tuple.
+        @return: ``(section_id, module_scope)`` tuple, where
+            ``module_scope`` is set only for book modname.
         """
         module_modname = getattr(file, 'module_modname', '')
-        module_scope = getattr(file, 'module_id', None) if cls._uses_module_directory(module_modname) else None
+        module_scope = (
+            getattr(file, 'module_id', None)
+            if cls._uses_module_directory_scoped(module_modname)
+            else None
+        )
         return getattr(file, 'section_id', None), module_scope
 
     @classmethod
     def _uses_module_directory(cls, module_modname: str) -> bool:
         return module_modname.endswith(cls.MODULE_DIRECTORY_SUFFIXES) or module_modname in cls.MODULE_DIRECTORY_MODNAMES
+
+    @classmethod
+    def _uses_module_directory_scoped(cls, module_modname: str) -> bool:
+        """Return True if the module modname gets a per-module
+        scope (i.e., its own 0-based counter) in the SECTION-WIDE
+        indexing mode.
+
+        Only the book modname returns True here. Every other
+        module type — including assign, page, quiz, forum, label,
+        url, and the cookie_mod-kalvidres/helixmedia video modules
+        — returns False, meaning their files participate in the
+        section's sequential numbering rather than restarting
+        per module.
+
+        Rationale (cross-checked against the moodle_official_repo
+        section_info.php:514 `get_sequence_cm_infos` and
+        modinfo.php:1271 `calculate_section_weights`): the Moodle
+        server returns modules within a section in the order
+        defined by `course_sections.sequence`, a flat list of
+        cm_ids. Every module is one entry in that list, including
+        book chapters. The user expects the *NN* numbering to
+        follow the SAME order so the on-disk directory matches
+        the on-screen course page.
+
+        The one exception is book chapters: when a user opens a
+        book chapter, they navigate within the chapter as if it
+        were a small standalone booklet, so chapter 1 and chapter 2
+        should each restart from *01*. This preserves the historical
+        book contract.
+
+        @param module_modname: The module's modname (e.g. 'page',
+            'book', 'cookie_mod-kalvidres', 'label').
+        @return: True only for 'book'; False for everything else.
+        """
+        return module_modname == 'book'
 
     @staticmethod
     def _is_system_file(filename: str) -> bool:

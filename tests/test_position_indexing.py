@@ -216,22 +216,21 @@ class TestSectionWideIndexingOptIn:
         assert f2.position_in_section == 0
 
     def test_book_and_resource_in_same_section_sequential(self):
-        """A book chapter (independent scope) and a resource
-        module (section-wide scope) in the same section should
-        get SEQUENTIAL indices across the whole section, because
-        the section-wide counter treats book as just another file.
-        Actually, this is a design question: should book still be
-        independent? Yes, because each book chapter is a 'booklet'
-        and its own first file should be 0, not section-position 5.
-        Pin the contract: book IS independent.
+        """A book chapter (independent scope) and a page module
+        (section-wide scope) in the same section should get
+        SEQUENTIAL indices across the whole section, because
+        the section-wide counter treats page as part of the
+        section. The book chapter keeps its own 0-based counter
+        (per-chapter is its own booklet).
+        Pin the contract: book IS independent even in section-wide mode.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
-        # Section: [resource1, resource2, book_chapter1, book_chapter2]
+        # Section: [page1, page2, book_chapter1, book_chapter2]
         r1 = _make_file(section_id=1, module_id=10, filepath='/',
-                        filename='a.pdf', modname='resource')
+                        filename='a.html', modname='page')
         r2 = _make_file(section_id=1, module_id=11, filepath='/',
-                        filename='b.pdf', modname='resource')
+                        filename='b.html', modname='page')
         b1 = _make_file(section_id=1, module_id=20, filepath='/Ch1/',
                         filename='p.html', modname='book')
         b2 = _make_file(section_id=1, module_id=21, filepath='/Ch2/',
@@ -240,7 +239,8 @@ class TestSectionWideIndexingOptIn:
         rb = self._make_builder(section_wide=True)
         rb._assign_positions_to_files([r1, r2, b1, b2])
 
-        # r1=0, r2=1, b1=0 (book starts fresh), b2=0 (book starts fresh again)
+        # Page modules: 0, 1 (section-wide, sequential)
+        # Book chapters: 0, 0 (each chapter is its own booklet)
         assert (r1.position_in_section, r2.position_in_section) == (0, 1)
         assert (b1.position_in_section, b2.position_in_section) == (0, 0)
 
