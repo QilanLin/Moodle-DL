@@ -124,6 +124,54 @@ class TestModuleFolderGetsNNPrefix:
             'module folder *NN* prefix'
         )
 
+    def test_flat_file_uses_3digit_prefix_for_position_99_plus(self):
+        """Position >= 99 uses 3-digit prefix (*100*, *101*, etc.)
+        to avoid ambiguity in long sections.
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import File
+
+        ops = TaskFileOps(MagicMock())
+        for pos, expected in [(99, '*100*'), (100, '*101*'), (123, '*124*')]:
+            f = File(
+                module_id=1, section_name='S', section_id=1,
+                module_name='test_module', content_filepath='/',
+                content_filename='test.md',
+                content_fileurl='https://example.com/test.md',
+                content_filesize=1024, content_timemodified=0,
+                module_modname='label', content_type='description',
+                content_isexternalfile=False,
+            )
+            f.position_in_section = pos
+            generated = ops.generate_filename_with_index(f)
+            assert generated.startswith(expected + ' '), (
+                f'Position {pos} should produce {expected} prefix. '
+                f'Got: {generated!r}'
+            )
+
+    def test_flat_file_uses_2digit_prefix_for_position_under_99(self):
+        """Position < 99 uses 2-digit prefix (*01* to *99*)."""
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import File
+
+        ops = TaskFileOps(MagicMock())
+        for pos, expected in [(0, '*01*'), (50, '*51*'), (98, '*99*')]:
+            f = File(
+                module_id=1, section_name='S', section_id=1,
+                module_name='test_module', content_filepath='/',
+                content_filename='test.md',
+                content_fileurl='https://example.com/test.md',
+                content_filesize=1024, content_timemodified=0,
+                module_modname='label', content_type='description',
+                content_isexternalfile=False,
+            )
+            f.position_in_section = pos
+            generated = ops.generate_filename_with_index(f)
+            assert generated.startswith(expected + ' '), (
+                f'Position {pos} should produce {expected} prefix. '
+                f'Got: {generated!r}'
+            )
+
     def test_flat_file_keeps_existing_prefix_behavior(self):
         """Flat files (no module folder) keep the existing
         `*NN* filename` prefix behavior. Only FOLDERS get the
