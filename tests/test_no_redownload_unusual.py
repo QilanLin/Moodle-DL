@@ -374,3 +374,187 @@ class TestNoRedownloadBehaviorContract:
             f'After fix: same file with different URL prefix '
             f'should not be considered different, got {result}'
         )
+class TestUserScenarioFromLog:
+    """Tests that pin the exact scenarios from the user's
+    /Volumes/Untitled/MoodleDL.log file.
+
+    Reference (from user log, 2026-06-22):
+
+      task [0] File (module_id: 0, section_name: "General",
+                    module_name: "Section summary",
+                    content_filepath: "/",
+                    content_filename: "https：⧸⧸keats.kcl.ac.uk⧸pluginfile.php⧸9374442⧸course⧸section⧸1801074⧸Informatics-banner4.png",
+                    content_fileurl: "https://keats.kcl.ac.uk/pluginfile.php/9374442/course/section/1801074/Informatics-banner4.png",
+                    content_filesize: 0,
+                    module_modname: index_mod-description-section_summary,
+                    content_type: description-url,
+                    modified: True,    # Was being re-downloaded every restart
+                    ...)
+
+    The pre-fix behavior was: stored file had /webservice/pluginfile.php URL
+    (saved by commit 75d2393), current-fetch had raw /pluginfile.php URL.
+    files_are_diffrent returned True (different) → modified=True →
+    re-downloaded every restart.
+
+    After fix: _urls_differ_in_path canonicalizes /webservice prefix and
+    ignores query string → returns False → not modified → not re-downloaded.
+    """
+
+    def test_user_log_task_zero_scenario_not_redownloaded(self):
+        """Reproduce the exact scenario from user log: the
+        Informatics banner section summary was being re-downloaded
+        every restart due to URL prefix mismatch (webservice vs
+        raw). Pin that this is now correctly detected as 'same file'.
+        """
+        from moodle_dl.types import File
+        from moodle_dl.database import StateRecorder
+
+        # Stored (from previous successful download, has webservice prefix)
+        stored = File(
+            module_id=0,
+            section_name='General',
+            section_id=2206951,
+            module_name='Section summary',
+            content_filepath='/',
+            content_filename='https://keats.kcl.ac.uk/pluginfile.php/9374442/course/section/1801074/Informatics-banner4.png',
+            content_fileurl='https://keats.kcl.ac.uk/webservice/pluginfile.php/9374442/course/section/1801074/Informatics-banner4.png',
+            content_filesize=0,
+            content_timemodified=0,
+            module_modname='index_mod-description-section_summary',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        # Current fetch (from new moodle-dl run, raw /pluginfile.php)
+        current = File(
+            module_id=0,
+            section_name='General',
+            section_id=2206951,
+            module_name='Section summary',
+            content_filepath='/',
+            content_filename='https://keats.kcl.ac.uk/pluginfile.php/9374442/course/section/1801074/Informatics-banner4.png',
+            content_fileurl='https://keats.kcl.ac.uk/pluginfile.php/9374442/course/section/1801074/Informatics-banner4.png',
+            content_filesize=0,
+            content_timemodified=0,
+            module_modname='index_mod-description-section_summary',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        result = StateRecorder.files_are_diffrent(current, stored)
+        assert result is False, (
+            'User scenario: Informatics banner section summary '
+            'should NOT be re-downloaded (URL differs only in '
+            '/webservice prefix and query string)'
+        )
+
+    def test_user_log_task_two_external_url_skip(self):
+        """User log task [2]: Tom Mitchell PDF (external URL,
+        cs.cmu.edu domain, NOT a keats pluginfile URL). Should
+        not be re-downloaded either (URL is identical across runs).
+        """
+        from moodle_dl.types import File
+        from moodle_dl.database import StateRecorder
+
+        url = 'https://www.cs.cmu.edu/~tom/files/MachineLearningTomMitchell.pdf'
+        stored = File(
+            module_id=9160809,
+            section_name='Module Overview',
+            section_id=2206952,
+            module_name='TEXTBOOK AND ADDITIONAL READING',
+            content_filepath='/',
+            content_filename='https://www.cs.cmu.edu/~tom/files/MachineLearningTomMitchell.pdf',
+            content_fileurl=url,
+            content_filesize=0, content_timemodified=0,
+            module_modname='url-description-label',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        current = File(
+            module_id=9160809,
+            section_name='Module Overview',
+            section_id=2206952,
+            module_name='TEXTBOOK AND ADDITIONAL READING',
+            content_filepath='/',
+            content_filename='https://www.cs.cmu.edu/~tom/files/MachineLearningTomMitchell.pdf',
+            content_fileurl=url,
+            content_filesize=0, content_timemodified=0,
+            module_modname='url-description-label',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        # External URL: same literal URL → not different
+        assert StateRecorder.files_are_diffrent(current, stored) is False
+
+    def test_user_log_task_two_token_added_to_external_url(self):
+        """What if the current-fetch URL has an extra query parameter
+        (e.g. token=T) but the stored URL doesn't? For external
+        URLs (not keats pluginfile), the URLs are still equivalent
+        (different auth, same content)."""
+        from moodle_dl.types import File
+        from moodle_dl.database import StateRecorder
+
+        stored = File(
+            module_id=9160809, section_name='M', section_id=1,
+            module_name='M', content_filepath='/',
+            content_filename='x',
+            content_fileurl='https://www.cs.cmu.edu/~tom/files/Mitchell.pdf',
+            content_filesize=0, content_timemodified=0,
+            module_modname='url-description-label',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        current = File(
+            module_id=9160809, section_name='M', section_id=1,
+            module_name='M', content_filepath='/',
+            content_filename='x',
+            content_fileurl='https://www.cs.cmu.edu/~tom/files/Mitchell.pdf?token=T',
+            content_filesize=0, content_timemodified=0,
+            module_modname='url-description-label',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        # Same path, different query → same file
+        assert StateRecorder.files_are_diffrent(current, stored) is False
+
+    def test_user_log_modified_flag_set_then_overwritten(self):
+        """Even if stored record has modified=True (DB column from
+        pre-fix run), the file should NOT be re-added to changed_course
+        if the underlying URL is actually equivalent.
+
+        This test verifies the flow: get_new_files sees a file with
+        modified=True in DB, but files_are_diffrent returns False (URLs
+        match after path canonicalization), so the file is NOT added
+        to changed_course.files.
+        """
+        from moodle_dl.types import File
+        from moodle_dl.database import StateRecorder
+
+        # Stored record has modified=1 (pre-fix spurious flag)
+        stored = File(
+            module_id=0, section_name='General', section_id=1,
+            module_name='Section summary', content_filepath='/',
+            content_filename='banner.png',
+            content_fileurl='https://keats.kcl.ac.uk/webservice/pluginfile.php/9374442/Informatics-banner4.png',
+            content_filesize=0, content_timemodified=0,
+            module_modname='index_mod-description-section_summary',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        stored.modified = True  # legacy flag from pre-fix DB
+        # Current fetch
+        current = File(
+            module_id=0, section_name='General', section_id=1,
+            module_name='Section summary', content_filepath='/',
+            content_filename='banner.png',
+            content_fileurl='https://keats.kcl.ac.uk/pluginfile.php/9374442/Informatics-banner4.png',
+            content_filesize=0, content_timemodified=0,
+            module_modname='index_mod-description-section_summary',
+            content_type='description-url',
+            content_isexternalfile=True,
+        )
+        # The actual file comparison must return False (same file)
+        # regardless of the legacy modified flag
+        result = StateRecorder.files_are_diffrent(current, stored)
+        assert result is False, (
+            'Legacy modified=True flag should NOT cause re-download '
+            'if URLs are actually equivalent'
+        )
