@@ -303,6 +303,109 @@ class TestPositionScopeKey:
 
 
 # =========================================================================
+# Mixed modname + singleton participates in section-wide ordering
+# =========================================================================
+class TestSingletonParticipatesInSectionWideOrdering:
+    """Pin the user-stated contract:
+
+        '那个唯一的文件应该参与父文件夹内的*xx*前缀排序才对'
+
+    A singleton description module (only its HTML preview, no
+    attachments) is FLATTENED into the section directory (no module
+    folder, see tests/test_module_folder_flatten.py). Its file
+    gets a *NN* prefix that participates in the section-wide
+    ordering — i.e. it gets the next position after the previous
+    module's files, NOT a reset counter.
+    """
+
+    def test_singleton_between_two_multifile_modules(self):
+        """A singleton label module sits between two multi-file
+        modules in the section. All five files get sequential
+        positions in section-wide order:
+          pos=0  Module A file 1
+          pos=1  Module A file 2
+          pos=2  Singleton label    ← participates in section counter
+          pos=3  Module C file 1
+          pos=4  Module C file 2
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import File
+
+        # Module A (multi-file page+resource) — has attachments
+        a1 = _make_file(section_id=1, module_id=1, filepath='/A/',
+                        filename='a.html', modname='page')
+        a2 = _make_file(section_id=1, module_id=1, filepath='/A/',
+                        filename='a.pdf', modname='resource')
+        # Module B (singleton label) — only description, no attachments
+        b1 = _make_file(section_id=1, module_id=2, filepath='/',
+                        filename='b.md', modname='label')
+        # Module C (multi-file assign) — has attachments
+        c1 = _make_file(section_id=1, module_id=3, filepath='/C/',
+                        filename='c.html', modname='assign')
+        c2 = _make_file(section_id=1, module_id=3, filepath='/C/',
+                        filename='c_template.docx', modname='assign')
+
+        files = [a1, a2, b1, c1, c2]
+
+        # _get_files_in_modules would set _module_has_attachments
+        # for each file. Simulate that:
+        a1._module_has_attachments = True   # Module A: has attachments
+        a2._module_has_attachments = True
+        b1._module_has_attachments = False  # Singleton label
+        c1._module_has_attachments = True   # Module C: has attachments
+        c2._module_has_attachments = True
+
+        rb = _make_result_builder()
+        rb._assign_positions_to_files(files)
+
+        # ALL files share section-wide counter, including the
+        # singleton. The singleton does NOT reset the counter.
+        assert [f.position_in_section for f in files] == [0, 1, 2, 3, 4]
+
+    def test_singleton_at_section_start(self):
+        """A singleton label is the FIRST file in the section —
+        it gets position 0."""
+        from moodle_dl.moodle.result_builder import ResultBuilder
+
+        singleton = _make_file(section_id=1, module_id=1, filepath='/',
+                                filename='intro.md', modname='label')
+        a1 = _make_file(section_id=1, module_id=2, filepath='/A/',
+                        filename='a.html', modname='page')
+        a2 = _make_file(section_id=1, module_id=2, filepath='/A/',
+                        filename='a.pdf', modname='resource')
+
+        singleton._module_has_attachments = False
+        a1._module_has_attachments = True
+        a2._module_has_attachments = True
+
+        rb = _make_result_builder()
+        rb._assign_positions_to_files([singleton, a1, a2])
+
+        assert [f.position_in_section for f in (singleton, a1, a2)] == [0, 1, 2]
+
+    def test_singleton_at_section_end(self):
+        """A singleton label is the LAST file in the section —
+        it gets the highest position."""
+        from moodle_dl.moodle.result_builder import ResultBuilder
+
+        a1 = _make_file(section_id=1, module_id=1, filepath='/A/',
+                        filename='a.html', modname='page')
+        a2 = _make_file(section_id=1, module_id=1, filepath='/A/',
+                        filename='a.pdf', modname='resource')
+        singleton = _make_file(section_id=1, module_id=2, filepath='/',
+                                filename='outro.md', modname='label')
+
+        a1._module_has_attachments = True
+        a2._module_has_attachments = True
+        singleton._module_has_attachments = False
+
+        rb = _make_result_builder()
+        rb._assign_positions_to_files([a1, a2, singleton])
+
+        assert [f.position_in_section for f in (a1, a2, singleton)] == [0, 1, 2]
+
+
+# =========================================================================
 # Helpers
 # =========================================================================
 def _make_result_builder():
