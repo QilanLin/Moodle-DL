@@ -332,6 +332,77 @@ class DummyCourseBuilder:
         }
         return self
 
+    def add_book_kaltura(self, module_id, kaltura_files):
+        """Add kaltura video files to an existing book module's
+        fetched_mods['book'][module_id]['files'].
+
+        Each kaltura_file is a dict with:
+          - entry_id: Kaltura entry_id (e.g. '1_cka79uqg')
+          - filename: output filename (e.g. 'Week Overview - Video.mp4')
+          - chapter_idx: which chapter this video belongs to (0-based)
+          - filepath: chapter folder path (e.g. '/2/')
+
+        This simulates what book.py's _extract_kaltura_videos_from_chapter
+        produces — the kaltura video is added as a separate file
+        with module_modname='cookie_mod-kalvidres' and the
+        same module_id as the book.
+        """
+        book_entry = self.fetched_mods.setdefault('book', {}).setdefault(module_id, None)
+        if book_entry is None:
+            raise ValueError(f'Book module {module_id} not found. Call add_book first.')
+        for kf in kaltura_files:
+            book_entry['files'].append({
+                'filename': kf['filename'],
+                'filepath': kf.get('filepath', f'/{kf.get("chapter_idx", 0) + 1}/'),
+                'fileurl': f'https://kaf.keats.kcl.ac.uk/browseandembed/index/media/entryid/{kf["entry_id"]}/showDescription/false/',
+                # 'type' must be CONTENT_TYPE_KALVIDRES_EMBEDDED
+                # (='kalvidres_embedded') for result_builder to override
+                # module_modname to 'cookie_mod-kalvidres'.
+                'type': 'kalvidres_embedded',
+                'content_type': 'kalvidres_embedded',
+                'isexternalfile': True,
+                'mimetype': 'video/mp4',
+                'filesize': 1024 * 100,
+                'timemodified': 1700000000,
+                'kaltura_entry_id': kf['entry_id'],
+            })
+        return self
+
+    def add_book_url(self, module_id, url_files):
+        """Add url-description-book files (weblocs) to an existing
+        book module's fetched_mods['book'][module_id]['files'].
+
+        Each url_file is a dict with:
+          - external_url: the external URL (e.g. 'https://ebookcentral.proquest.com/...')
+          - chapter_idx: which chapter this URL belongs to (0-based)
+          - filepath: chapter folder path
+        """
+        book_entry = self.fetched_mods.setdefault('book', {}).get(module_id, None)
+        if book_entry is None:
+            raise ValueError(f'Book module {module_id} not found. Call add_book first.')
+        for uf in url_files:
+            # The URL needs to go through _find_all_urls to be
+            # extracted as a separate file with module_modname=
+            # 'url-description-book'. _find_all_urls is only called
+            # for content_type in ('description', 'html'). We use
+            # 'description' with a small HTML containing the URL.
+            book_entry['files'].append({
+                'filename': uf.get('filename', 'reading link'),
+                'filepath': uf.get('filepath', f'/{uf.get("chapter_idx", 0) + 1}/'),
+                'fileurl': '',
+                'type': 'description',
+                'content_type': 'description',
+                'isexternalfile': True,
+                'mimetype': 'text/html',
+                'filesize': 0,
+                'timemodified': 1700000000,
+                'html': f'<p>See: <a href="{uf["external_url"]}">{uf["external_url"]}</a></p>',
+                'no_search_for_moodle_urls': True,
+                'description': f'<p>See: <a href="{uf["external_url"]}">{uf["external_url"]}</a></p>',
+            })
+        return self
+
+
     def build_sections(self):
         """Build the sections list in section_id order, mirroring
         the actual array returned by core_course_get_contents.
