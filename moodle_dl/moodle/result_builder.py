@@ -944,6 +944,7 @@ class ResultBuilder:
             if location['module_modname'] == 'resource' and content_filename:
                 # 从原始 API filename 中提取文件扩展名
                 original_filename = content.get('filename', '')
+                file_extension = ''
                 if original_filename and '.' in original_filename:
                     # 提取扩展名（例如 ".pdf"）
                     file_extension = '.' + original_filename.rsplit('.', 1)[-1]
@@ -952,8 +953,19 @@ class ResultBuilder:
                     mimetype = content.get('mimetype', '')
                     file_extension = self._get_extension_from_mimetype(mimetype) if mimetype else ''
 
-                # 使用网页显示的标题，并保留文件扩展名
-                content_filename = location['module_name'] + file_extension
+                # 🐛 FIX (2026-06-23, CS6): if module_name already ends
+                # with the file extension, don't append it again. Real
+                # case: Moodle's `module_name` for a resource can be
+                # set to a name that already includes the file extension
+                # (e.g. "pacman-cw1.zip"). The display name then becomes
+                # "pacman-cw1.zip" and the API filename is "cw1_pacman.zip".
+                # Without this check, content_filename would become
+                # "pacman-cw1.zip.zip" (double extension).
+                if file_extension and location['module_name'].lower().endswith(file_extension.lower()):
+                    content_filename = location['module_name']
+                else:
+                    # 使用网页显示的标题，并保留文件扩展名
+                    content_filename = location['module_name'] + file_extension
                 logging.debug(f'🔧 Resource module: using display name "{content_filename}" instead of API filename "{original_filename}"')
 
             content_description = content.get('description', '')
