@@ -278,13 +278,20 @@ class TaskFileOps:
             file._in_module_folder = False
             return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)
 
+        # Modname-based folder check: only modnames known to ALWAYS
+        # have attachments (book, folder, etc.) go here. Modules
+        # like ``page``, ``url``, ``label``, ``resource`` go in a
+        # folder ONLY if ``_module_has_attachments`` is True
+        # (checked above). This is the test3 fix: a singleton
+        # ``page`` module (only its own index.html) should be
+        # flattened, not in a single-file folder.
         if file.module_modname.endswith(
             (
                 'assign', 'book', 'data', 'folder', 'forum', 'lesson',
                 'page', 'quiz', 'resource', 'workshop',
             )
         ) or file.module_modname in (
-            'resource', 'page', 'url', 'label',
+            'url', 'label',
         ):
             # Module has attachments → keep module folder. Mark
             # file as "in module folder = True" so
@@ -313,6 +320,24 @@ class TaskFileOps:
             # ``*NN*`` prefix (using the sanitized module name only),
             # then concat the prefix AFTER path construction so the
             # prefix stays as ASCII ``*``.
+            #
+            # BUG FIX (2026-06-24, test3): previously we ALSO
+            # unconditionally put ``resource``, ``page``, ``url``,
+            # and ``label`` modnames in a module folder, regardless
+            # of whether the module had real attachments. This was
+            # wrong for singleton modules (e.g. a ``page`` module
+            # whose only file is its own index.html, or a ``label``
+            # module whose only file is its description HTML) —
+            # they ended up in single-file folders like
+            # ``*01* 2. Week Overview/index.html`` instead of being
+            # flattened to ``*01* 2. Week Overview.html`` in the
+            # section dir. The fix: let ``_module_has_attachments``
+            # (checked at the top of this method) be the sole
+            # decider. A module with no attachments goes flat;
+            # a module with attachments (resource_file, label_file,
+            # cookie_mod, etc.) goes in a folder. The duplicate
+            # ``'resource', 'page', 'url', 'label'`` entry in the
+            # tuple was removed.
             sanitized_module_name = self._sanitized_module_folder_name(file)
             base_path = PT.path_of_file_in_module(
                 storage_path, course_name, file.section_name,
