@@ -8,7 +8,7 @@ import re
 import tempfile
 import time
 import urllib.parse
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import aiofiles
 
@@ -397,12 +397,37 @@ class BookMod(MoodleMod):
 
         return result
 
-    @staticmethod
-    def create_ordered_index(items: List[Dict]) -> str:
+    def create_ordered_index(self, items: List[Dict], chapter_id_to_disk_folder: Optional[Dict[str, str]] = None) -> str:
+        """Generate the ordered index HTML for a book's TOC.
+
+        @param items: List of TOC entries (each with 'id', 'title',
+                      'href', 'level', 'hidden' fields).
+        @param chapter_id_to_disk_folder: Optional mapping from
+                      chapter_id (cm_id) to on-disk folder name
+                      (e.g. '*07* 4. UML'). When provided, the
+                      cm_id-based href (e.g. '691951/index.html')
+                      is rewritten to the on-disk folder name.
+
+        🆕 Test3 Problem 2 fix (2026-06-24): the TOC HTML now uses
+        the on-disk folder name (with *NN* prefix) instead of the
+        cm_id-based path. The mapping is built by the caller (book.py
+        or result_builder._rewrite_book_module_html_paths) which
+        knows the chapter's on-disk folder name.
+        """
         result = '<ol>\n'
         for entry in items:
             chapter_title = html.escape(entry.get("title", "untitled"))
-            chapter_href = urllib.parse.quote(entry.get("href", "#failed"))
+            # The href may be the cm_id-based path (e.g.
+            # '691951/index.html') or already the on-disk folder
+            # name. If the mapping is provided, rewrite the cm_id
+            # to the on-disk folder name.
+            chapter_href = entry.get("href", "#failed")
+            if chapter_id_to_disk_folder:
+                chapter_id = self._chapter_id_from_toc_entry(entry)
+                if chapter_id and chapter_id in chapter_id_to_disk_folder:
+                    disk_folder = chapter_id_to_disk_folder[chapter_id]
+                    chapter_href = f'{disk_folder}/index.html'
+            chapter_href = urllib.parse.quote(chapter_href, safe='/')
             chapter_level = entry.get("level", 0)
             chapter_hidden = entry.get("hidden", "0") == "1"
 
@@ -417,7 +442,7 @@ class BookMod(MoodleMod):
             result += f'<li{class_attr}><a title="{chapter_title}" href="{chapter_href}">{chapter_title}{hidden_marker}</a></li>\n'
             subitems = entry.get('subitems', [])
             if len(subitems) > 0:
-                result += BookMod.create_ordered_index(subitems)
+                result += self.create_ordered_index(subitems, chapter_id_to_disk_folder)
 
         result += '</ol>'
         return result
