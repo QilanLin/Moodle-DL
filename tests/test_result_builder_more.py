@@ -14,6 +14,90 @@ def make_builder(version=2024010100):
     )
 
 
+
+
+class TestResourceModuleFilenameDoubleExtensionRegression:
+    """User bug (2026-06-23, CS6): module_name "pacman-cw1.zip" combined with
+    API filename "cw1_pacman.zip" produced filename "pacman-cw1.zip.zip"
+    (double extension).
+
+    Root cause: result_builder.py line 949 was unconditionally appending
+    the API filename's extension to module_name, even when module_name
+    already ended with that extension.
+
+    Fix: skip the append if module_name already ends with the file extension.
+    """
+
+    def test_module_name_already_ends_with_extension_no_double_ext(self):
+        """When module_name = 'pacman-cw1.zip' and API filename ends
+        with '.zip', the resulting content_filename should be
+        'pacman-cw1.zip' (NOT 'pacman-cw1.zip.zip').
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import MoodleURL
+
+        rb = ResultBuilder(
+            moodle_url=MoodleURL(use_http=False, domain='example.com', path=''),
+            version=2024100712, token='', mod_plurals={},
+        )
+        # Simulate _handle_files input
+        contents = [{
+            'type': 'file',
+            'filename': 'cw1_pacman.zip',
+            'filepath': '/',
+            'fileurl': 'https://example.com/cw1_pacman.zip',
+            'mimetype': 'application/zip',
+            'filesize': 1024,
+            'timemodified': 1700000000,
+        }]
+        location = {
+            'section_id': 1,
+            'section_name': 'Coursework',
+            'module_id': 9160823,
+            'module_name': 'pacman-cw1.zip',  # Already has .zip
+            'module_modname': 'resource',
+        }
+        files = rb._handle_files(contents, **location)
+        # The content_filename should be 'pacman-cw1.zip' (no double ext)
+        assert files[0].content_filename == 'pacman-cw1.zip', (
+            f'Module name with .zip extension should not get .zip appended. '
+            f'Got: {files[0].content_filename!r}'
+        )
+
+    def test_module_name_without_extension_gets_ext_appended(self):
+        """When module_name = 'Coursework 2 FAQ' and API filename is
+        'cw2-FAQ.pdf', the resulting content_filename should be
+        'Coursework 2 FAQ.pdf' (extension IS appended).
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import MoodleURL
+
+        rb = ResultBuilder(
+            moodle_url=MoodleURL(use_http=False, domain='example.com', path=''),
+            version=2024100712, token='', mod_plurals={},
+        )
+        contents = [{
+            'type': 'file',
+            'filename': 'cw2-FAQ.pdf',
+            'filepath': '/',
+            'fileurl': 'https://example.com/cw2-FAQ.pdf',
+            'mimetype': 'application/pdf',
+            'filesize': 1024,
+            'timemodified': 1700000000,
+        }]
+        location = {
+            'section_id': 1,
+            'section_name': 'Coursework',
+            'module_id': 9160829,
+            'module_name': 'Coursework 2 FAQ',  # No extension
+            'module_modname': 'resource',
+        }
+        files = rb._handle_files(contents, **location)
+        assert files[0].content_filename == 'Coursework 2 FAQ.pdf', (
+            f'Module name without extension should get .pdf appended. '
+            f'Got: {files[0].content_filename!r}'
+        )
+
 def make_location(**overrides):
     location = {
         'section_id': 1,
