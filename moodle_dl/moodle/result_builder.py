@@ -5,7 +5,7 @@ import logging
 import mimetypes
 import re
 import urllib.parse as urlparse
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from moodle_dl.downloader.kaltura_patterns import (
     CONTENT_TYPE_KALVIDRES_EMBEDDED,
@@ -158,6 +158,35 @@ class ResultBuilder:
         # input order (matching server fetch order).
         ordered_non_book_keys = []
 
+        # First pass: identify all book modules by (section_id, module_id).
+        # Book chapter sub-files (cookie_mod-kalvidres, url-description-book,
+        # url-description-label, etc.) share the book's module_id, so they
+        # must use the book's per-book counter — otherwise they get a
+        # different position and end up in separate *NN* folders.
+        # See commit history (test3 Problem 4) and the 3 official moodle
+        # repos all confirm this contract:
+        #   - PHP core: mod/book/lib.php:573, 593 (all chapter sub-files
+        #     share the chapter's filepath, which is the chapter id)
+        #   - Mobile app: src/addons/mod/book/services/book.ts:110-157
+        #     (getContentsMap() groups files by chapter id via /\d+/ regex)
+        #   - devdocs: core_course_get_contents content type contract
+        #     (sub-files are nested under the parent module's cm_id)
+        book_module_ids_by_section: Dict[Any, set] = {}
+        for file in files:
+            if getattr(file, 'module_modname', '') == 'book':
+                section_id = getattr(file, 'section_id', None)
+                module_id = getattr(file, 'module_id', None)
+                if section_id is not None and module_id is not None:
+                    book_module_ids_by_section.setdefault(section_id, set()).add(module_id)
+
+        # Book sub-file position cache: (section_id, module_id, content_filepath)
+        # → position. Files in the same chapter (same content_filepath) of a
+        # book module share a position. This is the test3 Problem 4 fix:
+        # the kaltura video and the chapter's index.html have the same
+        # content_filepath (e.g. "/2. Week Overview/"), so they should
+        # end up in the same folder.
+        book_subfile_position: Dict[Any, int] = {}
+
         for file in files:
             filename = file.content_filename.lower()
             if self._is_system_file(filename):
@@ -166,27 +195,73 @@ class ResultBuilder:
 
             section_id = getattr(file, 'section_id', None)
             modname = getattr(file, 'module_modname', '')
+            module_id = getattr(file, 'module_id', None)
+            content_filepath = getattr(file, 'content_filepath', '/') or '/'
 
             if modname == 'book':
                 # Book: per-book scope (so chapter content + chapter
                 # images share the same book counter).
-                book_module_id = getattr(file, 'module_id', None)
+                book_module_id = module_id
                 # The book module's content_filepath carries the
-                # chapter identity — but we want one counter PER BOOK,
-                # not per chapter. So we use (section_id, book_module_id).
-                # However, for cross-book section ordering, books
-                # also need their own counter that advances when a
-                # new book is encountered. For now, keep the existing
-                # book_scope behavior: each book has its own counter.
-                book_key = (section_id, book_module_id)
-                if book_key not in book_position_by_book:
-                    book_position_by_book[book_key] = 0
-                pos = book_position_by_book[book_key]
-                file.position_in_section = pos
-                book_position_by_book[book_key] = pos + 1
+                # chapter identity. All files in the same chapter
+                # (same content_filepath) share a position, so the
+                # chapter's index.html, kaltura video, and webloc
+                # all end up in the same on-disk folder.
+                # (Test3 Problem 4 fix, 2026-06-24.)
+                sub_key = (section_id, module_id, content_filepath)
+                if sub_key in book_subfile_position:
+                    # Same chapter as a previously-seen book file:
+                    # share the position.
+                    file.position_in_section = book_subfile_position[sub_key]
+                else:
+                    # New chapter within this book: assign the next
+                    # position from the book's per-book counter.
+                    book_key = (section_id, book_module_id)
+                    if book_key not in book_position_by_book:
+                        book_position_by_book[book_key] = 0
+                    pos = book_position_by_book[book_key]
+                    file.position_in_section = pos
+                    book_position_by_book[book_key] = pos + 1
+                    book_subfile_position[sub_key] = pos
+            elif (
+                section_id in book_module_ids_by_section
+                and module_id in book_module_ids_by_section.get(section_id, set())
+            ):
+                # 🆕 Test3 Problem 4 fix (2026-06-24): cookie_mod-kalvidres
+                # and url-description-book sub-files of a book chapter share
+                # the book's module_id. They should use the book's per-book
+                # counter, NOT the section-wide non-book counter.
+                #
+                # Furthermore, files in the same chapter (same content_filepath)
+                # share a position. This is the test3 Problem 4 fix:
+                # the kaltura video and the chapter's index.html have the
+                # same content_filepath (e.g. "/2. Week Overview/"), so they
+                # should end up in the same folder.
+                #
+                # This matches the contract from the 3 official moodle repos:
+                #   - PHP core: book chapter sub-files share the chapter's
+                #     filepath (mod/book/lib.php:573, 593)
+                #   - Mobile app: getContentsMap() groups files by chapter
+                #     id via /\d+/ regex on filepath
+                #   - devdocs: sub-files are nested under the parent
+                #     module's cm_id
+                sub_key = (section_id, module_id, content_filepath)
+                if sub_key in book_subfile_position:
+                    # Same chapter as a previously-seen book file:
+                    # share the position.
+                    file.position_in_section = book_subfile_position[sub_key]
+                else:
+                    # New chapter within this book: get the next book
+                    # position.
+                    book_key = (section_id, module_id)
+                    if book_key not in book_position_by_book:
+                        book_position_by_book[book_key] = 0
+                    pos = book_position_by_book[book_key]
+                    file.position_in_section = pos
+                    book_position_by_book[book_key] = pos + 1
+                    book_subfile_position[sub_key] = pos
             else:
                 # Non-book: each module gets one slot.
-                module_id = getattr(file, 'module_id', None)
                 key = (section_id, module_id)
                 if key not in non_book_position_by_module:
                     # New (section_id, module_id) → assign next slot
