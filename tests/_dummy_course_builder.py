@@ -430,6 +430,12 @@ class DummyCourseBuilder:
         return self
 
 
+    def build(self):
+        """Convenience helper: returns (sections, fetched_mods)
+        tuple, ready for run_pipeline.
+        """
+        return self.build_sections(), self.build_fetched_mods()
+
     def build_sections(self):
         """Build the sections list in section_id order, mirroring
         the actual array returned by core_course_get_contents.
