@@ -1127,3 +1127,192 @@ class TestE2EResourceModuleManyFilesBugPinned:
             f'Got: {len(unique)} unique: {sorted(unique)[:5]}...\n'
             f'This is the fix for test3 Problem 5.'
         )
+
+
+# =========================================================================
+# Test3 4MBBS101 E2E: the full "Practical Sessions" scenario
+# =========================================================================
+class TestE2E4MBBS101PracticalSessionsScenario:
+    """E2E test for the EXACT scenario user described in
+    /Volumes/Untitled/test3/4MBBS101/Practical Sessions Parts 1, 2 and 3.
+
+    User report (2026-06-24):
+    "the duplicate folder problem ... affect the interactive learning
+    resources of the 4mbbs101 course ... where each pictures and even
+    javascript file has a dedicated folder with number index, which is
+    ridiculous and the CSS doesn't render neither"
+
+    This test simulates the full scenario:
+    - 1 resource module (module_id=4600243)
+    - 200+ files in different sub-folders (scripts/, images/, assets/css/, etc.)
+    - 1 main HTML file that references CSS via relative path
+    - Verify that AFTER the fix, the on-disk layout is:
+      1. ONE module folder (not 200 separate *NN* folders)
+      2. The CSS file is in the SAME folder as the HTML
+      3. The HTML's relative CSS reference resolves to a real file
+    """
+
+    def test_4mbbs101_practical_sessions_one_module_folder(self):
+        """E2E: the 4MBBS101 resource module has 1 module folder,
+        not 200 separate *NN* folders.
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import Course, File
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import MoodleURL
+        from unittest.mock import MagicMock
+
+        # Build the test3 case: 200 files in 6 different sub-folders
+        # (mimicking the real test3 case which had 192 *NN* folders)
+        sub_folders = ['/', '/scripts/', '/images/', '/teal/', '/toread/', '/assets/css/']
+        module_id = 4600243
+        section_id = 1325357
+
+        files = []
+        for i in range(200):
+            f = File(
+                module_id=module_id,
+                section_id=section_id,
+                section_name='Practical Sessions',
+                module_name='Interactive Virtual Practical Sessions 1, 2, 3 - Use of PCR to genotype individuals',
+                module_modname='resource',
+                content_filepath=sub_folders[i % 6],
+                content_filename=f'file_{i}.html',
+                content_fileurl=f'https://example.com/f_{i}',
+                content_type='file',
+                content_isexternalfile=False,
+                content_filesize=1024,
+                content_timemodified=1700000000,
+            )
+            files.append(f)
+
+        # Run position assignment (the core fix from caccea4)
+        rb = ResultBuilder.__new__(ResultBuilder)
+        rb.moodle_url = MoodleURL(use_http=False, domain='example.com', path='')
+        rb.version = 2024100712
+        rb.token = 'testtoken'
+        rb.mod_plurals = {}
+        rb._assign_positions_to_files(files)
+
+        # After fix: all 200 files share 1 position
+        positions = [f.position_in_section for f in files]
+        unique = set(positions)
+        assert len(unique) == 1, (
+            f'After fix: all 200 files in the resource module should share 1 position.\n'
+            f'Got {len(unique)} unique positions: {sorted(unique)[:5]}...\n'
+            f'This is the test3 4MBBS101 bug: 200 files → 192 separate *NN* folders.'
+        )
+
+    def test_4mbbs101_html_can_find_css_via_relative_path(self):
+        """E2E: the index.html in the resource module references CSS
+        via relative path. After fix, the CSS file is in the same
+        module folder, so the relative reference resolves.
+
+        User report: "the CSS doesn't render neither"
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import Course, File
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import MoodleURL
+        from unittest.mock import MagicMock
+
+        # Simulate the test3 case: index.html and main.css
+        # (referenced as 'assets/css/main.css' from index.html)
+        module_id = 4600243
+        section_id = 1325357
+
+        index_html = File(
+            module_id=module_id,
+            section_id=section_id,
+            section_name='Practical Sessions',
+            module_name='Interactive Virtual Practical Sessions 1, 2, 3 - Use of PCR to genotype individuals',
+            module_modname='resource',
+            content_filepath='/',
+            content_filename='index.html',
+            content_fileurl='https://example.com/index.html',
+            content_type='file',
+            content_isexternalfile=False,
+            content_filesize=1024,
+            content_timemodified=1700000000,
+        )
+        main_css = File(
+            module_id=module_id,
+            section_id=section_id,
+            section_name='Practical Sessions',
+            module_name='Interactive Virtual Practical Sessions 1, 2, 3 - Use of PCR to genotype individuals',
+            module_modname='resource',
+            content_filepath='/assets/css/',
+            content_filename='main.css',
+            content_fileurl='https://example.com/assets/css/main.css',
+            content_type='file',
+            content_isexternalfile=False,
+            content_filesize=51289,
+            content_timemodified=1706696861,
+        )
+
+        files = [index_html, main_css]
+
+        # Run position assignment
+        rb = ResultBuilder.__new__(ResultBuilder)
+        rb.moodle_url = MoodleURL(use_http=False, domain='example.com', path='')
+        rb.version = 2024100712
+        rb.token = 'testtoken'
+        rb.mod_plurals = {}
+        rb._assign_positions_to_files(files)
+
+        # After fix: both files have the same position
+        positions = [f.position_in_section for f in files]
+        unique = set(positions)
+        assert len(unique) == 1, (
+            f'After fix: index.html and main.css should share a position.\n'
+            f'Got: {unique}.\n'
+            f'With the bug, they get different positions and end up in '
+            f'separate folders, so the relative CSS reference in index.html '
+            f'(href="assets/css/main.css") won\'t resolve.'
+        )
+
+        # Verify they end up in the same on-disk folder
+        course = Course(_id=1, fullname='Test Course')
+        ops = TaskFileOps(MagicMock())
+
+        paths = []
+        for f in files:
+            setattr(f, '_module_has_attachments', True)
+            setattr(f, '_in_module_folder', True)
+            path = ops.gen_path('/storage', course, f)
+            paths.append(path)
+
+        from pathlib import PurePosixPath
+
+        # Extract proper directories (not file paths)
+        index_path = PurePosixPath(paths[0])
+        css_path = PurePosixPath(paths[1])
+        index_dir = str(index_path.parent)
+        css_dir = str(css_path.parent)
+
+        # The current code adds *01* to the LAST segment of the path,
+        # which is `css` for main.css (not the module folder).
+        # This produces a folder name like 'assets/*01* css' which
+        # is wrong — the prefix should be on the MODULE folder.
+        #
+        # This is a separate bug discovered while writing this test.
+        # The current behavior produces:
+        #   - index.html → /storage/course/section/*01* module_name/
+        #   - main.css   → /storage/course/section/module_name/assets/*01* css/
+        # These are NOT in the same folder, AND the CSS folder has a
+        # weird name. The fix should add the *01* prefix to the
+        # MODULE folder, not to the last segment.
+        print(f'index.html dir: {index_dir}')
+        print(f'main.css dir:   {css_dir}')
+
+        # The CSS dir SHOULD be inside the index.html dir
+        # (e.g. /storage/.../module_name/assets/css/), so that
+        # the relative href "assets/css/main.css" in index.html resolves.
+        assert css_dir.startswith(index_dir), (
+            f'Test3 Problem 5: main.css should be in a SUBFOLDER of '
+            f'index.html\'s folder (so the relative href "assets/css/main.css" '
+            f'resolves).\n'
+            f'index.html dir: {index_dir}\n'
+            f'main.css dir:   {css_dir}\n'
+            f'User report (2026-06-24): "the CSS doesn\'t render neither".'
+        )

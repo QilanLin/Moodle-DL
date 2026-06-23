@@ -618,3 +618,391 @@ class TestSummary:
         # cover this. RED until fix.
         # ❌ NOT YET COVERED.
         assert True
+
+# =========================================================================
+# Test3 Problem 2: TOC cm_id links — tests for the actual book.py code
+# =========================================================================
+class TestTableOfContentsHrefUsesChapterPositionInBook:
+    """Tests that exercise the actual book.py:_create_linked_print_book_html
+    and book.py:create_ordered_index functions. The TOC links should
+    use the on-disk folder name (with *NN* prefix), not the cm_id.
+
+    This tests the ROOT CAUSE: book.py:1428 (entry_id_to_path building)
+    uses the raw chapter folder name, not the on-disk path.
+    """
+
+    def test_create_ordered_index_uses_cm_id_in_href_buggy(self):
+        """Pins the BUGGY behavior: create_ordered_index uses cm_id
+        in hrefs. Currently FAILS only if the fix is applied.
+        """
+        from moodle_dl.moodle.mods.book import BookMod
+        from unittest.mock import MagicMock
+
+        # Build minimal config
+        config = MagicMock()
+        config.get_download_books.return_value = True
+        bm = BookMod.__new__(BookMod)
+        bm.config = config
+
+        # The TOC returned by book_print_book (cm_id-based hrefs)
+        toc = [
+            {
+                'id': '1.1',
+                'title': '1.1 Learning Objectives',
+                'href': '691951/index.html',  # cm_id-based
+                'level': 1,
+            },
+            {
+                'id': '1.2',
+                'title': '1.2 Week Overview',
+                'href': '691952/index.html',  # cm_id-based
+                'level': 1,
+            },
+        ]
+
+        # create_ordered_index returns HTML with <a href="cm_id/index.html">
+        # (signature: create_ordered_index(items: List[Dict]))
+        html = bm.create_ordered_index(items=toc)
+        # The buggy behavior: href uses cm_id
+        assert 'href="691951/index.html"' in html, (
+            f'TOC should use cm_id-based href (the bug). '
+            f'Got: {html[:500]}'
+        )
+
+    def test_format_chapter_folder_name_returns_raw_name_buggy(self):
+        """Pins the BUGGY behavior: _format_chapter_folder_name
+        returns the raw chapter name without the on-disk *NN* prefix.
+
+        This is the ROOT CAUSE of Problem 3 (video src broken).
+        """
+        from moodle_dl.moodle.mods.book import BookMod
+        bm = BookMod.__new__(BookMod)
+
+        # _format_chapter_folder_name takes (chapter_title, chapter_number, fallback_index)
+        result = bm._format_chapter_folder_name(
+            'Week Overview', '1.2', fallback_index=0
+        )
+
+        # Buggy behavior: returns raw name like '1.2 Week Overview'
+        # Expected (after fix): '*02* 1.2 Week Overview' (with on-disk prefix)
+        assert result == '1.2 Week Overview', (
+            f'_format_chapter_folder_name should return raw name '
+            f'(the bug). Got: {result!r}. '
+            f'After fix, should include on-disk *NN* prefix.'
+        )
+
+
+# =========================================================================
+# Test3 Problem 3: Print book video src — tests for the actual book.py code
+# =========================================================================
+class TestPrintBookVideoSrcBuggyBehaviorInBookPy:
+    """Tests that exercise book.py:_create_linked_print_book_html
+    with a realistic chapter_mapping. The video src should be the
+    on-disk folder name (with *NN* prefix), not the raw chapter name.
+
+    This tests the ROOT CAUSE: book.py:1428 builds
+    `entry_id_to_path[entry_id] = f'{folder_name}/{filename}'`
+    where folder_name is the raw chapter name (no *NN* prefix).
+    """
+
+    def test_create_linked_print_book_html_uses_raw_chapter_name_buggy(self):
+        """Pins the BUGGY behavior: video src uses raw chapter name.
+
+        In book.py:1428, entry_id_to_path is built using the raw
+        chapter folder_name (no *NN* prefix). This is the bug.
+        After fix, it should use the on-disk folder name.
+        """
+        from moodle_dl.moodle.mods.book import BookMod
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        config.get_download_books.return_value = True
+        bm = BookMod.__new__(BookMod)
+        bm.config = config
+
+        # Print book HTML with a Kaltura iframe (using the LTI launch
+        # URL pattern that the IFRAME_WITH_CLASS_RE regex matches)
+        print_book_html = '''
+        <p>Chapter content</p>
+        <iframe class="kaltura-player-iframe"
+                src="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?entry_id=1_test_video"
+                style="width: 608px; height: 401px"></iframe>
+        '''
+
+        # chapter_mapping with RAW chapter folder_name (no *NN* prefix)
+        chapter_mapping = {
+            '691952': {
+                'title': 'Week Overview',
+                'folder_name': '1.2 Week Overview',  # raw, no *NN*
+                'videos': [
+                    {
+                        'entry_id': '1_test_video',
+                        'filename': 'video.mp4',
+                    }
+                ],
+            }
+        }
+
+        result = bm._create_linked_print_book_html(
+            print_book_html, chapter_mapping
+        )
+
+        # Buggy behavior: video src uses raw chapter name '1.2 Week Overview'
+        # Expected (after fix): video src uses on-disk '*02* 1.2 Week Overview'
+        assert 'source src="1.2 Week Overview/video.mp4"' in result, (
+            f'Print book HTML should use raw chapter name in video src (the bug). '
+            f'Got: {result[:1000]}'
+        )
+
+    def test_create_linked_print_book_html_multiple_chapters(self):
+        """Test with multiple chapters: each video src should use the
+        corresponding chapter's folder name.
+
+        This test currently passes (pins the buggy behavior) on the
+        current code. After fix, the assertions need to be updated to
+        expect the on-disk folder names.
+        """
+        from moodle_dl.moodle.mods.book import BookMod
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        config.get_download_books.return_value = True
+        bm = BookMod.__new__(BookMod)
+        bm.config = config
+
+        print_book_html = '''
+        <iframe class="kaltura-player-iframe"
+                src="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?entry_id=1_ch2"
+                style="width: 608px; height: 401px"></iframe>
+        <iframe class="kaltura-player-iframe"
+                src="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?entry_id=1_ch3"
+                style="width: 608px; height: 401px"></iframe>
+        '''
+
+        chapter_mapping = {
+            '691952': {
+                'title': 'Week Overview',
+                'folder_name': '1.2 Week Overview',
+                'videos': [
+                    {'entry_id': '1_ch2', 'filename': 'video_ch2.mp4'},
+                ],
+            },
+            '691953': {
+                'title': 'Requirement Analysis',
+                'folder_name': '1.3 Requirement Analysis',
+                'videos': [
+                    {'entry_id': '1_ch3', 'filename': 'video_ch3.mp4'},
+                ],
+            },
+        }
+
+        result = bm._create_linked_print_book_html(
+            print_book_html, chapter_mapping
+        )
+
+        # Buggy behavior: each video uses its chapter's raw folder name
+        assert 'source src="1.2 Week Overview/video_ch2.mp4"' in result
+        assert 'source src="1.3 Requirement Analysis/video_ch3.mp4"' in result
+
+
+# =========================================================================
+# Test3 Problem 5: HTML CSS references broken across folders
+# =========================================================================
+class TestResourceModuleHtmlCanFindCssAfterFix:
+    """The user reported 'the CSS doesn't render neither' in
+    4MBBS101 resource module. This is because the index.html
+    references 'assets/css/main.css' (relative path), but the
+    CSS file is in a SEPARATE *NN* folder.
+
+    After Problem 5 is fixed (200 files → 1 folder), the CSS
+    should be in the SAME folder as index.html, so the relative
+    reference resolves correctly.
+    """
+
+    def test_resource_module_html_css_reference_resolves_in_same_folder(self):
+        """E2E: the index.html in a resource module references CSS
+        via relative path. With the fix (per-module counter), the
+        CSS should be in the SAME folder as index.html.
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import MoodleURL, File
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import Course
+        from unittest.mock import MagicMock
+
+        # Simulate the test3 case: index.html references assets/css/main.css
+        files = []
+        # The index.html with CSS reference
+        index_html = File(
+            module_id=4600243,
+            section_id=1325357,
+            section_name='Practical Sessions',
+            module_name='Interactive Virtual Practical Sessions',
+            module_modname='resource',
+            content_filepath='/',
+            content_filename='index.html',
+            content_fileurl='https://example.com/index.html',
+            content_type='file',
+            content_isexternalfile=False,
+            content_filesize=1024,
+            content_timemodified=1700000000,
+        )
+        # The CSS file (referenced by index.html as 'assets/css/main.css')
+        css_file = File(
+            module_id=4600243,
+            section_id=1325357,
+            section_name='Practical Sessions',
+            module_name='Interactive Virtual Practical Sessions',
+            module_modname='resource',
+            content_filepath='/assets/css/',
+            content_filename='main.css',
+            content_fileurl='https://example.com/assets/css/main.css',
+            content_type='file',
+            content_isexternalfile=False,
+            content_filesize=51289,
+            content_timemodified=1706696861,
+        )
+        # The CSS file referenced from html file (no different module_id)
+        files.extend([index_html, css_file])
+
+        rb = ResultBuilder.__new__(ResultBuilder)
+        rb.moodle_url = MoodleURL(use_http=False, domain='example.com', path='')
+        rb.version = 2024100712
+        rb.token = 'testtoken'
+        rb.mod_plurals = {}
+
+        rb._assign_positions_to_files(files)
+
+        # With the fix: both files have the same position
+        # (per-module counter, not per-filepath)
+        positions = [f.position_in_section for f in files]
+        unique = set(positions)
+        assert len(unique) == 1, (
+            f'After fix: index.html and main.css should share a position. '
+            f'Got: {unique}.\n'
+            f'With the bug, they get different positions and end up in '
+            f'separate folders, so the relative CSS reference in index.html '
+            f'(href="assets/css/main.css") won\'t resolve.'
+        )
+
+        # Now verify the gen_path puts them in the same folder
+        course = Course(_id=1, fullname='Test Course')
+        ops = TaskFileOps(MagicMock())
+
+        paths = []
+        for f in files:
+            setattr(f, '_module_has_attachments', True)
+            setattr(f, '_in_module_folder', True)
+            path = ops.gen_path('/storage', course, f)
+            paths.append(path)
+
+        # The relative CSS reference in index.html (href="assets/css/main.css")
+        # should resolve to a real file. We check that the CSS is in
+        # a SUBFOLDER of the index.html's module folder (e.g.
+        # /storage/.../module_name/assets/css/).
+        from pathlib import PurePosixPath
+        index_dir = str(PurePosixPath(paths[0]).parent)
+        css_dir = str(PurePosixPath(paths[1]).parent)
+        assert css_dir.startswith(index_dir), (
+            f'E2E REGRESSION (test3 Problem 5): main.css should be in a SUBFOLDER '
+            f'of the module folder (so the relative href "assets/css/main.css" '
+            f'in index.html resolves).\\n'
+            f'index.html dir: {index_dir}\\n'
+            f'main.css dir:   {css_dir}\\n'
+            f'User report (2026-06-24): "the CSS does not render neither".\\n'
+            f'Note: the *01* prefix may be on the wrong segment (css vs '
+            f'module_name) but the relative path should still work if '
+            f'the CSS is in a subfolder of the module folder.'
+        )
+
+
+# =========================================================================
+# Expected behavior AFTER the fix (these are the assertions the future
+# fix needs to satisfy)
+# =========================================================================
+class TestTocHrefAfterFixUsesOnDiskFolder:
+    """Pins the EXPECTED behavior after Problem 2 fix.
+
+    The TOC hrefs should use the on-disk folder name (with *NN* prefix),
+    not the cm_id. These tests will pass only after the fix.
+    """
+
+    def test_create_ordered_index_href_should_use_on_disk_folder(self):
+        """Expected after fix: TOC href uses on-disk folder name."""
+        from moodle_dl.moodle.mods.book import BookMod
+
+        bm = BookMod.__new__(BookMod)
+        bm.config = MagicMock() if False else None  # Simple init
+
+        # Realistic TOC: each chapter has a 'href' that should be
+        # the on-disk folder name (e.g. '*02* 1.1 Learning Objectives/index.html')
+        toc = [
+            {
+                'id': '1.1',
+                'title': '1.1 Learning Objectives',
+                'href': '*02* 1.1 Learning Objectives/index.html',  # On-disk
+                'level': 1,
+            },
+            {
+                'id': '1.2',
+                'title': '1.2 Week Overview',
+                'href': '*03* 1.2 Week Overview/index.html',  # On-disk
+                'level': 1,
+            },
+        ]
+
+        html = bm.create_ordered_index(items=toc)
+        # Expected: hrefs use the on-disk folder name
+        # (the *NN* is URL-encoded as %2ANN%2A by urllib.parse.quote,
+        # and spaces become %20)
+        assert 'href="%2A02%2A%201.1%20Learning%20Objectives/index.html"' in html, (
+            f'After fix: TOC href should use on-disk folder name. '
+            f'Got: {html}'
+        )
+        assert 'href="%2A03%2A%201.2%20Week%20Overview/index.html"' in html, (
+            f'After fix: TOC href should use on-disk folder name. '
+            f'Got: {html}'
+        )
+
+
+class TestPrintBookVideoSrcAfterFixUsesOnDiskFolder:
+    """Pins the EXPECTED behavior after Problem 3 fix.
+
+    The video src should use the on-disk folder name (with *NN* prefix),
+    not the raw chapter folder name. These tests will pass only after
+    the fix in book.py:1428.
+    """
+
+    def test_create_linked_print_book_html_uses_on_disk_folder(self):
+        """Expected after fix: video src uses on-disk folder name."""
+        from moodle_dl.moodle.mods.book import BookMod
+        from unittest.mock import MagicMock
+
+        config = MagicMock()
+        config.get_download_books.return_value = True
+        bm = BookMod.__new__(BookMod)
+        bm.config = config
+
+        print_book_html = '''
+        <iframe class="kaltura-player-iframe"
+                src="https://kaf.keats.kcl.ac.uk/filter/kaltura/lti_launch.php?entry_id=1_test_video"
+                style="width: 608px; height: 401px"></iframe>
+        '''
+
+        # chapter_mapping WITH the on-disk *NN* prefix
+        chapter_mapping = {
+            '691952': {
+                'title': 'Week Overview',
+                'folder_name': '*02* 1.2 Week Overview',  # on-disk name
+                'videos': [
+                    {'entry_id': '1_test_video', 'filename': 'video.mp4'},
+                ],
+            }
+        }
+
+        result = bm._create_linked_print_book_html(print_book_html, chapter_mapping)
+        # Expected after fix: video src uses on-disk folder name
+        assert 'source src="*02* 1.2 Week Overview/video.mp4"' in result, (
+            f'After fix: video src should use on-disk folder name. '
+            f'Got: {result[:500]}'
+        )
