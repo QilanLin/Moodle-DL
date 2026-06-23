@@ -179,6 +179,33 @@ class DummyCourseBuilder:
         }
         return self
 
+    def add_section_files(self, section_id, module_id, modname,
+                          module_name, files):
+        """Add a module with multiple files (general-purpose).
+
+        Each file is a dict that becomes a file in
+        fetched_mods[modname][module_id]['files']. The module
+        is added to the section with the given modname.
+
+        Use this for resource modules with many files, where
+        add_resource is too limited (only one file).
+        """
+        self._get_section(section_id)['modules'].append({
+            'id': module_id,
+            'name': module_name,
+            'modname': modname,
+            'description': '',
+            'contents': [],
+            'url': '',
+        })
+        self.fetched_mods.setdefault(modname, {})[module_id] = {
+            'id': module_id,
+            'course': self.course_id,
+            'name': module_name,
+            'files': files,
+        }
+        return self
+
     def add_url(self, section_id, module_id, name, external_url,
                 description=None, introfile_urls=None):
         """Add a URL module (single external URL).

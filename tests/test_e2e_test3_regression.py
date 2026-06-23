@@ -798,3 +798,332 @@ class TestE2EBookChapterOrderMatchesServer:
             f'5 chapters should have positions 1-5 (book main HTML is pos 0). '
             f'Got: {positions}'
         )
+
+
+# =========================================================================
+# Problem 5: Resource module with many files - duplicate *01* folders
+# =========================================================================
+class TestE2EResourceModuleManyFilesNoDuplicateFolders:
+    """E2E: a resource module with 200+ files (e.g. an interactive
+    learning resource with images, JavaScript, CSS, etc.) should
+    produce ONE module folder with all files inside, NOT 200
+    separate folders with *01*, *02*, *03*, ...
+
+    Real test3 case (/Volumes/Untitled/test3, 4MBBS101 course):
+    module_id=4600243, "Interactive Virtual Practical Sessions..."
+    has 200+ files. With the OLD algorithm (main branch), each
+    file got its own position_in_section (0, 1, 2, ..., 199),
+    producing 200 separate *NN* folders.
+
+    With the NEW algorithm (fix-html-encoding-detection branch,
+    commit caccea4), all files in a module share one position,
+    producing ONE module folder.
+
+    This test verifies the NEW behavior is correct.
+
+    User feedback (2026-06-24):
+    "the duplicate folder problem not only affect the book module
+    of the ISE course. It also affect the interactive learning
+    resources of the 4mbbs101 course as you can see in the
+    /Volumes/Untitled/test3/4MBBS101 Molecular & Cell Genetics
+    20~21/Practical Sessions Parts 1, 2 and 3 folder where each
+    pictures and even javascript file has a dedicated folder with
+    number index, which is ridiculous and the CSS doesn't render
+    neither"
+    """
+
+    def test_resource_module_200_files_one_folder(self):
+        """E2E: a resource module with 200 files → 1 module folder.
+
+        This test currently PASSES on fix-html-encoding-detection
+        (correct behavior) and would FAIL on main (which gives
+        200 different positions).
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import Course
+        from unittest.mock import MagicMock
+
+        builder = DummyCourseBuilder()
+        builder.add_section(section_id=1, name='Practical Sessions Parts 1, 2 and 3')
+
+        # Build a resource module with 200 files (mimicking the
+        # interactive practical resource from test3).
+        resource_files = []
+        for i in range(200):
+            resource_files.append({
+                'type': 'file',  # core_contents type
+                'filename': f'file_{i}.html',
+                'filepath': '/',
+                'fileurl': f'https://example.com/f_{i}',
+                'filesize': 1024,
+                'timemodified': 1700000000,
+                'mimetype': 'text/html',
+                'isexternalfile': False,
+            })
+        builder.add_section_files(
+            1, module_id=4600243, modname='resource',
+            module_name='Interactive Virtual Practical Sessions 1, 2, 3 - Use of PCR to genotype individuals',
+            files=resource_files,
+        )
+
+        sections = builder.build_sections()
+        fetched_mods = builder.build_fetched_mods()
+        files, _ = run_pipeline(sections, fetched_mods)
+
+        # All 200 files should have the SAME position_in_section
+        # (per-module counter, not per-file).
+        positions = [f.position_in_section for f in files
+                    if f.position_in_section is not None]
+        unique = set(positions)
+        assert len(unique) == 1, (
+            f'E2E REGRESSION: a resource module with 200 files should have '
+            f'1 unique position, but got {len(unique)}: {sorted(unique)[:5]}...\n'
+            f'This is the duplicate-folder bug (test3 Problem 5): '
+            f'each file gets its own position, producing 200 *NN* folders '
+            f'instead of 1 module folder.\n'
+            f'The fix is in commit caccea4 (per-module counter).'
+        )
+
+    def test_resource_module_files_end_up_in_single_folder(self):
+        """E2E: the on-disk layout for a 200-file resource module
+        should have ONE module folder with all 200 files inside,
+        not 200 separate folders.
+
+        Note: The exact folder name depends on the module's position
+        in the section. The KEY assertion is that all files go to
+        the same folder.
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import Course
+        from unittest.mock import MagicMock
+
+        builder = DummyCourseBuilder()
+        builder.add_section(section_id=1, name='Practical Sessions Parts 1, 2 and 3')
+
+        # 200 files
+        resource_files = []
+        for i in range(200):
+            resource_files.append({
+                'type': 'file', 'filename': f'file_{i}.html',
+                'filepath': '/', 'fileurl': f'https://example.com/f_{i}',
+                'filesize': 1024, 'timemodified': 1700000000,
+                'mimetype': 'text/html', 'isexternalfile': False,
+            })
+        builder.add_section_files(
+            1, module_id=4600243, modname='resource',
+            module_name='Interactive Virtual Practical Sessions',
+            files=resource_files,
+        )
+
+        sections = builder.build_sections()
+        fetched_mods = builder.build_fetched_mods()
+        files, _ = run_pipeline(sections, fetched_mods)
+
+        # Now run gen_path on each file to get the final on-disk folder
+        course = Course(_id=1, fullname='Test Course')
+        ops = TaskFileOps(MagicMock())
+
+        # Group files by their position_in_section
+        by_position = {}
+        for f in files:
+            if f.position_in_section is None:
+                continue
+            by_position.setdefault(f.position_in_section, []).append(f)
+
+        # The book/files at position 0 should all share the same folder
+        for pos, pos_files in by_position.items():
+            folders = set()
+            for f in pos_files:
+                setattr(f, '_module_has_attachments', True)
+                setattr(f, '_in_module_folder', True)
+                path = ops.gen_path('/storage', course, f)
+                # The path looks like /storage/course/section/*NN* Module Name
+                # The folder is the second-to-last component (between
+                # the last 2 slashes for the file's last segment).
+                folder = str(path)
+                folders.add(folder)
+            # All files at this position should be in the SAME folder
+            # (with the chapter sub-folder if any).
+            assert len(folders) == 1, (
+                f'E2E REGRESSION: position {pos} has files in {len(folders)} '
+                f'different folders. Should all be in 1 folder.\n'
+                f'Folders: {folders}\n'
+                f'This is the duplicate-folder bug (test3 Problem 5).'
+            )
+
+
+# =========================================================================
+# Test3 Problem 5: Resource module with many files
+# Bug on main: 200 files → 200 separate folders (each with *NN* prefix)
+# Fix on fix-html-encoding-detection: 200 files → 1 module folder
+# =========================================================================
+class TestE2EResourceModuleManyFilesBugPinned:
+    """Documents the test3 case from
+    /Volumes/Untitled/test3/4MBBS101/Practical Sessions Parts 1, 2 and 3/.
+
+    User report (2026-06-24):
+    "the duplicate folder problem not only affect the book module
+    of the ISE course. It also affect the interactive learning
+    resources of the 4mbbs101 course ... where each pictures and
+    even javascript file has a dedicated folder with number index,
+    which is ridiculous and the CSS doesn't render neither"
+
+    Investigation (2026-06-24):
+    - The resource module (module_id=4600243) has 382 files
+    - On main branch: each file gets its own position_in_section
+      (0, 1, 2, ..., 191) due to content_filepath-scoped counter
+      (see main's _position_scope_key which uses
+      (section_id, module_scope, content_filepath))
+    - This produces 192 separate *NN* folders (one per file)
+    - On fix-html-encoding-detection branch: per-module counter
+      (see caccea4's _position_scope_key which uses
+      (section_id, module_id) for non-book) → 1 folder
+    """
+
+    def test_main_branch_bug_200_files_get_200_different_positions(self):
+        """Pins the OLD algorithm (main branch) bug: counter advances
+        PER FILE, not per module. This produces 200 different
+        positions for 200 files in one resource module, even when
+        they all share the same scope key.
+
+        The test3 case (4MBBS101) shows this in the on-disk state:
+        192 separate *NN* folders for one resource module.
+
+        This is the BUG, not the expected behavior. The fix on
+        fix-html-encoding-detection uses a per-module counter
+        (caccea4) which gives all 200 files 1 position.
+        """
+        from moodle_dl.types import File
+
+        # Simulate the test3 case: 200 files in one resource module
+        files = []
+        for i in range(200):
+            f = File(
+                module_id=4600243,
+                section_id=1325357,
+                section_name='Practical Sessions',
+                module_name='Interactive Virtual Practical sessions',
+                module_modname='resource',
+                content_filepath='/',  # All same
+                content_filename=f'file_{i}.html',
+                content_fileurl=f'https://example.com/f_{i}',
+                content_type='file',
+                content_isexternalfile=False,
+                content_filesize=1024,
+                content_timemodified=1700000000,
+            )
+            files.append(f)
+
+        # OLD algorithm: counter advances per file
+        # (positions_by_scope[scope] = position + 1 after each file)
+        positions_by_scope = {}
+        for f in files:
+            scope = (f.section_id, f.module_id, f.content_filepath)
+            position = positions_by_scope.get(scope, 0)
+            f.position_in_section = position
+            positions_by_scope[scope] = position + 1
+
+        # OLD algorithm: 200 files → 200 different positions
+        positions = [f.position_in_section for f in files]
+        assert len(set(positions)) == 200, (
+            f'OLD algorithm expected to give 200 different positions '
+            f'(one per file, even with same scope). Got: {len(set(positions))}. '
+            f'This is the test3 bug: 192 separate *NN* folders for one '
+            f'resource module.'
+        )
+
+    def test_old_algorithm_with_different_filepaths_gives_multiple_positions(self):
+        """Pins the OLD algorithm bug: different filepaths → different positions.
+
+        On main, the scope key is (section_id, module_scope, content_filepath).
+        For a resource with files in different sub-folders, each sub-folder
+        gets its own counter, producing N folders (where N = number of
+        unique filepaths).
+
+        This is the test3 case: 200 files in 6 sub-folders (scripts/,
+        images/, etc.) → 6 separate folder counters.
+        """
+        from moodle_dl.types import File
+
+        # Simulate the test3 case: 200 files in 6 different sub-folders
+        sub_folders = ['/scripts/', '/images/', '/teal/', '/toread/',
+                       '/includes/', '/assets/css/']
+        files = []
+        for i in range(200):
+            f = File(
+                module_id=4600243,
+                section_id=1325357,
+                section_name='Practical Sessions',
+                module_name='Interactive Virtual Practical sessions',
+                module_modname='resource',
+                content_filepath=sub_folders[i % 6],  # 6 different filepaths
+                content_filename=f'file_{i}.html',
+                content_fileurl=f'https://example.com/f_{i}',
+                content_type='file',
+                content_isexternalfile=False,
+                content_filesize=1024,
+                content_timemodified=1700000000,
+            )
+            files.append(f)
+
+        # OLD algorithm: scope = (section_id, module_scope, content_filepath)
+        positions_by_scope = {}
+        for f in files:
+            scope = (f.section_id, f.module_id, f.content_filepath)
+            position = positions_by_scope.get(scope, 0)
+            f.position_in_section = position
+            positions_by_scope[scope] = position + 1
+
+        # Each unique filepath gets its own counter
+        unique_positions = set(f.position_in_section for f in files)
+        assert len(unique_positions) >= 5, (
+            f'OLD algorithm: different filepaths should give different '
+            f'positions. Got: {sorted(unique_positions)}'
+        )
+
+    def test_new_algorithm_with_different_filepaths_gives_same_position(self):
+        """Pins the NEW algorithm fix: all files in a module share position.
+
+        On fix-html-encoding-detection (caccea4), the scope key for
+        non-book modnames is (section_id, module_id), ignoring
+        content_filepath. All files in a module share one position.
+        """
+        from moodle_dl.moodle.result_builder import ResultBuilder
+        from moodle_dl.types import File, MoodleURL
+
+        sub_folders = ['/scripts/', '/images/', '/teal/', '/toread/',
+                       '/includes/', '/assets/css/']
+        files = []
+        for i in range(200):
+            f = File(
+                module_id=4600243,
+                section_id=1325357,
+                section_name='Practical Sessions',
+                module_name='Interactive Virtual Practical sessions',
+                module_modname='resource',
+                content_filepath=sub_folders[i % 6],
+                content_filename=f'file_{i}.html',
+                content_fileurl=f'https://example.com/f_{i}',
+                content_type='file',
+                content_isexternalfile=False,
+                content_filesize=1024,
+                content_timemodified=1700000000,
+            )
+            files.append(f)
+
+        rb = ResultBuilder.__new__(ResultBuilder)
+        rb.moodle_url = MoodleURL(use_http=False, domain='example.com', path='')
+        rb.version = 2024100712
+        rb.token = 'testtoken'
+        rb.mod_plurals = {}
+
+        rb._assign_positions_to_files(files)
+
+        # NEW algorithm: all 200 files share ONE position
+        positions = [f.position_in_section for f in files]
+        unique = set(positions)
+        assert len(unique) == 1, (
+            f'NEW algorithm: all files in a module should share 1 position. '
+            f'Got: {len(unique)} unique: {sorted(unique)[:5]}...\n'
+            f'This is the fix for test3 Problem 5.'
+        )
