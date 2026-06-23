@@ -144,14 +144,76 @@ class TaskFileOps:
         backward compatibility with code paths that haven't been
         migrated yet.
         """
+        from moodle_dl.utils import PathTools as PT
         position = getattr(file, 'position_in_section', None)
+        # Sanitize module_name first (to_valid_name replaces ``*`` etc.
+        # with full-width equivalents — we want those full-width
+        # forms here so the rest of the folder name is portable,
+        # but the prefix MUST be ASCII for sort order).
+        safe_name = PT.to_valid_name(file.module_name, is_file=False)
         if not isinstance(position, int):
-            return file.module_name
+            return safe_name
         if position < 99:
             prefix = f'*{position + 1:02d}*'
         else:
             prefix = f'*{position + 1:03d}*'
-        return f'{prefix} {file.module_name}'
+        return f'{prefix} {safe_name}'
+
+    @staticmethod
+    def _sanitized_module_folder_name(file) -> str:
+        """Return the module folder name SANITIZED but WITHOUT the
+        ``*NN*`` prefix.
+
+        Used by gen_path to build the path via path_of_file_in_module
+        (which sanitizes the folder name, turning ``*`` → full-width
+        ``＊``). The caller must add the ``*NN*`` prefix AFTER path
+        construction (see _prepend_nn_prefix_to_path).
+        """
+        from moodle_dl.utils import PathTools as PT
+        return PT.to_valid_name(file.module_name, is_file=False)
+
+    @staticmethod
+    def _prepend_nn_prefix_to_path(path: str, file) -> str:
+        """Prepend the ``*NN*`` ASCII prefix to the module folder
+        name part of an already-constructed path.
+
+        Used by gen_path to add the ``*NN*`` prefix AFTER
+        path_of_file_in_module sanitized the folder name (which
+        would otherwise turn ``*`` → full-width ``＊``).
+
+        The folder name is the second-to-last path segment (the
+        last is content_filepath if it's non-empty).
+
+        Sentinel: if file.position_in_section is None or not a real
+        int (test mock), no prefix is added — the path is returned
+        unchanged. This preserves backward compatibility with
+        callers that haven't been migrated yet.
+        """
+        from pathlib import PurePosixPath
+        position = getattr(file, 'position_in_section', None)
+        if not isinstance(position, int):
+            return path
+        if position < 99:
+            prefix = f'*{position + 1:02d}*'
+        else:
+            prefix = f'*{position + 1:03d}*'
+        parts = PurePosixPath(path).parts
+        if len(parts) < 2:
+            return path
+        # The module folder is the LAST segment of the path (after
+        # content_filepath is stripped by path_of_file_in_module).
+        # For a path like /storage/course/section/module_folder,
+        # parts[-1] = module_folder. The section name is parts[-2],
+        # which has already been sanitized in path_of_file_in_module.
+        module_folder = parts[-1]
+        # Skip if already has prefix (legacy folder, etc.)
+        if module_folder.startswith('*') and (
+            module_folder[1:3].isdigit() or module_folder[1:4].isdigit()
+        ):
+            return path
+        new_folder = f'{prefix} {module_folder}'
+        new_parts = parts[:-1] + (new_folder,)
+        return str(PurePosixPath(*new_parts))
 
     def gen_path(self, storage_path: str, course, file) -> str:
         """Generate the directory path where a file should be stored.
@@ -240,18 +302,33 @@ class TaskFileOps:
             # Without this fix, module folders have no prefix and
             # float freely in the section dir, breaking the
             # section-wide *NN* ordering.
-            folder_name = self._module_folder_name_with_prefix(file)
-            return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, folder_name, file.content_filepath
+            #
+            # BUG FIX (2026-06-23, CS6): we previously passed
+            # ``*NN* Module Name`` to path_of_file_in_module,
+            # which calls to_valid_name on the folder name,
+            # converting ASCII ``*`` (U+002A) to full-width
+            # ``＊`` (U+FF0A). Full-width ``＊`` sorts AFTER ASCII
+            # ``*`` in POSIX sort, breaking the section-wide
+            # sequence. The fix: build the path WITHOUT the
+            # ``*NN*`` prefix (using the sanitized module name only),
+            # then concat the prefix AFTER path construction so the
+            # prefix stays as ASCII ``*``.
+            sanitized_module_name = self._sanitized_module_folder_name(file)
+            base_path = PT.path_of_file_in_module(
+                storage_path, course_name, file.section_name,
+                sanitized_module_name, file.content_filepath
             )
+            return self._prepend_nn_prefix_to_path(base_path, file)
 
         if file.module_modname in COOKIE_MOD_MODNAMES:
             file._in_module_folder = True
             # Same fix for cookie_mod (Kaltura / Helixmedia) folders.
-            folder_name = self._module_folder_name_with_prefix(file)
-            return PT.path_of_file_in_module(
-                storage_path, course_name, file.section_name, folder_name, file.content_filepath
+            sanitized_module_name = self._sanitized_module_folder_name(file)
+            base_path = PT.path_of_file_in_module(
+                storage_path, course_name, file.section_name,
+                sanitized_module_name, file.content_filepath
             )
+            return self._prepend_nn_prefix_to_path(base_path, file)
 
         file._in_module_folder = False
         return PT.path_of_file(storage_path, course_name, file.section_name, file.content_filepath)

@@ -118,10 +118,111 @@ class TestModuleFolderGetsNNPrefix:
             'position_in_section' in src
             or 'file.position' in src
             or '_module_folder_name_with_prefix' in src
+            or '_prepend_nn_prefix_to_path' in src
+            or '_sanitized_module_folder_name' in src
         ), (
-            'gen_path must use file.position_in_section (directly or '
-            'via _module_folder_name_with_prefix) to compute the '
-            'module folder *NN* prefix'
+            'gen_path must use file.position_in_section (directly, '
+            'via _module_folder_name_with_prefix, '
+            '_prepend_nn_prefix_to_path, or _sanitized_module_folder_name) '
+            'to compute the module folder *NN* prefix'
+        )
+
+    def test_module_folder_prefix_stays_ascii_after_sanitize(self):
+        """User bug (2026-06-23, CS6): module folder names had
+        full-width ``＊`` (U+FF0A) prefix because to_valid_name
+        sanitized the entire ``*NN* Module Name`` string
+        (converting ``*`` → ``＊``). This broke the section-wide
+        sort order because ASCII ``*`` (U+002A) sorts BEFORE
+        full-width ``＊`` in POSIX sort.
+
+        Fix: _module_folder_name_with_prefix sanitizes the
+        module_name FIRST (replacing ``*`` → ``＊``), then adds
+        the ``*NN*`` ASCII prefix. The prefix chars stay as
+        ASCII so the section-wide sort is consistent.
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import File, Course
+        from unittest.mock import MagicMock
+
+        course = Course(_id=1, fullname='Course X')
+        f = File(
+            module_id=1, section_name='Section', section_id=1,
+            module_name='Lecture 0: About the module',
+            content_filepath='/',
+            content_filename='Lecture 0.pdf',
+            content_fileurl='https://example.com/Lecture 0.pdf',
+            content_filesize=1024, content_timemodified=0,
+            module_modname='resource', content_type='file',
+            content_isexternalfile=False,
+        )
+        f.position_in_section = 1
+        f._module_has_attachments = True
+
+        ops = TaskFileOps(MagicMock())
+        # The folder name with prefix should have ASCII '*' not '＊'
+        folder_name = ops._module_folder_name_with_prefix(f)
+        assert folder_name.startswith('*02* '), (
+            f'Folder prefix should be ASCII "*02*", got: {folder_name!r}'
+        )
+        # Verify the prefix is specifically ASCII (not full-width)
+        assert '＊' not in folder_name[:5], (
+            f'Folder prefix chars should be ASCII, not full-width. '
+            f'Got: {folder_name[:5]!r}'
+        )
+        # The full path through PT.path_of_file_in_module should
+        # also preserve ASCII '*' in the prefix part.
+        full_path = ops.gen_path('/storage', course, f)
+        # Split path and find the folder part (with prefix)
+        parts = full_path.split('/')
+        folder_part = next((p for p in parts if p.startswith('*')), None)
+        assert folder_part is not None, (
+            f'Path should contain a folder with *NN* prefix. '
+            f'Got: {full_path!r}'
+        )
+        # The prefix should still be ASCII '*', not full-width '＊'
+        assert folder_part[:1] == '*', (
+            f'Folder prefix should start with ASCII "*", not "＊". '
+            f'Got: {folder_part[:10]!r}'
+        )
+        assert '＊' not in folder_part[:5], (
+            f'Folder prefix chars should be ASCII. '
+            f'Got: {folder_part[:5]!r}'
+        )
+
+    def test_module_folder_name_module_part_sanitized(self):
+        """Verify the module name part of the folder is sanitized
+        (e.g. ``:`` → full-width ``：``) while the prefix stays ASCII.
+        """
+        from moodle_dl.downloader.task_file_ops import TaskFileOps
+        from moodle_dl.types import File
+        from unittest.mock import MagicMock
+
+        f = File(
+            module_id=1, section_name='S', section_id=1,
+            module_name='Lecture 0: About the module',
+            content_filepath='/',
+            content_filename='Lecture 0.pdf',
+            content_fileurl='https://example.com/Lecture 0.pdf',
+            content_filesize=1024, content_timemodified=0,
+            module_modname='resource', content_type='file',
+            content_isexternalfile=False,
+        )
+        f.position_in_section = 1
+        f._module_has_attachments = True
+
+        ops = TaskFileOps(MagicMock())
+        folder_name = ops._module_folder_name_with_prefix(f)
+        # Prefix is ASCII '*02* '
+        assert folder_name.startswith('*02* '), (
+            f'Prefix should be ASCII. Got: {folder_name!r}'
+        )
+        # The module name part (after '*02* ') should have
+        # full-width colon (to_valid_name converts ':' → '：')
+        # because the sanitize happens BEFORE adding prefix.
+        after_prefix = folder_name[5:]
+        assert '：' in after_prefix, (
+            f'Module name part should have full-width colon. '
+            f'Got: {after_prefix!r}'
         )
 
     def test_flat_file_uses_3digit_prefix_for_position_99_plus(self):
@@ -293,9 +394,16 @@ class TestModuleFolderFirstFileDeterminesFolderPrefix:
         from moodle_dl.downloader.task_file_ops import TaskFileOps
         src = inspect.getsource(TaskFileOps.gen_path)
         # The folder name should be derived from file.position_in_section
-        assert 'position_in_section' in src or '_module_folder_name_with_prefix' in src, (
-            'gen_path must use file.position_in_section to compute '
-            'the folder *NN* prefix'
+        assert (
+            'position_in_section' in src
+            or '_module_folder_name_with_prefix' in src
+            or '_prepend_nn_prefix_to_path' in src
+            or '_sanitized_module_folder_name' in src
+        ), (
+            'gen_path must use file.position_in_section (directly, '
+            'via _module_folder_name_with_prefix, '
+            '_prepend_nn_prefix_to_path, or _sanitized_module_folder_name) '
+            'to compute the folder *NN* prefix'
         )
 
     def test_module_with_3_files_folder_prefix_matches_first(self):
@@ -327,26 +435,26 @@ class TestCurrentFolderBehaviorDocumentedForMigration:
         f = File(
             module_id=1, section_name='S', section_id=1,
             module_name='Lecture 0: About the module', content_filepath='/',
-            content_filename='Lecture 0: About the module.html',
-            content_fileurl='',
-            content_filesize=0, content_timemodified=0,
+            content_filename='Lecture 0: About the module.pdf',
+            content_fileurl='https://example.com/l.pdf',
+            content_filesize=1024, content_timemodified=0,
             module_modname='resource',
-            content_type='description',
+            content_type='file',
             content_isexternalfile=False,
         )
         f.position_in_section = 1  # counter=1 → *02* (1-based)
-        # Default _module_has_attachments (None) → falls into module
-        # folder branch for resource modname
+        # Force module-folder branch (resource with attachment file)
+        f._module_has_attachments = True
 
         ops = TaskFileOps(MagicMock())
         path = ops.gen_path('/storage', course, f)
         folder_name = path.rstrip('/').split('/')[-1]
-        # Note: to_valid_name converts '*' to fullwidth '＊' for
-        # Windows portability. After gen_path, the prefix may use
-        # either regular '*' or fullwidth '＊' depending on whether
-        # to_valid_name ran. Both are valid.
-        assert folder_name.startswith(('*02*', '＊02＊')), (
-            f'Module folder name should start with *02* (or ＊02＊ '
-            f'after to_valid_name) prefix. folder_name={folder_name!r}, '
-            f'full_path={path!r}'
+        # The fix (commit 379bb7f): the prefix must be ASCII '*02*'
+        # (NOT full-width '＊02＊') so POSIX sort puts it before
+        # full-width chars. Full-width '＊' would break the
+        # section-wide *NN* sort sequence.
+        assert folder_name.startswith('*02*'), (
+            'Folder prefix must be ASCII "*02*", not full-width '
+            '"＊02＊" (full-width breaks POSIX sort order). '
+            f'Got: {folder_name!r}'
         )
