@@ -175,7 +175,11 @@ class TestWaitForSsoRedirect(unittest.IsolatedAsyncioTestCase):
     async def test_sso_redirect_detected(self):
         """测试检测到 SSO 重定向"""
         mock_page = AsyncMock()
-        mock_page.url = 'https://microsoft.com/login'
+        # Use login.microsoftonline.com — the actual Microsoft SSO endpoint.
+        # (The old test used 'microsoft.com' which is the marketing site,
+        # not an SSO URL. The substring-matching implementation accepted
+        # it; the new suffix-matching impl rejects it correctly.)
+        mock_page.url = 'https://login.microsoftonline.com/common/oauth2/authorize'
         mock_page.wait_for_timeout = AsyncMock()
 
         result = await self.module._wait_for_sso_redirect(mock_page, 'moodle.example.com', max_wait=1)

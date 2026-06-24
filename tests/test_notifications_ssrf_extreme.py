@@ -395,3 +395,96 @@ class TestShooterImports:
             DiscordShooter, TelegramShooter, NtfyShooter,
             MailShooter, XmppShooter,
         ])
+
+
+# =========================================================================
+# SSRF non-canonical-IP bypass coverage (audit-found)
+# =========================================================================
+class TestSsrfNonCanonicalIPv4:
+    """Tests for non-canonical IPv4 forms that resolve to loopback
+    or private addresses. These are real SSRF bypasses because
+    Python's `ip_address()` rejects them, but `socket.gethostbyname`
+    and HTTP clients like `requests` accept them."""
+
+    @pytest.mark.parametrize('url', [
+        # Decimal form of 127.0.0.1 (= 2130706433)
+        'http://2130706433/foo',
+        # 0 (== 0.0.0.0, any-address)
+        'http://0/',
+        # Short form of 127.0.0.0/8
+        'http://127.1/',
+        # Hex form of 127.0.0.1
+        'http://0x7f000001/',
+        # Mixed form
+        'http://127.65535/',
+    ])
+    def test_non_canonical_ipv4_blocked(self, url):
+        """All non-canonical IPv4 forms must be blocked."""
+        from moodle_dl.notifications.discord.discord_shooter import _is_ssrf_risky
+        assert _is_ssrf_risky(url) is True, (
+            f'SSRF bypass: {url!r} should be blocked but _is_ssrf_risky returned False'
+        )
+
+
+# =========================================================================
+# Auto-SSO substring-match bypass coverage (audit-found)
+# =========================================================================
+class TestAutoSsoBypass:
+    """Tests for the SSO provider substring-match bypass.
+    The audit found that `_is_sso_provider_url` previously did
+    `'microsoft' in host` substring matching, which accepted
+    spoofed domains like `evil-microsoft-phisher.com`."""
+
+    @pytest.mark.parametrize('url', [
+        'https://evil-microsoft-phisher.com/login',
+        'https://microsoft-attacker.kcl.ac.uk/login',
+        'https://notmicrosoft.com/',
+    ])
+    def test_microsoft_spoofing_rejected(self, url):
+        from moodle_dl.auto_sso_login import _is_sso_provider_url
+        assert _is_sso_provider_url(url) is False
+
+    @pytest.mark.parametrize('url', [
+        'https://evilgoogle.com/auth',
+        'https://google.com.attacker.com/',
+    ])
+    def test_google_spoofing_rejected(self, url):
+        from moodle_dl.auto_sso_login import _is_sso_provider_url
+        assert _is_sso_provider_url(url) is False
+
+
+# =========================================================================
+# Cookie-jar fallback recursion coverage (audit-found)
+# =========================================================================
+class TestCookieJarRecursion:
+    """Test that the cookie-jar fallback doesn't infinitely recurse."""
+
+    def test_load_with_filtering_does_not_recurse(self, tmp_path):
+        """When _really_load keeps failing, _load_with_filtering
+        must NOT recursively call itself — that would blow the
+        stack and crash moodle-dl with RecursionError."""
+        from moodle_dl.utils import MoodleDLCookieJar
+        import http.cookiejar
+
+        # Write a malformed cookie file that triggers the fallback
+        path = tmp_path / 'cookies.txt'
+        path.write_text(
+            '# Netscape HTTP Cookie File\n'
+            'evil.com\tTRUE\t/\tFALSE\t0\tname\tvalue\n'
+        )
+
+        # Force _really_load to always fail (simulates stdlib bug)
+        class _BrokenJar(MoodleDLCookieJar):
+            def _really_load(self, *a, **kw):
+                raise http.cookiejar.LoadError('simulated stdlib failure')
+
+        jar = _BrokenJar()
+        # Should NOT raise RecursionError — should swallow the
+        # second-pass failure gracefully (logged warning).
+        sys.setrecursionlimit(200)
+        try:
+            jar._load_with_filtering(str(path), False, False)
+        except RecursionError:
+            pytest.fail('_load_with_filtering recurses infinitely')
+        # Note: we don't assert the absence of any exception —
+        # only that we don't infinitely recurse.

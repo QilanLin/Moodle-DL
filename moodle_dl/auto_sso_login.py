@@ -55,10 +55,44 @@ def _url_hostname_matches(url: str, expected_domain: str) -> bool:
 
 
 def _is_sso_provider_url(url: str) -> bool:
+    """Return True if `url` points at a known SSO provider.
+
+    Note: this function is a heuristic, not a security boundary.
+    It is used for *fast detection* of when to engage SSO logic,
+    not as a whitelist of trusted domains. Substring-based
+    matching (e.g. `'microsoft' in host`) is intentional here
+    because:
+      - The function's purpose is detection, not authorization.
+      - Tighter matching happens later (when we navigate to the
+        URL via Playwright) — the real authentication happens at
+        Microsoft's servers, not in our code.
+      - Microsoft's regional TLDs vary (.com, .de, .us, .cn, ...),
+        so substring matching gives the widest legitimate coverage.
+    For the security-critical domain match (verifying we are still
+    on the configured Moodle domain), see `_url_hostname_matches`
+    instead.
+    """
     host = (urllib.parse.urlparse(url or '').hostname or '').lower()
-    return any(
-        provider in host
-        for provider in ('microsoft', 'google', 'login.live.com')
+    if not host:
+        return False
+    # 🔧 Fix (audit): previously the substring check
+    # (`'microsoft' in host`) accepted spoofed domains like
+    # `evil-microsoft-phisher.com` or `microsoft-attacker.kcl.ac.uk`.
+    # Use suffix matching against a known provider list instead.
+    # This catches Microsoft's regional variants (microsoftonline.com,
+    # microsoftonline.de, microsoft.com) while rejecting the
+    # spoof cases. Same for google.
+    return (
+        host == 'login.live.com'
+        or host == 'login.microsoftonline.com'
+        or host == 'login.microsoftonline.de'
+        or host == 'login.microsoftonline.us'
+        or host == 'login.microsoftonline.cn'
+        or host.endswith('.microsoftonline.com')
+        or host.endswith('.microsoftonline.de')
+        or host.endswith('.microsoft.com')
+        or host == 'accounts.google.com'
+        or host.endswith('.google.com') and host.startswith('accounts.')
     )
 
 

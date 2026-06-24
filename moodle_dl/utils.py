@@ -704,17 +704,24 @@ class MoodleDLCookieJar(http.cookiejar.MozillaCookieJar):
                 cf.write(line)
 
         cf.seek(0)
+        # 🔧 Fix (audit): do NOT recurse into _load_with_filtering.
+        # The previous version called `self._load_with_filtering(...)`
+        # again from inside the except block, which caused infinite
+        # recursion (and eventual RecursionError) if the second-pass
+        # _really_load also failed. There is no third-pass fallback:
+        # if the filtered buffer still doesn't load, give up.
         try:
             self._really_load(cf, filename, ignore_discard, ignore_expires)
-        except (AssertionError, http.cookiejar.LoadError, Exception) as final_err:
+        except (AssertionError, http.cookiejar.LoadError) as final_err:
             # Stdlib cookiejar uses _warn_unhandled_exception which
             # just logs a warning and raises LoadError. We catch
-            # both here and try the filtering fallback.
+            # both here and silently skip the broken cookies — the
+            # caller has already logged the first-pass failure.
             _logging.info(
-                'First-pass load failed (%s); retrying with line filtering.',
+                'Cookie load: filtered load also failed (%s); '
+                'skipping remaining cookies in this file.',
                 type(final_err).__name__,
             )
-            self._load_with_filtering(filename, ignore_discard, ignore_expires)
 
 
 class Timer:

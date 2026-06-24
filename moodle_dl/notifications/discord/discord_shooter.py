@@ -75,9 +75,59 @@ def _is_ssrf_risky(url: str) -> bool:
         ):
             return True
     except ValueError:
-        # Not an IP — could be a public DNS name (e.g.
-        # discord.com) which we allow.
-        pass
+        # 🔧 Fix (audit): some HTTP clients and DNS resolvers
+        # accept non-canonical IPv4 forms (decimal, octal, hex,
+        # short-form) that resolve to loopback or private
+        # addresses. The stdlib `ip_address()` rejects these,
+        # which would let them bypass the check as "DNS names".
+        # Examples that resolve to loopback or unspecified:
+        #   2130706433       → 127.0.0.1
+        #   0177.0.0.1       → 127.0.0.1
+        #   0x7f000001       → 127.0.0.1
+        #   127.1            → 127.0.0.1
+        #   0                → 0.0.0.0 (any-address)
+        #   16843009         → 10.0.0.1
+        # Strategy: if the hostname is **numeric** (digits only,
+        # possibly with one or more dots), it's a non-canonical
+        # IP literal and we MUST resolve it to verify. If it's a
+        # DNS name (has letters), we skip the resolution (avoids
+        # adding DNS latency and avoids breaking users who are
+        # offline).
+        import socket as _socket
+        # Detect non-canonical IPv4 forms:
+        #   - Pure digits (with optional dots): 2130706433, 127.1, 0177.0.0.1
+        #   - Hex prefix '0x' (no dots):          0x7f000001
+        #   - Just '0' (any-address):             0 → 0.0.0.0
+        # All of these resolve to loopback or unspecified addresses
+        # via socket.gethostbyname / getaddrinfo, but are rejected
+        # by ip_address(). Resolve them and re-check.
+        is_numeric_ip_form = (
+            (hostname.replace('.', '').isdigit() and hostname not in ('','.'))
+            or hostname.startswith('0x')
+            or hostname == '0'
+        )
+        if is_numeric_ip_form:
+            try:
+                resolved = _socket.gethostbyname(hostname)
+                try:
+                    ip = ip_address(resolved)
+                    if (
+                        ip.is_private
+                        or ip.is_loopback
+                        or ip.is_link_local
+                        or ip.is_multicast
+                        or ip.is_reserved
+                        or ip.is_unspecified
+                    ):
+                        return True
+                except ValueError:
+                    return True  # Unparseable resolved IP.
+            except (OSError, UnicodeError, ValueError):
+                # DNS lookup failed for a numeric hostname —
+                # probably a network problem. Treat as risky
+                # (fail closed) so we don't allow a malicious
+                # bypass through DNS.
+                return True
 
     # DNS rebinding mitigation: resolve hostname and check the
     # resolved IPs too. But this is async — we skip it for
