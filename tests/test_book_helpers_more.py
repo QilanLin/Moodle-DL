@@ -167,7 +167,8 @@ def test_download_condition_keeps_deleted_files_only_when_book_downloads_are_ena
 
 
 def test_create_ordered_index_escapes_titles_quotes_hrefs_and_marks_hidden_items():
-    index_html = BookMod.create_ordered_index([
+    bm = BookMod.__new__(BookMod)
+    index_html = bm.create_ordered_index([
         {
             'title': 'Intro & <overview>',
             'href': '10/index.html?x=1 2',

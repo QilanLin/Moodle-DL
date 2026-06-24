@@ -324,29 +324,52 @@ class TestE2EBookWithExternalUrlWeblocs:
                         if f.module_modname == 'cookie_mod-kalvidres']
         url_files = [f for f in book_files
                      if f.module_modname == 'url-description-book']
-        index_files = [f for f in book_files
-                       if f.module_modname == 'book']
+        # Find the chapter's index.html (not the book main HTML)
+        chapter_index_files = [f for f in book_files
+                                if f.module_modname == 'book'
+                                and f.content_filename == 'index.html']
+        # Book main HTML = the Book.html file
+        book_main_files = [f for f in book_files
+                           if f.module_modname == 'book'
+                           and f.content_filename == 'Book.html']
+        # Other book modname files (e.g. description webloc) should
+        # also share the chapter's position
+        other_book_files = [f for f in book_files
+                            if f.module_modname == 'book'
+                            and f.content_filename not in ('index.html', 'Book.html')]
 
         # Should have 1 of each
         assert len(kaltura_files) == 1
         assert len(url_files) == 1
-        assert len(index_files) >= 1
+        assert len(chapter_index_files) == 1
+        assert len(book_main_files) == 1
 
-        # All three should have the SAME position
+        # The kaltura, url, and other chapter files should share the
+        # chapter's index position (not get their own position from
+        # the non-book counter). They share the position with the
+        # chapter's index.html, NOT with the book main HTML.
         kaltura_pos = kaltura_files[0].position_in_section
         url_pos = url_files[0].position_in_section
-        index_pos = index_files[0].position_in_section
+        chapter_index_pos = chapter_index_files[0].position_in_section
+        book_main_pos = book_main_files[0].position_in_section
 
-        # The kaltura and url should share the chapter's index position
-        # (not get their own 0 from the non-book counter)
-        assert kaltura_pos == index_pos, (
+        assert kaltura_pos == chapter_index_pos, (
             f'Kaltura should share chapter index position. '
-            f'kaltura={kaltura_pos}, index={index_pos}'
+            f'kaltura={kaltura_pos}, chapter_index={chapter_index_pos}, '
+            f'book_main={book_main_pos}'
         )
-        assert url_pos == index_pos, (
+        assert url_pos == chapter_index_pos, (
             f'URL webloc should share chapter index position. '
-            f'url={url_pos}, index={index_pos}'
+            f'url={url_pos}, chapter_index={chapter_index_pos}, '
+            f'book_main={book_main_pos}'
         )
+        for of in other_book_files:
+            assert of.position_in_section == chapter_index_pos, (
+                f'Other book sub-file {of.content_filename!r} should share '
+                f'chapter index position. '
+                f'file_pos={of.position_in_section}, '
+                f'chapter_index={chapter_index_pos}'
+            )
 
 
 # =========================================================================

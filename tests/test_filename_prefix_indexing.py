@@ -124,12 +124,10 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
         """不同输出目录的文件应各自从 0 开始编号
 
         With section-wide indexing (the default), non-book files in
-        the same section share one 0-based counter. The exception is
-        the book modname: each book chapter (each content_filepath
-        value) gets its own 0-based counter — every chapter is a
-        standalone "booklet" the user navigates as its own entity
-        (matches the official Moodle mobile app's UX, which groups
-        book content by chapter).
+        the same section share one 0-based counter. For book modules,
+        files in the same chapter (same content_filepath) share a
+        position (per-chapter scope, test3 Problem 4 fix). Different
+        chapters in the same book get distinct positions.
 
         Different sections and different book modules (different
         module_ids) get independent counters.
@@ -163,17 +161,19 @@ class TestFilenamePrefixIndexing(unittest.TestCase):
             section_file_2,
         ])
 
-        # Order in the input list:
+        # Per-chapter scope (test3 Problem 4 fix, 2026-06-24):
         #   1. section_file_1 (resource, sec=1)               → 0  (section scope)
-        #   2. book_root       (book, mod=2)                   → 0  (book scope, whole book)
-        #   3. chapter_index   (book, mod=2)                   → 1  (book scope, continues)
-        #   4. chapter_attach  (book, mod=2)                   → 2  (book scope, continues)
-        #   5. section_file_2  (resource, sec=1)               → 1  (section scope, continues)
+        #   2. book_root       (book, mod=2, filepath '/')    → 0  (book scope, new chapter)
+        #   3. chapter_index   (book, mod=2, filepath '/01 - Introduction/')  → 1  (book scope, new chapter)
+        #   4. chapter_attach  (book, mod=2, filepath '/01 - Introduction/')  → 1  (shares with chapter_index)
+        #   5. section_file_2  (resource, sec=1)               → 1  (section scope, after section_file_1)
+        # After test3 Problem 4 fix, chapter_index and chapter_attachment share pos 1
+        # (they have the same content_filepath).
         self.assertEqual(section_file_1.position_in_section, 0)
         self.assertEqual(section_file_2.position_in_section, 1)
         self.assertEqual(book_root.position_in_section, 0)
-        self.assertEqual(chapter_index.position_in_section, 1)
-        self.assertEqual(chapter_attachment.position_in_section, 2)
+        self.assertEqual(chapter_index.position_in_section, 1)  # new chapter
+        self.assertEqual(chapter_attachment.position_in_section, 1)  # shares with chapter_index
 
     def test_filename_generation_with_position(self):
         """测试带位置索引的文件名生成"""

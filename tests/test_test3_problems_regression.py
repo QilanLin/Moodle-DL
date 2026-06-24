@@ -107,7 +107,7 @@ class TestTableOfContentsUsesActualFolderNames:
         book_toc = [
             {'title': 'UML', 'href': '691954/index.html', 'level': 0}
         ]
-        toc_html = BookMod.create_ordered_index(book_toc)
+        toc_html = BookMod.create_ordered_index(BookMod.__new__(BookMod), book_toc)
 
         # Current buggy behavior: the cm_id-based href is used
         # Pin this so future changes are intentional.

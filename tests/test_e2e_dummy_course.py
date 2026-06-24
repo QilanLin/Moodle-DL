@@ -273,7 +273,18 @@ class TestE2EBookModulePerBookScope:
 
     def test_book_module_chapters_get_sequential_positions(self):
         """A book module with 3 chapters (each with html + image)
-        produces 3 sequential positions within the book's scope.
+        produces positions grouped by chapter (per-chapter scope).
+
+        Per-chapter contract (test3 Problem 4 fix, 2026-06-24):
+        files in the same chapter (same content_filepath) share a
+        position. The book counter advances per CHAPTER, not per file.
+        This is so cookie_mod-kalvidres and url-description-book
+        sub-files (extracted from the chapter's HTML) end up in the
+        same folder as the chapter's index.html.
+
+        Book structure (filepath '/') gets its own position (chapter 0).
+        Each numbered chapter (filepath '/1/', '/2/', '/3/') gets one
+        position shared by all its files.
         """
         builder = DummyCourseBuilder()
         builder.add_section(section_id=1, name='Book Test Section')
@@ -296,18 +307,27 @@ class TestE2EBookModulePerBookScope:
         fetched_mods = builder.build_fetched_mods()
         files, _ = run_pipeline(sections, fetched_mods)
 
-        # Book scope: per-book counter advances per file within
-        # book. Files within the same chapter share slot (via
-        # gen_path), but the section-wide position counter
-        # advances per file.
+        # Book scope: per-chapter counter. All files in the same
+        # chapter share a position. Book structure (1 file, chapter
+        # '/') is at position 0. Each numbered chapter (chapter '/1/',
+        # '/2/', '/3/') is at one position shared by all files in
+        # that chapter.
         book_files = [f for f in files if f.module_id == 200]
-        positions = sorted(f.position_in_section for f in book_files)
-        # Book structure (1 file) + chapter 1 (2 files) +
-        # chapter 2 (3 files) + chapter 3 (1 file) = 7 files
-        # → positions 0, 1, 2, 3, 4, 5, 6
-        assert positions == [0, 1, 2, 3, 4, 5, 6], (
-            f'Book with 3 chapters (7 files total) should have '
-            f'positions 0-6. Got: {positions}'
+        # 7 files total, but they share positions within chapters.
+        # Use a set to check the distinct positions.
+        positions = sorted(set(f.position_in_section for f in book_files))
+        # 4 chapters total: structure ('/'), ch1 ('/1/'), ch2 ('/2/'), ch3 ('/3/')
+        # → 4 distinct positions: 0, 1, 2, 3
+        assert positions == [0, 1, 2, 3], (
+            f'Book with 3 chapters + structure should have '
+            f'4 distinct positions (one per chapter). Got: {positions}'
+        )
+        # The chapter 1 (intro + intro.png) should share pos 1
+        ch1_files = [f for f in book_files if f.content_filepath == '/1/']
+        ch1_positions = set(f.position_in_section for f in ch1_files)
+        assert len(ch1_positions) == 1, (
+            f'Chapter 1 (2 files: html + intro.png) should share '
+            f'1 position. Got: {ch1_positions}'
         )
 
 

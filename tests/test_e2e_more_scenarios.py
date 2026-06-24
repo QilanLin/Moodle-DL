@@ -34,8 +34,13 @@ class TestE2EBookMixedWithOtherModules:
     def test_section_with_book_and_labels(self):
         """A section with 2 labels + 1 book module:
         - 2 labels get slots 0, 1 (section-wide)
-        - 1 book with 2 chapters: per-book counter (chapter 1 = 0,
-          chapter 2 = 1 — internal to book)
+        - 1 book with 2 chapters: per-chapter counter (chapter 1
+          = 0, chapter 2 = 1 — internal to book; chapter sub-files
+          share positions)
+
+        Per-chapter contract (test3 Problem 4 fix, 2026-06-24):
+        All files in the same chapter (same content_filepath) share
+        a position.
         """
         builder = DummyCourseBuilder()
         builder.add_section(section_id=1, name='Mixed Section')
@@ -52,13 +57,18 @@ class TestE2EBookMixedWithOtherModules:
         fetched_mods = builder.build_fetched_mods()
         files, _ = run_pipeline(sections, fetched_mods)
 
-        # Book files: Book structure + chapter 1 html + chapter 1 img
-        # + chapter 2 html = 4 files. Per-book counter: 0, 1, 2, 3
+        # Book files: Book structure (filepath '/') + chapter 1 html
+        # (filepath '/1/') + chapter 1 img (filepath '/1/') + chapter
+        # 2 html (filepath '/2/') = 4 files. Per-chapter scope:
+        # 3 unique filepaths → 3 distinct positions.
+        # Book structure pos 0, ch1 files share pos 1, ch2 html pos 2
         book_files = [f for f in files if f.module_id == 30]
         book_positions = sorted(f.position_in_section for f in book_files)
-        assert book_positions == [0, 1, 2, 3], (
-            f'Book files should have per-book positions 0-3. '
-            f'Got: {book_positions}'
+        assert book_positions == [0, 1, 1, 2], (
+            f'Book files should have per-chapter positions 0, 1, 1, 2. '
+            f'Got: {book_positions}. '
+            f'After test3 Problem 4 fix, files in the same chapter '
+            f'share a position.'
         )
 
 

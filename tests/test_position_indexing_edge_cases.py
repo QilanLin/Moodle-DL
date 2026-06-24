@@ -52,15 +52,18 @@ class TestBookModnameCrossContentFilepath:
         """A book module's content items come back from the Moodle
         server with different content_filepath values per chapter
         (and sometimes per sub-folder like /01 - Introduction/images/).
-        The book module is one cm_id in course_sections.sequence.
 
-        Pin the current contract: a book module is one scope, so
-        ALL its files share a 0-based counter regardless of which
-        chapter sub-folder they live in. This prevents the *01*
-        collision that would happen if chapter 1's html (at
-        /01 - Introduction/) and chapter 1's image (at
-        /01 - Introduction/images/) both got *01* (which they
-        would under a per-filepath scope).
+        Per-chapter contract (test3 Problem 4 fix, 2026-06-24):
+        Files in the same chapter (same content_filepath) share a
+        position. The book counter advances per CHAPTER, not per file.
+        This is so cookie_mod-kalvidres and url-description-book
+        sub-files (extracted from the chapter's HTML) end up in the
+        same folder as the chapter's index.html.
+
+        This prevents the *01* collision that would happen if
+        chapter 1's html (at /01 - Introduction/) and chapter 1's
+        image (at /01 - Introduction/images/) both got *01* (which
+        they would under a per-filepath scope).
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -77,18 +80,46 @@ class TestBookModnameCrossContentFilepath:
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Whole book shares one 0-based counter (input order):
-        # chapter_root=0, ch1 index=1, ch1 attach=2, ch1 image=3, ch2 extra=4
-        assert files[0].position_in_section == 0
-        assert files[1].position_in_section == 1
-        assert files[2].position_in_section == 2
-        assert files[3].position_in_section == 3
-        assert files[4].position_in_section == 4
+        # Per-chapter scope: files in the same chapter (same
+        # content_filepath) share a position. Each unique
+        # content_filepath gets one position from the book counter.
+        # 4 unique filepaths: '/', '/01 - Introduction/',
+        # '/01 - Introduction/images/', '/02 - Background/'
+        # → positions 0, 1, 1, 2, 3
+        # (chapter root pos 0, ch1 files (3 of them) share pos 1,
+        #  ch2 file pos 3... wait this is 5 files but 4 filepaths)
+        # Actually: chapter_root (filepath '/') is pos 0,
+        #  ch1 index+attachment (same filepath '/01 - Introduction/') pos 1,
+        #  ch1 image (filepath '/01 - Introduction/images/') pos 2,
+        #  ch2 extra (filepath '/02 - Background/') pos 3
+        assert files[0].position_in_section == 0, (
+            f'chapter_root should be pos 0. Got {files[0].position_in_section}'
+        )
+        # ch1 index and attachment share the same filepath
+        assert files[1].position_in_section == files[2].position_in_section, (
+            f'ch1 index and attachment should share position. '
+            f'Got {files[1].position_in_section} and {files[2].position_in_section}'
+        )
+        # ch1 image is a different filepath → different position
+        assert files[3].position_in_section == 2, (
+            f'ch1 image (different filepath) should be pos 2. '
+            f'Got {files[3].position_in_section}'
+        )
+        # ch2 extra is yet another filepath
+        assert files[4].position_in_section == 3, (
+            f'ch2 extra should be pos 3. '
+            f'Got {files[4].position_in_section}'
+        )
 
     def test_different_book_modules_have_independent_counters(self):
         """Two different book modules (different module_ids) get
         INDEPENDENT 0-based counters. Each book module is its own
         scope; the counter resets at every book boundary.
+
+        Per-chapter contract (test3 Problem 4 fix, 2026-06-24):
+        Within a single book, files in the same chapter (same
+        content_filepath) share a position. Different books
+        still get independent counters.
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
@@ -106,15 +137,14 @@ class TestBookModnameCrossContentFilepath:
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Different module_ids → independent counters
-        # Book 1 chapter 1: 0, 1
-        # Book 2 chapter 1: 0, 1 (counter resets, even though
-        #                       same content_filepath as book 1)
-        # Book 3 root: 0
+        # Per-chapter scope within each book:
+        # Book 1: ch1 files share pos 0
+        # Book 2: ch1 files share pos 0 (independent counter)
+        # Book 3: root pos 0
         assert files[0].position_in_section == 0  # book1 ch1
-        assert files[1].position_in_section == 1  # book1 ch1_2
-        assert files[2].position_in_section == 0  # book2 ch1 (RESET)
-        assert files[3].position_in_section == 1  # book2 ch1_2
+        assert files[1].position_in_section == 0  # book1 ch1_2 (shares with ch1)
+        assert files[2].position_in_section == 0  # book2 ch1 (RESET, independent)
+        assert files[3].position_in_section == 0  # book2 ch1_2 (shares with book2 ch1)
         assert files[4].position_in_section == 0  # book3 root
 
     def test_book_module_among_non_book_files_in_section(self):

@@ -321,38 +321,53 @@ class TestOurCodeFollowsMoodleDataFlow:
 
     def test_book_chapter_files_share_book_scope(self):
         """Sub-agent: book_export_contents returns per-chapter
-        files under one cm. Our code: book modname uses per-book
-        scope (so chapter content + images share the book counter).
+        files under one cm. Our code: book modname uses per-chapter
+        scope (so all files in the same chapter share a position).
+
+        Per-chapter contract (test3 Problem 4 fix, 2026-06-24):
+        All files in the same chapter (same content_filepath) share
+        a position. The book counter advances per CHAPTER, not per
+        file. This is so cookie_mod-kalvidres and url-description-book
+        sub-files (extracted from the chapter's HTML) end up in the
+        same folder as the chapter's index.html.
+
+        Contract source:
+          - moodle_official_repo_for_reference/public/mod/book/lib.php:573
+            (each chapter's filepath is /{chapter_id}/, all sub-files
+            share this filepath)
+          - moodle_mobile_app_official_repo_for_reference/src/addons/mod/book/
+            services/book.ts:110-157 (getContentsMap groups by chapter
+            id via /\\d+/ regex on filepath)
         """
         from moodle_dl.moodle.result_builder import ResultBuilder
 
         # Book cm 100 with 2 chapters:
-        # Chapter 1: html + image
-        # Chapter 2: html + image
-        # All files share book scope, counter advances per chapter
+        # Chapter 1: html + image (same filepath /1/)
+        # Chapter 2: html + image (same filepath /2/)
+        # All files share book scope, counter advances per chapter.
         files = []
-        for chapter in [1, 2]:
-            f_html = _make_file(
-                1, 100, f'chapter{chapter}.html', modname='book'
-            )
-            f_img = _make_file(
-                1, 100, f'chapter{chapter}.png', modname='book'
-            )
-            f_html._module_has_attachments = True
-            f_img._module_has_attachments = True
-            files.extend([f_html, f_img])
+        from moodle_dl.types import File
+        for chapter_num, chapter in [(1, 1), (2, 2)]:
+            for name_suffix, is_img in [('.html', False), ('.png', True)]:
+                f = File(
+                    module_id=100, section_name='S', section_id=1,
+                    module_name='mod_100',
+                    content_filepath=f'/{chapter_num}/',
+                    content_filename=f'chapter{chapter}{name_suffix}',
+                    content_fileurl=f'https://example.com/c{chapter}{name_suffix}',
+                    content_filesize=1024, content_timemodified=0,
+                    module_modname='book',
+                    content_type='file',
+                    content_isexternalfile=False,
+                )
+                f._module_has_attachments = is_img
+                files.append(f)
 
         rb = _make_rb()
         rb._assign_positions_to_files(files)
 
-        # Book scope: per-book counter advances per FILE within book.
-        # Files within book (one cm_id) get sequential positions.
-        # So chapter1.html → 0, chapter1.png → 1,
-        #    chapter2.html → 2, chapter2.png → 3.
-        # This is the per-book scope: chapter sub-folders get
-        # independent *NN* counters so chapter content + images
-        # sort correctly within each chapter.
-
+        # Per-chapter scope: files in the same chapter (same
+        # content_filepath) share a position.
         chapter_positions = {1: [], 2: []}
         for f in files:
             if 'chapter1' in f.content_filename:
@@ -360,14 +375,16 @@ class TestOurCodeFollowsMoodleDataFlow:
             elif 'chapter2' in f.content_filename:
                 chapter_positions[2].append(f.position_in_section)
 
-        # Chapter 1: positions 0, 1
-        assert sorted(chapter_positions[1]) == [0, 1], (
-            f'Chapter 1 files should be at positions 0, 1. '
-            f'Got: {sorted(chapter_positions[1])}'
+        # Chapter 1: both files share position 0 (per-chapter scope)
+        assert sorted(chapter_positions[1]) == [0, 0], (
+            f'Chapter 1 files (html + image) should share position 0. '
+            f'Got: {sorted(chapter_positions[1])}. '
+            f'After test3 Problem 4 fix, files in the same chapter '
+            f'share a position.'
         )
-        # Chapter 2: positions 2, 3
-        assert sorted(chapter_positions[2]) == [2, 3], (
-            f'Chapter 2 files should be at positions 2, 3. '
+        # Chapter 2: both files share position 1 (next chapter)
+        assert sorted(chapter_positions[2]) == [1, 1], (
+            f'Chapter 2 files (html + image) should share position 1. '
             f'Got: {sorted(chapter_positions[2])}'
         )
 
