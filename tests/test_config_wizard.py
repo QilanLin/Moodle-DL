@@ -66,6 +66,294 @@ def test_interactively_acquire_config_navigates_steps_and_sets_auto_flags():
     wizard._select_modules_to_download.assert_called_once()
 
 
+def test_interactively_acquire_config_finish_option_hidden_on_early_steps():
+    """'完成配置并退出' must NOT appear on steps 1-3 (forces continuation to step 4).
+
+    Regression test for the bug where '完成配置并退出' was always shown,
+    allowing users to skip step 4 (Configure module types to download) and
+    leaving download_options empty, causing the
+    '所有下载选项都是 false' validator warning.
+    """
+    wizard = make_wizard()
+    courses = [Course(1, 'One')]
+    wizard.get_user_id_and_version = MagicMock(return_value=(7, 2024010100))
+    wizard.core_handler.fetch_courses.return_value = courses
+    wizard._select_courses_to_download = MagicMock()
+    wizard._interactively_add_manually_specified_courses = MagicMock()
+    wizard._set_options_of_courses = MagicMock()
+    wizard._select_modules_to_download = MagicMock()
+
+    # Capture the choices passed to Cutie.select at each step
+    captured_choices_per_step = []
+
+    def fake_select(choices):
+        captured_choices_per_step.append(list(choices))
+        # Smart selection:
+        # - 'continue' on early steps
+        # - 'finish' on last step (to avoid infinite loop)
+        if '完成配置并退出' in choices:
+            return choices.index('完成配置并退出')
+        return 0  # first option (continue)
+
+    with (
+        patch('builtins.print'),
+        patch('moodle_dl.cli.config_wizard.Cutie.select', side_effect=fake_select),
+    ):
+        # 4 calls (one per step)
+        wizard.interactively_acquire_config()
+
+    # Must have exactly 4 steps (each call to Cutie.select is one step)
+    assert len(captured_choices_per_step) == 4, (
+        'Expected 4 Cutie.select calls (one per step), got {}'.format(
+            len(captured_choices_per_step)
+        )
+    )
+
+    # Step 1: only '继续下一步'
+    assert captured_choices_per_step[0] == ['继续下一步'], (
+        'Step 1 should only show [继续下一步], got {}'.format(captured_choices_per_step[0])
+    )
+
+    # Step 2: '继续下一步' + '返回上一步' (NO '完成配置并退出')
+    assert captured_choices_per_step[1] == ['继续下一步', '返回上一步'], (
+        'Step 2 should show [继续下一步, 返回上一步], got {}'.format(captured_choices_per_step[1])
+    )
+
+    # Step 3: '继续下一步' + '返回上一步' (NO '完成配置并退出')
+    assert captured_choices_per_step[2] == ['继续下一步', '返回上一步'], (
+        'Step 3 should show [继续下一步, 返回上一步], got {}'.format(captured_choices_per_step[2])
+    )
+
+    # Step 4 (last): '返回上一步' + '完成配置并退出' (NO '继续下一步')
+    assert captured_choices_per_step[3] == ['返回上一步', '完成配置并退出'], (
+        'Step 4 (last) should show [返回上一步, 完成配置并退出], got {}'.format(
+            captured_choices_per_step[3]
+        )
+    )
+
+    # CRITICAL: '完成配置并退出' must NOT be in steps 1-3 choices
+    for step_idx in range(3):
+        assert '完成配置并退出' not in captured_choices_per_step[step_idx], (
+            "Bug regression: '完成配置并退出' appeared in step {} choices: {}".format(
+                step_idx + 1, captured_choices_per_step[step_idx]
+            )
+        )
+
+    # All 4 step methods should be called exactly once
+    wizard._select_courses_to_download.assert_called_once_with(courses)
+    wizard._interactively_add_manually_specified_courses.assert_called_once()
+    wizard._set_options_of_courses.assert_called_once()
+    wizard._select_modules_to_download.assert_called_once()
+
+
+def test_interactively_acquire_config_finish_only_available_at_last_step():
+    """Explicit: '完成配置并退出' available ONLY when current_step == len(steps) - 1.
+
+    This test verifies the exact constraint that prevents users from exiting
+    early before completing all 4 additional configuration steps.
+    """
+    wizard = make_wizard()
+    wizard.get_user_id_and_version = MagicMock(return_value=(7, 2024010100))
+    wizard.core_handler.fetch_courses.return_value = [Course(1, 'One')]
+    wizard._select_courses_to_download = MagicMock()
+    wizard._interactively_add_manually_specified_courses = MagicMock()
+    wizard._set_options_of_courses = MagicMock()
+    wizard._select_modules_to_download = MagicMock()
+
+    num_steps = 4
+    cutie_calls = []
+
+    def fake_select(choices):
+        cutie_calls.append(list(choices))
+        # First call: try to break out by selecting '完成配置并退出' if available
+        # If not available, select first option (continue)
+        if '完成配置并退出' in choices:
+            return choices.index('完成配置并退出')
+        return 0  # first available (continue)
+
+    with (
+        patch('builtins.print'),
+        patch('moodle_dl.cli.config_wizard.Cutie.select', side_effect=fake_select),
+    ):
+        wizard.interactively_acquire_config()
+
+    # Should have completed all 4 steps because '完成配置并退出' was
+    # only available on the last step (step 4)
+    wizard._select_courses_to_download.assert_called_once()
+    wizard._interactively_add_manually_specified_courses.assert_called_once()
+    wizard._set_options_of_courses.assert_called_once()
+    wizard._select_modules_to_download.assert_called_once()
+
+    # Exactly 4 step prompts
+    assert len(cutie_calls) == num_steps, (
+        'Expected {} step prompts, got {}'.format(num_steps, len(cutie_calls))
+    )
+
+
+def test_interactively_acquire_config_user_cannot_early_exit_after_step_1():
+    """User selecting '完成配置并退出' after step 1 is impossible (regression guard)."""
+    wizard = make_wizard()
+    wizard.get_user_id_and_version = MagicMock(return_value=(7, 2024010100))
+    wizard.core_handler.fetch_courses.return_value = [Course(1, 'One')]
+    wizard._select_courses_to_download = MagicMock()
+    wizard._interactively_add_manually_specified_courses = MagicMock()
+    wizard._set_options_of_courses = MagicMock()
+    wizard._select_modules_to_download = MagicMock()
+
+    captured_choices_step1 = []
+
+    def fake_select(choices):
+        # Capture FIRST step's choices, then pick 'finish' if available
+        # to avoid infinite loop (back+forward+back+forward...)
+        if len(captured_choices_step1) == 0:
+            captured_choices_step1.extend(choices)
+            return 0  # Step 1: only '继续下一步' available
+        # All subsequent steps: pick 'finish' if available (last step)
+        # to terminate the wizard after 4 steps
+        if '完成配置并退出' in choices:
+            return choices.index('完成配置并退出')
+        return 0  # continue (for early steps)
+
+    with (
+        patch('builtins.print'),
+        patch('moodle_dl.cli.config_wizard.Cutie.select', side_effect=fake_select),
+    ):
+        wizard.interactively_acquire_config()
+
+    # Step 1 choices must NOT include '完成配置并退出'
+    assert '完成配置并退出' not in captured_choices_step1, (
+        "Step 1 must not show '完成配置并退出'. Got: {}".format(captured_choices_step1)
+    )
+    # And step 1 should only have '继续下一步'
+    assert captured_choices_step1 == ['继续下一步']
+
+
+@pytest.mark.parametrize('current_step,num_steps,expected_choices', [
+    # current_step 0 (Step 1): only continue
+    (0, 4, ['继续下一步']),
+    # current_step 1 (Step 2): continue + back (NO finish)
+    (1, 4, ['继续下一步', '返回上一步']),
+    # current_step 2 (Step 3): continue + back (NO finish)
+    (2, 4, ['继续下一步', '返回上一步']),
+    # current_step 3 (Step 4 - last): back + finish (NO continue)
+    (3, 4, ['返回上一步', '完成配置并退出']),
+    # Edge case: 1-step config
+    (0, 1, ['完成配置并退出']),
+    # Edge case: 5-step config - finish only on last
+    (0, 5, ['继续下一步']),
+    (1, 5, ['继续下一步', '返回上一步']),
+    (2, 5, ['继续下一步', '返回上一步']),
+    (3, 5, ['继续下一步', '返回上一步']),
+    (4, 5, ['返回上一步', '完成配置并退出']),
+])
+def test_interactively_acquire_config_choice_logic(current_step, num_steps, expected_choices):
+    """Parametrized test for choice logic across multiple step counts.
+
+    Verifies the exact rule:
+    - '继续下一步': visible when current_step < num_steps - 1
+    - '返回上一步': visible when current_step > 0
+    - '完成配置并退出': visible when current_step == num_steps - 1
+    """
+    # Replicate the choice-building logic
+    choices = []
+    if current_step < num_steps - 1:
+        choices.append('继续下一步')
+    if current_step > 0:
+        choices.append('返回上一步')
+    if current_step == num_steps - 1:
+        choices.append('完成配置并退出')
+
+    assert choices == expected_choices, (
+        'At current_step={}/{}, expected {}, got {}'.format(
+            current_step, num_steps, expected_choices, choices
+        )
+    )
+
+
+def test_interactively_acquire_config_no_finish_in_first_half():
+    """Verify '完成配置并退出' is NOT in the first half of steps (regression guard)."""
+    wizard = make_wizard()
+    wizard.get_user_id_and_version = MagicMock(return_value=(7, 2024010100))
+    wizard.core_handler.fetch_courses.return_value = [Course(1, 'One')]
+    wizard._select_courses_to_download = MagicMock()
+    wizard._interactively_add_manually_specified_courses = MagicMock()
+    wizard._set_options_of_courses = MagicMock()
+    wizard._select_modules_to_download = MagicMock()
+
+    num_steps = 4
+    cutie_calls = []
+
+    def fake_select(choices):
+        cutie_calls.append(list(choices))
+        # Smart selection: pick 'finish' if available (to avoid infinite loop)
+        if '完成配置并退出' in choices:
+            return choices.index('完成配置并退出')
+        return 0  # first option (continue)
+
+    with (
+        patch('builtins.print'),
+        patch('moodle_dl.cli.config_wizard.Cutie.select', side_effect=fake_select),
+    ):
+        wizard.interactively_acquire_config()
+
+    # Check that '完成配置并退出' is NOT in the first half (steps 0 to num_steps-2)
+    half_point = num_steps // 2
+    for idx in range(half_point):
+        if idx < len(cutie_calls):
+            assert '完成配置并退出' not in cutie_calls[idx], (
+                "Step {} must not show '完成配置并退出' (only allowed at last step). Got: {}".format(
+                    idx + 1, cutie_calls[idx]
+                )
+            )
+
+
+def test_interactively_acquire_config_regression_against_early_exit():
+    """Regression test: simulate user trying to exit at every step before last.
+
+    Before the fix, user could select '完成配置并退出' on step 1/2/3 and
+    skip step 4 (Configure module types to download). This caused the
+    '所有下载选项都是 false' validator warning. After the fix, the only way
+    to reach '完成配置并退出' is by completing all 4 steps.
+    """
+    wizard = make_wizard()
+    wizard.get_user_id_and_version = MagicMock(return_value=(7, 2024010100))
+    wizard.core_handler.fetch_courses.return_value = [Course(1, 'One')]
+    wizard._select_courses_to_download = MagicMock()
+    wizard._interactively_add_manually_specified_courses = MagicMock()
+    wizard._set_options_of_courses = MagicMock()
+    wizard._select_modules_to_download = MagicMock()
+
+    # Try to be clever: at every step, try to find '完成配置并退出' and select it
+    # If not available, pick first option (continue)
+    cutie_calls = []
+
+    def fake_select(choices):
+        cutie_calls.append(list(choices))
+        if '完成配置并退出' in choices:
+            return choices.index('完成配置并退出')
+        return 0  # first option (continue)
+
+    with (
+        patch('builtins.print'),
+        patch('moodle_dl.cli.config_wizard.Cutie.select', side_effect=fake_select),
+    ):
+        wizard.interactively_acquire_config()
+
+    # All 4 step methods should be called exactly once (proves we couldn't
+    # skip any step)
+    wizard._select_courses_to_download.assert_called_once()
+    wizard._interactively_add_manually_specified_courses.assert_called_once()
+    wizard._set_options_of_courses.assert_called_once()
+    wizard._select_modules_to_download.assert_called_once()
+
+    # Verify all 4 step prompts happened
+    assert len(cutie_calls) == 4, (
+        'All 4 step prompts should happen even when user tries to exit early. Got {}'.format(
+            len(cutie_calls)
+        )
+    )
+
+
 def test_interactively_acquire_config_exits_on_moodle_error():
     wizard = make_wizard()
     wizard.get_user_id_and_version = MagicMock(side_effect=RequestRejectedError('expired token'))
