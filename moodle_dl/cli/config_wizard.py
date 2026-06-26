@@ -109,7 +109,10 @@ class ConfigWizard:
                 choices.append(_('继续下一步', 'Continue to next step'))
             if current_step > 0:
                 choices.append(_('返回上一步', 'Go back to previous step'))
-            choices.append(_('完成配置并退出', 'Finish configuration and exit'))
+            # '完成配置并退出' only available after the LAST step (when current_step == len(steps) - 1)
+            # (i.e., user has completed all 4 steps)
+            if current_step == len(steps) - 1:
+                choices.append(_('完成配置并退出', 'Finish configuration and exit'))
 
             Log.blue(_('请选择：', 'Please choose:'))
             choice = Cutie.select(choices)
