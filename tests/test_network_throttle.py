@@ -17,9 +17,9 @@ def test_network_throttle_waits_before_first_and_queues_following_requests():
     throttle.wait('first')
     throttle.wait('second')
 
-    # First wait: delay=30.0+10.0*0.0=30.0, accumulated 30.0
-    # Second wait: delay=30.0+10.0*0.0=30.0, accumulated 60.0 (queued behind first)
-    assert [call.args[0] for call in sleep.call_args_list] == [30.0, 60.0]
+    # First wait: delay=10.0+10.0*0.0=10.0, accumulated 10.0
+    # Second wait: delay=10.0+10.0*0.0=10.0, accumulated 20.0 (queued behind first)
+    assert [call.args[0] for call in sleep.call_args_list] == [10.0, 20.0]
 
 
 def test_network_throttle_can_skip_the_first_delay():
@@ -36,7 +36,7 @@ def test_network_throttle_can_skip_the_first_delay():
 
     # delay_first=False means first call has 0 delay, second call still has delay
     # because has_reserved=True after first call
-    assert [call.args[0] for call in sleep.call_args_list] == [30.0]
+    assert [call.args[0] for call in sleep.call_args_list] == [10.0]
 
 
 @pytest.mark.asyncio
@@ -50,8 +50,8 @@ async def test_network_throttle_async_wait_uses_async_sleep():
 
     await throttle.async_wait('async request')
 
-    # delay = base_delay (30.0) + jitter (10.0) * random (1.0) = 40.0
-    async_sleep.assert_awaited_once_with(40.0)
+    # delay = base_delay (10.0) + jitter (10.0) * random (1.0) = 20.0
+    async_sleep.assert_awaited_once_with(20.0)
 
 
 @pytest.mark.asyncio
@@ -76,17 +76,17 @@ async def test_network_throttle_async_wait_does_not_prebook_concurrent_callers()
     tasks = [asyncio.create_task(throttle.async_wait(f'request {index}')) for index in range(3)]
     await asyncio.sleep(0)
 
-    assert sleep_delays == [30.0]
+    assert sleep_delays == [10.0]
 
     for expected_count in (2, 3):
         waiter, _delay = sleep_waiters.pop(0)
         waiter.set_result(None)
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        assert sleep_delays == [30.0] * expected_count
+        assert sleep_delays == [10.0] * expected_count
 
     waiter, _delay = sleep_waiters.pop(0)
     waiter.set_result(None)
     await asyncio.gather(*tasks)
 
-    assert sleep_delays == [30.0, 30.0, 30.0]
+    assert sleep_delays == [10.0, 10.0, 10.0]
