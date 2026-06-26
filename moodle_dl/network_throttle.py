@@ -11,13 +11,13 @@ class NetworkThrottle:
     """Shared rate limiter for user-facing Moodle network operations."""
 
     def __init__(
-            self,
-            base_delay: float = 3.0,
-            jitter: float = 1.0,
-            *,
-            delay_first: bool = True,
-            sleep: Callable[[float], None] = time.sleep,
-            async_sleep: Callable[[float], object] = asyncio.sleep,
+        self,
+        base_delay: float = 30.0,
+        jitter: float = 10.0,
+        *,
+        delay_first: bool = True,
+        sleep: Callable[[float], None] = time.sleep,
+        async_sleep: Callable[[float], object] = asyncio.sleep,
             monotonic: Callable[[], float] = time.monotonic,
             random_func: Optional[Callable[[], float]] = None,
         ):
