@@ -399,26 +399,62 @@ def _partition_courses_by_halt(
     """
     Split each course's files into (kept, halted) buckets.
 
-    `kept` files keep their `content_fileurl` and proceed to the normal
-    download path. `halted` files have their `content_fileurl` blanked out
-    so the downloader treats them as no-ops, while we record the original
-    URL in the database for later release.
+    For each file we attempt to derive a permanent Kaltura CDN URL via
+    `KalturaUrlBuilder.build_from_known_embed_url` — a pure string
+    transform (no network). When a CDN URL is produced the file is
+    halted and its `content_fileurl` is REPLACED with the auth-free CDN
+    URL so a later --release-videos downloads straight from Kaltura CDN
+    without needing Moodle cookies or mobile tokens.
 
-    Returns (kept_courses, halted_entries) where halted_entries is a list of
-    (course_id, course_fullname, file) tuples to persist via
+    For older `view.php?id=...` URLs whose entry_id is only resolvable
+    via network, we fall back to halting by `module_modname`. The
+    original URL is preserved; --release-videos resolves it through the
+    normal kalvidres flow (one Moodle-authenticated redirect).
+
+    `kept` files keep their original `content_fileurl` and proceed to
+    the normal download path. Halted files have their `content_fileurl`
+    blanked in the kept copy so the downloader no-ops them.
+
+    Returns (kept_courses, halted_entries) where halted_entries is a
+    list of (course_id, course_fullname, file) tuples to persist via
     `database.save_halted_file`.
     """
+    # Lazy import: kaltura_url.py pulls in optional deps only used by Task.
+    from moodle_dl.downloader.kaltura_url import KalturaUrlBuilder
+
     kept_courses = []
     halted_entries = []
 
+    builder = KalturaUrlBuilder(task_id=0)
     for course in courses:
         kept_files = []
         for f in course.files:
-            if _is_kaltura_cdn_url(f.content_fileurl, pattern):
-                # Take a snapshot of the file with the original URL preserved
-                # so a later --release-videos can re-download it from the
-                # stored content_fileurl.
+            # Derive a permanent Kaltura CDN URL from the upstream
+            # Moodle URL. Pure string transform, no network.
+            cdn_url = builder.build_from_known_embed_url(f.content_fileurl)
+
+            # Halt if:
+            #   - we derived a CDN URL (LTI launch → embedIframeJs)
+            #   - the URL is already a known auth-free CDN URL
+            #     (html5lib mwEmbedFrame or embedIframeJs /p/ path)
+            #   - module_modname is cookie_mod-kalvidres (view.php fallback)
+            url = f.content_fileurl or ''
+            is_already_cdn = (
+                _is_kaltura_cdn_url(url, pattern)
+                or 'cdnapisec.kaltura.com/p/' in url
+            )
+            should_halt = (
+                cdn_url is not None
+                or is_already_cdn
+                or getattr(f, 'module_modname', '') == 'cookie_mod-kalvidres'
+            )
+
+            if should_halt:
                 halted_file = copy.copy(f)
+                if cdn_url:
+                    # Replace with the auth-free CDN URL so the database
+                    # stores a URL that works without Moodle auth.
+                    halted_file.content_fileurl = cdn_url
                 halted_entries.append(
                     (course.id, getattr(course, 'fullname', '') or '', halted_file)
                 )
@@ -445,7 +481,8 @@ def run_halt_videos(config: ConfigHelper, opts: MoodleDlOpts):
     """
     logging.info(
         'Halt-videos mode: downloading everything except Kaltura CDN videos '
-        '(URLs matching %r). Total file count is unchanged.',
+        '(URLs matching %r). Halted entries store the permanent '
+        'cdnapisec.kaltura.com CDN URL — no Moodle auth needed for release.',
         opts.video_url_pattern,
     )
 

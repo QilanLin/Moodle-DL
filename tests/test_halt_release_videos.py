@@ -35,6 +35,27 @@ KCL_KALTURA_URL = (
     '/p/2368101/uiconf_id/42864872/entry_id/1_oqrq4l0x'
     '?wid=_2368101&iframeembed=true&entry_id=1_oqrq4l0x'
 )
+# Auth-free entry-point URL that KalturaUrlBuilder.build_from_known_embed_url
+# produces from a Moodle LTI launch URL. This is what the partition step now
+# stores as the halted file's content_fileurl so --release-videos can
+# re-download without Moodle cookies or mobile tokens.
+KCL_KALTURA_EMBED_URL = (
+    'https://cdnapisec.kaltura.com/p/2368101/sp/236810100/embedIframeJs/'
+    'uiconf_id/50869842/partner_id/2368101'
+    '?iframeembed=true&entry_id=1_uwhesokp'
+)
+# Upstream Moodle LTI launch URL. This is what fetch_state puts in
+# content_fileurl for cookie_mod-kalvidres modules.
+KCL_KALTURA_LTI_LAUNCH_URL = (
+    'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?courseid=0&height=402'
+    '&width=608&withblocks=0&source=https%3A%2F%2Fkaf.keats.kcl.ac.uk'
+    '%2Fbrowseandembed%2Findex%2Fmedia%2Fentryid%2F1_uwhesokp'
+    '%2FshowDescription%2Ffalse%2FplayerSkin%2F50869842%2F'
+)
+# Older form: kalvidres view.php URL (entry_id only known after network fetch).
+KCL_KALTURA_VIEW_URL = (
+    'https://keats.kcl.ac.uk/mod/kalvidres/view.php?id=9154816'
+)
 DEFAULT_PATTERN = 'cdnapisec.kaltura.com/html5/html5lib/'
 
 
@@ -170,6 +191,84 @@ class PartitionTest(unittest.TestCase):
         self.assertEqual(len(halted), 2)
         self.assertEqual({h[0] for h in halted}, {1, 2})
 
+    # --- LTI launch URL → auth-free CDN URL conversion ---
+
+    def test_lti_launch_url_is_halted_and_replaced_with_cdn_url(self):
+        """content_fileurl is a Moodle LTI launch URL. Partition MUST halt
+        it and replace the halted copy's content_fileurl with the auth-free
+        cdnapisec.kaltura.com CDN URL."""
+        f = _make_file(KCL_KALTURA_LTI_LAUNCH_URL)
+        c1 = _make_course(1, 'CS100', [f])
+        kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
+
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(kept[0].files), 1)
+        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        self.assertEqual(len(halted), 1)
+
+        course_id, course_fullname, halted_file = halted[0]
+        self.assertEqual(course_id, 1)
+        self.assertEqual(course_fullname, 'CS100')
+
+        # The halted URL must be the auth-free Kaltura CDN URL.
+        self.assertIn('cdnapisec.kaltura.com/', halted_file.content_fileurl)
+        self.assertIn('1_uwhesokp', halted_file.content_fileurl)
+        self.assertNotIn('keats.kcl.ac.uk', halted_file.content_fileurl)
+        self.assertNotIn('lti_launch.php', halted_file.content_fileurl)
+
+    def test_view_php_url_is_halted_keeps_original_url(self):
+        """view.php?id=... URL: entry_id unknown offline, halt by modname,
+        keep original URL (Task resolves on release)."""
+        f = _make_file(KCL_KALTURA_VIEW_URL, module_modname='cookie_mod-kalvidres')
+        c1 = _make_course(1, 'CS100', [f])
+        kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
+
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        self.assertEqual(len(halted), 1)
+        halted_file = halted[0][2]
+        # URL preserved — no CDN URL derivable offline from view.php.
+        self.assertEqual(halted_file.content_fileurl, KCL_KALTURA_VIEW_URL)
+
+    def test_embed_iframe_url_is_halted_as_is(self):
+        """content_fileurl is already a Kaltura CDN URL (idempotent re-run)."""
+        f = _make_file(KCL_KALTURA_EMBED_URL)
+        c1 = _make_course(1, 'CS100', [f])
+        kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
+
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        self.assertEqual(len(halted), 1)
+        self.assertEqual(halted[0][2].content_fileurl, KCL_KALTURA_EMBED_URL)
+
+    def test_mixed_batch_lti_plus_pdf_plus_view_php(self):
+        """Production batch: LTI launch, view.php, PDF. All 3 in kept
+        (Kaltura URLs blanked), 2 halted (LTI → CDN URL, view.php → original)."""
+        kalvidres_lti = _make_file(KCL_KALTURA_LTI_LAUNCH_URL, filename='lecture1.mp4')
+        kalvidres_view = _make_file(
+            KCL_KALTURA_VIEW_URL,
+            filename='lecture2.mp4',
+            module_modname='cookie_mod-kalvidres',
+        )
+        pdf = _make_file('https://keats.kcl.ac.uk/x/slides.pdf', filename='slides.pdf')
+
+        c1 = _make_course(1, 'CS100', [pdf, kalvidres_lti, kalvidres_view])
+        kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
+
+        self.assertEqual(len(kept[0].files), 3)
+        self.assertEqual(len(halted), 2)
+
+        url_map = {f.content_filename: f.content_fileurl for f in kept[0].files}
+        self.assertEqual(url_map['slides.pdf'], 'https://keats.kcl.ac.uk/x/slides.pdf')
+        self.assertEqual(url_map['lecture1.mp4'], '')
+        self.assertEqual(url_map['lecture2.mp4'], '')
+
+        # Halted: LTI → CDN URL, view.php → original
+        halted_by_name = {h[2].content_filename: h[2].content_fileurl for h in halted}
+        self.assertIn('cdnapisec.kaltura.com/', halted_by_name['lecture1.mp4'])
+        self.assertNotIn('keats.kcl.ac.uk', halted_by_name['lecture1.mp4'])
+        self.assertEqual(halted_by_name['lecture2.mp4'], KCL_KALTURA_VIEW_URL)
+
 
 # ---------------------------------------------------------------------------
 # Database round-trip
@@ -293,6 +392,43 @@ class HaltedDatabaseTest(unittest.TestCase):
             files = failed[86124]['files']
             self.assertEqual(len(files), 1)
             self.assertEqual(files[0].content_filename, 'f.bin')
+
+    # --- End-to-end: partition + save_halted_file MUST persist the
+    # auth-free CDN URL (not the keats.kcl.ac.uk LTI launch URL) so
+    # --release-videos works after cookies/token expire. ---
+
+    def test_lti_launch_url_roundtrips_as_cdn_url_in_db(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            rec = make_recorder(tmpdir)
+
+            # Feed LTI launch URL through the partition step.
+            f = _make_file(KCL_KALTURA_LTI_LAUNCH_URL, filename='lecture1.mp4')
+            c1 = _make_course(1, 'CS100', [f])
+            kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
+            self.assertEqual(len(halted), 1)
+            self.assertEqual(kept[0].files[0].content_fileurl, '')
+
+            # Persist.
+            course_id, course_fullname, halted_file = halted[0]
+            rec.save_halted_file(
+                halted_file, course_id=course_id, course_fullname=course_fullname
+            )
+
+            # Read back: stored URL must be the auth-free CDN URL.
+            halted_back = rec.get_halted_files()
+            self.assertEqual(len(halted_back), 1)
+            stored_file, _, _ = halted_back[0]
+            self.assertIn('cdnapisec.kaltura.com/', stored_file.content_fileurl)
+            self.assertNotIn('keats.kcl.ac.uk', stored_file.content_fileurl)
+            self.assertNotIn('lti_launch.php', stored_file.content_fileurl)
+
+            # [HALTED] reason also references the CDN URL.
+            reason = self._read_reason(rec, stored_file)
+            self.assertIsNotNone(reason)
+            assert reason is not None  # narrow for type-checker
+            self.assertIn('cdnapisec.kaltura.com/', reason)
 
 
 # ---------------------------------------------------------------------------
