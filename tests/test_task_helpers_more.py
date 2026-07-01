@@ -596,6 +596,70 @@ async def test_cookie_mod_and_kalvidres_download_helpers_restore_original_url(ta
     assert task.file.content_fileurl == 'https://moodle.example.com/kalvidres'
 
 
+@pytest.mark.asyncio
+async def test_kalvidres_skips_text_extraction_when_notes_already_written(
+    task_factory, tmp_path
+):
+    """If _notes.md already exists on disk (e.g. the halt-videos
+    partition step wrote it, or a previous run completed), don't
+    overwrite it. The partition version contains the real view.php
+    annotation; the Task would only fetch the Kaltura CDN URL
+    and produce a useless h1-only file."""
+
+    # Pre-write a _notes.md to simulate halt-stage writing.
+    notes_path = tmp_path / 'video_notes.md'
+    notes_path.write_text('# Real annotation from view.php', encoding='utf-8')
+
+    task = task_factory(
+        module_modname='cookie_mod-kalvidres',
+        content_fileurl='https://cdnapisec.kaltura.com/p/2368101/sp/.../entry_id/1_abc',
+    )
+    task.file.saved_to = str(tmp_path / 'video.mp4')
+    task.extract_kalvidres_text = AsyncMock()
+    task.extract_kalvidres_video_url = AsyncMock(return_value=None)
+    task.external_download_url = AsyncMock()
+    # CDN URL → build_from_known_embed_url will now return a CDN URL
+    # because we added 'cdnapisec.kaltura.com' to PARTNER_FALLBACKS_BY_HOST.
+    # So the kalvidres_text branch should be skipped (and text
+    # extraction should NOT be called).
+    task._build_kaltura_url_from_known_embed_url = MagicMock(
+        return_value='https://cdnapisec.kaltura.com/p/2368101/sp/.../entry_id/1_abc',
+    )
+
+    await task._handle_kalvidres_download()
+
+    # Text extraction was NOT called because _notes.md was on disk.
+    task.extract_kalvidres_text.assert_not_awaited()
+    # _notes.md is unchanged.
+    assert notes_path.read_text(encoding='utf-8') == '# Real annotation from view.php'
+
+
+@pytest.mark.asyncio
+async def test_kalvidres_skips_text_extraction_when_notes_already_written_non_cdn(
+    task_factory, tmp_path
+):
+    """Same protection for view.php (non-CDN) URLs: if _notes.md
+    exists, skip the redundant fetch."""
+
+    notes_path = tmp_path / 'video_notes.md'
+    notes_path.write_text('# Pre-existing annotation', encoding='utf-8')
+
+    task = task_factory(
+        module_modname='cookie_mod-kalvidres',
+        content_fileurl='https://keats.kcl.ac.uk/mod/kalvidres/view.php?id=9154816',
+    )
+    task.file.saved_to = str(tmp_path / 'video.mp4')
+    task.extract_kalvidres_text = AsyncMock()
+    task.extract_kalvidres_video_url = AsyncMock(return_value=None)
+    task.external_download_url = AsyncMock()
+    task._build_kaltura_url_from_known_embed_url = MagicMock(return_value=None)
+
+    await task._handle_kalvidres_download()
+
+    task.extract_kalvidres_text.assert_not_awaited()
+    assert notes_path.read_text(encoding='utf-8') == '# Pre-existing annotation'
+
+
 
 
 

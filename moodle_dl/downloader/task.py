@@ -1972,16 +1972,38 @@ class Task:
         video_path = str(self.file.saved_to)
         text_path = os.path.splitext(video_path)[0] + '_notes.md'
 
+        # If the halt-videos partition step already wrote _notes.md,
+        # don't overwrite it. The partition step fetches the real
+        # view.php / LTI launch page (with Moodle cookies) and extracts
+        # the full annotation; running extract_kalvidres_text here
+        # would only fetch the Kaltura CDN URL (which carries no real
+        # annotation content) and clobber the good file. Idempotent
+        # for normal mode too: if the user re-runs, _notes.md stays
+        # as-is.
+        notes_already_written = os.path.isfile(text_path)
+
         kaltura_url = self._build_kaltura_url_from_known_embed_url(self.file.content_fileurl)
         if kaltura_url:
-            logging.info(
-                '[%d] Direct Kaltura embed URL detected; skipping text extraction',
-                self.task_id,
-            )
+            if notes_already_written:
+                logging.debug(
+                    '[%d] _notes.md already exists (%s); skipping text extraction',
+                    self.task_id, text_path,
+                )
+            else:
+                logging.info(
+                    '[%d] Direct Kaltura embed URL detected; skipping text extraction',
+                    self.task_id,
+                )
         else:
-            # 提取文本内容
-            logging.info('[%d] Extracting kalvidres text content...', self.task_id)
-            await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
+            if notes_already_written:
+                logging.debug(
+                    '[%d] _notes.md already exists (%s); skipping text extraction',
+                    self.task_id, text_path,
+                )
+            else:
+                # 提取文本内容
+                logging.info('[%d] Extracting kalvidres text content...', self.task_id)
+                await self.extract_kalvidres_text(self.file.content_fileurl, text_path)
 
             # 提取 Kaltura 视频 URL
             logging.info('[%d] Extracting Kaltura video URL for yt-dlp...', self.task_id)

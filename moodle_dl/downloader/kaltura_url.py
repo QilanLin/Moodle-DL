@@ -32,6 +32,15 @@ class KalturaUrlBuilder:
         'kaf.keats.kcl.ac.uk': '2368101',
         'keats.kcl.ac.uk': '2368101',
         'media.kcl.ac.uk': '2368101',
+        # halt-videos / release-videos stores the auth-free Kaltura
+        # CDN URL (cdnapisec.kaltura.com/p/.../embedIframeJs/...). When
+        # the Task re-derives the URL at release time it hits the
+        # CDN host directly, so we need a partner_id fallback for
+        # that host too.
+        'cdnapisec.kaltura.com': '2368101',
+        'cdnbakmi.kaltura.com': '2368101',
+        'cdnakmi.kaltura.com': '2368101',
+        'cdnapi.kaltura.com': '2368101',
     }
     UICONF_FALLBACKS_BY_HOST = {
         'keats.kcl.ac.uk': '50622292',
