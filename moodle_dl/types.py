@@ -377,6 +377,9 @@ class MoodleDlOpts:
     quiet: bool = False
     log_to_file: bool = False
     log_file_path: str = ''
+    halt_videos: bool = False
+    release_videos: int = 0
+    video_url_pattern: str = 'cdnapisec.kaltura.com/html5/html5lib/'
 
 
 class TaskState(Enum):

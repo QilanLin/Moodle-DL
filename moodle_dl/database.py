@@ -1484,6 +1484,97 @@ class StateRecorder:
                 cursor.execute(File.INSERT, data)
                 logging.debug(f'插入失败文件记录: {file.content_filename}')
 
+    # ------------------------------------------------------------------
+    # halt-videos / release-videos support
+    #
+    # Convention: halted files are stored with download_status='failed'
+    # and last_failed_reason prefixed by '[HALTED] '. The existing
+    # get_failed_files_* queries exclude rows whose last_failed_reason
+    # starts with '[PERMANENT]'; we extend that exclusion to '[HALTED]'
+    # too, so that --retry-failed does NOT pick halted files up by mistake.
+    # Only the dedicated --release-videos command surfaces them.
+    # ------------------------------------------------------------------
+
+    HALTED_REASON_PREFIX = '[HALTED] '
+
+    def save_halted_file(self, file: File, course_id: int, course_fullname: str) -> None:
+        """
+        Mark a file as halted: stored as download_status='failed' with a
+        last_failed_reason that starts with [HALTED] so the existing
+        retry-failed exclusion logic skips it.
+
+        @param file: Halted File object (not downloaded yet).
+        @param course_id: Owning course id.
+        @param course_fullname: Owning course fullname (for the courses cache).
+        """
+        reason = (
+            f'{self.HALTED_REASON_PREFIX}'
+            f'Kaltura CDN video held for release '
+            f'(url={file.content_fileurl[:200]})'
+        )
+        # Reuse save_failed_file so the same insert/update + identity logic runs.
+        self.save_failed_file(
+            file=file,
+            course_id=course_id,
+            course_fullname=course_fullname,
+            error_message=reason,
+        )
+
+    def get_halted_files(self, limit: int = None) -> List[Tuple[File, int, str]]:
+        """
+        Return up to `limit` halted files, ordered by halt time (oldest first).
+
+        @param limit: Max number of files to return. None = no limit.
+        @return: List of (File, course_id, course_fullname) tuples.
+        """
+        with self._conn(row_factory=True) as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT *
+                FROM files
+                WHERE download_status = 'failed'
+                  AND last_failed_reason LIKE ? ESCAPE '\\'
+                ORDER BY last_failed_at ASC
+            """
+            like_pattern = self.HALTED_REASON_PREFIX.replace('[', '\\[') + '%'
+            params = [like_pattern]
+            if limit is not None:
+                sql += " LIMIT ?"
+                params.append(int(limit))
+            cursor.execute(sql, params)
+            rows = cursor.fetchall()
+
+        from moodle_dl.types import Course
+
+        result: List[Tuple[File, int, str]] = []
+        for row in rows:
+            file = File.fromRow(dict(row))
+            course_id = row['course_id']
+            course_fullname = row['course_fullname']
+            result.append((file, course_id, course_fullname))
+        return result
+
+    def clear_halted_marker(self, file: File, course_id: int) -> None:
+        """
+        Clear the [HALTED] prefix on a file so the next download attempt
+        starts from a clean slate. We mark download_status='retrying' and
+        blank last_failed_reason so save_failed_file (if it fails) will
+        record a fresh error_message without the [HALTED] noise.
+        """
+        with self._conn() as conn:
+            cursor = conn.cursor()
+            where_clause, params = self._active_file_identity(file, course_id)
+            cursor.execute(
+                f"""
+                UPDATE files
+                SET download_status = 'retrying',
+                    consecutive_failures = 0,
+                    last_failed_reason = NULL
+                WHERE {where_clause}
+                """,
+                params,
+            )
+
     def mark_download_success(self, file: File, course_id: int):
         """
         标记文件下载成功，重置失败计数器
@@ -1561,9 +1652,12 @@ class StateRecorder:
         - 'failed': 上次下载失败的文件
         - 'retrying': 正在重试但被中断的文件（上次 --retry-failed 中途中断）
 
-        排除：last_failed_reason 以 '[PERMANENT] ' 开头的文件——这是被标记为
-        不可恢复（如 Reading List 已被学校删除），重试 100% 会再次失败，强制
-        重试只是浪费 wall-clock。用户若仍想试，可清除 last_failed_reason。
+        排除以下不可恢复的失败：
+        - last_failed_reason 以 '[PERMANENT] ' 开头 — 例如 Reading List
+          已被学校删除，强制重试只浪费 wall-clock
+        - last_failed_reason 以 '[HALTED] ' 开头 — --halt-videos 标记的
+          Kaltura CDN 视频。这些文件只有 --release-videos <N> 才能下载，
+          默认 retry-failed 不应该误抓。清除 [HALTED] 前缀后会再次出现。
 
         @param min_failures: 最小连续失败次数，默认1（所有失败文件）
                             注意：'retrying' 状态的文件 consecutive_failures=0，
@@ -1579,7 +1673,9 @@ class StateRecorder:
                     (download_status = 'failed' AND consecutive_failures >= ?)
                     OR download_status = 'retrying'
                 )
-                AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
+                AND (last_failed_reason IS NULL
+                     OR (last_failed_reason NOT LIKE '[PERMANENT]%'
+                         AND last_failed_reason NOT LIKE '[HALTED]%'))
                 ORDER BY course_id, consecutive_failures DESC, last_failed_at DESC
                 """,
                 (min_failures,)
@@ -1631,7 +1727,9 @@ class StateRecorder:
                     MAX(last_failed_at) as latest_failure
                 FROM files
                 WHERE download_status IN ('failed', 'retrying')
-                AND (last_failed_reason IS NULL OR last_failed_reason NOT LIKE '[PERMANENT]%')
+                AND (last_failed_reason IS NULL
+                     OR (last_failed_reason NOT LIKE '[PERMANENT]%'
+                         AND last_failed_reason NOT LIKE '[HALTED]%'))
                 GROUP BY course_id
                 ORDER BY failed_count DESC
                 """

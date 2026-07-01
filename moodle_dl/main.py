@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import argparse
 import asyncio
+import copy
 import logging
 import os
 import sqlite3
@@ -81,6 +82,10 @@ def choose_task(config: ConfigHelper, opts: MoodleDlOpts) -> None:
         resume_downloads(config, opts)
     elif opts.retry_failed:
         retry_failed_downloads(config, opts)
+    elif opts.halt_videos:
+        run_halt_videos(config, opts)
+    elif opts.release_videos > 0:
+        run_release_videos(config, opts)
     else:
         run_main(config, opts)
 
@@ -367,6 +372,245 @@ def retry_failed_downloads(config: ConfigHelper, opts: MoodleDlOpts):
     finally:
         if needs_restore:
             config.set_manually_specified_course_ids(original_manually_specified_ids)
+
+
+# ---------------------------------------------------------------------------
+# halt-videos / release-videos support
+# ---------------------------------------------------------------------------
+
+def _is_kaltura_cdn_url(url: str, pattern: str) -> bool:
+    """
+    Return True if `url` looks like a Kaltura CDN video frame.
+
+    The matcher is intentionally substring-based so that any URL containing
+    the canonical KCL Kaltura player endpoint is detected regardless of
+    the surrounding query string or scheme. Default pattern targets
+    `cdnapisec.kaltura.com/html5/html5lib/` which is the standard mwEmbedFrame.php
+    host path.
+    """
+    if not url:
+        return False
+    return pattern in url
+
+
+def _partition_courses_by_halt(
+    courses, pattern: str
+):
+    """
+    Split each course's files into (kept, halted) buckets.
+
+    `kept` files keep their `content_fileurl` and proceed to the normal
+    download path. `halted` files have their `content_fileurl` blanked out
+    so the downloader treats them as no-ops, while we record the original
+    URL in the database for later release.
+
+    Returns (kept_courses, halted_entries) where halted_entries is a list of
+    (course_id, course_fullname, file) tuples to persist via
+    `database.save_halted_file`.
+    """
+    kept_courses = []
+    halted_entries = []
+
+    for course in courses:
+        kept_files = []
+        for f in course.files:
+            if _is_kaltura_cdn_url(f.content_fileurl, pattern):
+                # Take a snapshot of the file with the original URL preserved
+                # so a later --release-videos can re-download it from the
+                # stored content_fileurl.
+                halted_file = copy.copy(f)
+                halted_entries.append(
+                    (course.id, getattr(course, 'fullname', '') or '', halted_file)
+                )
+                # Blank the URL on the kept copy so the downloader no-ops.
+                f.content_fileurl = ''
+                f.content_filesize = 0
+                kept_files.append(f)
+            else:
+                kept_files.append(f)
+        # Mutate the course in-place; cheap and matches the rest of the codebase.
+        course.files = kept_files
+        kept_courses.append(course)
+
+    return kept_courses, halted_entries
+
+
+def run_halt_videos(config: ConfigHelper, opts: MoodleDlOpts):
+    """
+    Run a normal download pass, but skip downloading Kaltura CDN videos.
+
+    The total file count printed at the end is unchanged (halted videos
+    are still counted) — they are recorded in the database as halted
+    so a subsequent --release-videos <N> can resume downloading them.
+    """
+    logging.info(
+        'Halt-videos mode: downloading everything except Kaltura CDN videos '
+        '(URLs matching %r). Total file count is unchanged.',
+        opts.video_url_pattern,
+    )
+
+    sentry_connected = connect_sentry(config)
+    notify_services = get_all_notify_services(config)
+
+    try:
+        network_throttle = NetworkThrottle()
+        moodle = MoodleService(config, opts, network_throttle=network_throttle)
+        logging.debug('Checking for changes for the configured Moodle-Account....')
+        database = StateRecorder(config, opts)
+        changed_courses = asyncio.run(moodle.fetch_state(database))
+
+        if opts.resume:
+            incomplete_courses = _load_incomplete_download_files_as_courses(database)
+            if incomplete_courses:
+                incomplete_count = sum(len(course.files) for course in incomplete_courses)
+                logging.info(
+                    '找到 %d 个未完成下载，将加入本次续传。 / Found %d incomplete download(s) to resume.',
+                    incomplete_count,
+                    incomplete_count,
+                )
+                changed_courses = _merge_course_file_lists(changed_courses, incomplete_courses)
+            else:
+                logging.info('未找到单独的未完成下载记录，将继续下载扫描到的剩余文件。')
+
+        # Partition: move Kaltura CDN URLs into the halted bucket.
+        kept_courses, halted_entries = _partition_courses_by_halt(
+            changed_courses, opts.video_url_pattern
+        )
+
+        # Persist halted files for later release.
+        for course_id, course_fullname, halted_file in halted_entries:
+            database.save_halted_file(
+                halted_file,
+                course_id=course_id,
+                course_fullname=course_fullname,
+            )
+        if halted_entries:
+            logging.info(
+                '🟡 Halted %d Kaltura CDN video(s). Use --release-videos <N> '
+                'to download the first N.',
+                len(halted_entries),
+            )
+
+        # Sanity check: print totals.
+        total_kept = sum(len(c.files) for c in kept_courses)
+        logging.info(
+            'Total files: %d (kept: %d, halted: %d)',
+            total_kept + len(halted_entries),
+            total_kept,
+            len(halted_entries),
+        )
+
+        if opts.log_responses:
+            logging.info("All JSON-responses from Moodle have been written to the responses.log file.")
+            return
+
+        if opts.without_downloading_files:
+            downloader = FakeDownloadService(kept_courses, config, opts, database)
+        else:
+            downloader = DownloadService(
+                kept_courses, config, opts, database, network_throttle=network_throttle
+            )
+        downloader.run()
+        failed_downloads = downloader.get_failed_tasks()
+
+        changed_courses_to_notify = database.changes_to_notify()
+        if len(changed_courses_to_notify) > 0:
+            for service in notify_services:
+                service.notify_about_changes_in_moodle(changed_courses_to_notify)
+            database.notified(changed_courses_to_notify)
+        else:
+            logging.info('为已配置的 Moodle 账户未找到变化。')
+
+        if len(failed_downloads) > 0:
+            for service in notify_services:
+                service.notify_about_failed_downloads(failed_downloads)
+
+    except BaseException as base_err:
+        if sentry_connected:
+            sentry_sdk.capture_exception(base_err)
+        short_error = str(base_err) or traceback.format_exc(limit=1)
+        for service in notify_services:
+            service.notify_about_error(short_error)
+        raise base_err
+
+
+def run_release_videos(config: ConfigHelper, opts: MoodleDlOpts):
+    """
+    Download up to `--release-videos N` Kaltura CDN videos that were
+    previously held by `--halt-videos`. Picks the oldest halted files
+    first, clears their [HALTED] marker, then runs the normal download
+    pipeline so failures are recorded like any other download failure
+    (and will appear in --retry-failed).
+    """
+    limit = opts.release_videos
+    if limit <= 0:
+        logging.info('Nothing to release (--release-videos must be a positive integer).')
+        return
+
+    database = StateRecorder(config, opts)
+    halted = database.get_halted_files(limit=limit)
+
+    if not halted:
+        logging.info(
+            'No halted Kaltura videos in the database. '
+            'Run --halt-videos first to populate the queue.'
+        )
+        return
+
+    logging.info(
+        'Release-videos mode: downloading up to %d halted Kaltura CDN video(s).',
+        len(halted),
+    )
+
+    # Clear the [HALTED] marker on each so the downloader's success/failure
+    # paths will write fresh state without the prefix.
+    for file, course_id, _fullname in halted:
+        database.clear_halted_marker(file, course_id=course_id)
+
+    # Rebuild Course-shaped objects so we can reuse DownloadService.
+    from moodle_dl.types import Course
+
+    courses_by_id = {}
+    for file, course_id, course_fullname in halted:
+        course = courses_by_id.get(course_id)
+        if course is None:
+            course = Course(
+                _id=course_id,
+                fullname=course_fullname,
+                files=[],
+            )
+            courses_by_id[course_id] = course
+        course.files.append(file)
+
+    courses = list(courses_by_id.values())
+
+    sentry_connected = connect_sentry(config)
+    notify_services = get_all_notify_services(config)
+
+    try:
+        network_throttle = NetworkThrottle()
+        # Note: fetch_state is intentionally skipped — release only handles
+        # the pre-recorded halted URLs.
+        if opts.without_downloading_files:
+            downloader = FakeDownloadService(courses, config, opts, database)
+        else:
+            downloader = DownloadService(
+                courses, config, opts, database, network_throttle=network_throttle
+            )
+        downloader.run()
+        failed_downloads = downloader.get_failed_tasks()
+
+        if failed_downloads:
+            for service in notify_services:
+                service.notify_about_failed_downloads(failed_downloads)
+
+    except BaseException as base_err:
+        if sentry_connected:
+            sentry_sdk.capture_exception(base_err)
+        short_error = str(base_err) or traceback.format_exc(limit=1)
+        for service in notify_services:
+            service.notify_about_error(short_error)
+        raise base_err
 
 
 def resume_downloads(config: ConfigHelper, opts: MoodleDlOpts):
@@ -858,6 +1102,46 @@ def get_parser():
         help=(
             'Retry downloading all previously failed files. '
             + 'This will attempt to re-download files that failed in previous runs.'
+        ),
+    )
+
+    group.add_argument(
+        '-hv',
+        '--halt-videos',
+        dest='halt_videos',
+        default=False,
+        action='store_true',
+        help=(
+            'Halt downloading of large Kaltura CDN videos (mwEmbedFrame.php entries). '
+            + 'Halting skips the actual download for those files but keeps their '
+            + 'URLs cached in the database, so a subsequent --release-videos <N> '
+            + 'can download the first N of them. Total file count shown is unchanged.'
+        ),
+    )
+
+    group.add_argument(
+        '-rv',
+        '--release-videos',
+        dest='release_videos',
+        default=0,
+        type=int,
+        metavar='N',
+        help=(
+            'Download up to N Kaltura CDN videos previously held by --halt-videos. '
+            + 'Files are released in halt-time order (oldest first). '
+            + 'Failed releases will appear in --retry-failed like any other failure.'
+        ),
+    )
+
+    parser.add_argument(
+        '--video-url-pattern',
+        dest='video_url_pattern',
+        default='cdnapisec.kaltura.com/html5/html5lib/',
+        type=str,
+        help=(
+            'Substring used by --halt-videos to recognise a Kaltura CDN video URL. '
+            + 'Default targets the canonical KCL Kaltura player frame endpoint. '
+            + 'Override only if your institution serves from a different CDN host.'
         ),
     )
 
