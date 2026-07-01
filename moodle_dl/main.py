@@ -396,6 +396,10 @@ def _is_kaltura_cdn_url(url: str, pattern: str) -> bool:
 def _partition_courses_by_halt(
     courses,
     pattern: str,
+    *,
+    resolve_session=None,
+    resolve_throttle=None,
+    resolve_verify_ssl: bool = True,
 ):
     """
     Split each course's files into (kept, halted) buckets.
@@ -411,12 +415,17 @@ def _partition_courses_by_halt(
     and yt-dlp will redirect it on download.
 
     For view.php URLs (`keats.kcl.ac.uk/mod/kalvidres/view.php?id=...`)
-    the file is NOT halted. It stays in the kept bucket so the Task can
-    extract the page annotation / description into `_notes.md`; the Task,
-    when running under --halt-videos, will skip the actual video download
-    and write a `[HALTED]` marker to the DB row so `--release-videos`
-    can pick it up later. This preserves the annotation/transcript that
-    would otherwise be lost if the file were halted with the URL blanked.
+    we synchronously resolve them into the auth-free CDN URL right now
+    (Moodle cookies are guaranteed fresh because we just --init or
+    --refreshed). The resolved CDN URL is written into the halted row
+    and the page annotation / description is fetched in the same pass
+    and saved to disk as `_notes.md`. --release-videos can then download
+    the video using only the cached CDN URL — no Moodle auth required.
+
+    If view.php resolution fails (network blip, cookies stale) the file
+    falls through to the kept bucket unchanged so the Task can try
+    again at download time (with normal-mode flow + --halt-videos Task
+    branch as a fallback).
 
     Files kept in the kept bucket proceed to the normal download path.
     Halted files are NOT added to the kept bucket so the downloader does
@@ -437,6 +446,10 @@ def _partition_courses_by_halt(
         kept_files = []
         for f in course.files:
             url = f.content_fileurl or ''
+            is_view_php = (
+                '/mod/kalvidres/view.php' in url
+                and getattr(f, 'module_modname', '') == 'cookie_mod-kalvidres'
+            )
 
             # Signal (A): derive a permanent Kaltura CDN URL from the
             # upstream Moodle LTI launch URL via pure string parsing.
@@ -448,14 +461,49 @@ def _partition_courses_by_halt(
                 or 'cdnapisec.kaltura.com/p/' in url
             )
 
-            # We halt if either (A) or (B) succeeded. view.php falls
-            # through to the kept bucket — see docstring.
-            should_halt = bool(cdn_url) or is_already_cdn
+            # Signal (C): view.php — sync resolve via 3 GETs. Only
+            # attempt if a session was injected.
+            view_php_cdn = None
+            if (
+                is_view_php
+                and not cdn_url
+                and not is_already_cdn
+                and resolve_session is not None
+            ):
+                if resolve_throttle is not None:
+                    resolve_throttle.wait('halt-videos view.php resolve')
+                view_php_cdn = builder.resolve_view_php_to_cdn(
+                    url,
+                    resolve_session,
+                    verify_ssl=resolve_verify_ssl,
+                )
+                if view_php_cdn:
+                    logging.info(
+                        'Resolved view.php → auth-free CDN URL: %s',
+                        view_php_cdn,
+                    )
+
+            should_halt = bool(cdn_url) or is_already_cdn or bool(view_php_cdn)
 
             if should_halt:
                 halted_file = copy.copy(f)
                 if cdn_url:
                     halted_file.content_fileurl = cdn_url
+                elif view_php_cdn:
+                    halted_file.content_fileurl = view_php_cdn
+                # If view.php halt succeeded, also write _notes.md right
+                # now (cookies are guaranteed fresh). Skip if the file
+                # has no saved_to target.
+                if view_php_cdn and resolve_session is not None:
+                    saved_to = halted_file.saved_to or ''
+                    if saved_to:
+                        notes_path = os.path.splitext(saved_to)[0] + '_notes.md'
+                        builder.extract_view_php_text(
+                            url,
+                            resolve_session,
+                            notes_path,
+                            verify_ssl=resolve_verify_ssl,
+                        )
                 halted_entries.append(
                     (course.id, getattr(course, 'fullname', '') or '', halted_file)
                 )
@@ -509,14 +557,39 @@ def run_halt_videos(config: ConfigHelper, opts: MoodleDlOpts):
             else:
                 logging.info('未找到单独的未完成下载记录，将继续下载扫描到的剩余文件。')
 
-        # Partition: halt LTI launch URLs and pre-CDN-URL files. view.php
-        # URLs are NOT halted — they fall through to the kept bucket so
-        # the Task can extract the page annotation / description into
-        # _notes.md. The Task, when running under --halt-videos, writes
-        # the [HALTED] marker for view.php files itself (see
-        # moodle_dl/downloader/task.py:_handle_kalvidres_download).
+        # Partition: halt LTI launch URLs, pre-CDN-URL files, and view.php
+        # files (sync-resolving view.php right now so --release-videos
+        # doesn't need Moodle cookies at all). For view.php we also
+        # write _notes.md from the same fetch, before cookies expire.
+        #
+        # Cookies come from the auth_sessions DB table (cookie_batch
+        # sessions written by --init --sso via Playwright). This is
+        # NOT a cookies.txt file read — get_cookies_text() returns
+        # Netscape-format text built from the DB rows.
+        resolve_session = None
+        try:
+            from io import StringIO
+
+            from moodle_dl.utils import MoodleDLCookieJar
+
+            cookies_text = config.get_cookies_text()
+            if cookies_text:
+                jar = MoodleDLCookieJar(StringIO(cookies_text))
+                jar.load(ignore_discard=True, ignore_expires=True)
+                import requests
+
+                resolve_session = requests.Session()
+                resolve_session.cookies = jar
+        except Exception as e:  # noqa: BLE001
+            logging.debug('halt-videos: could not build resolve_session: %s', e)
+            resolve_session = None
+
         kept_courses, halted_entries = _partition_courses_by_halt(
-            changed_courses, opts.video_url_pattern
+            changed_courses,
+            opts.video_url_pattern,
+            resolve_session=resolve_session,
+            resolve_throttle=network_throttle,
+            resolve_verify_ssl=not getattr(opts, 'skip_cert_verify', False),
         )
 
         # Persist halted files for later release.

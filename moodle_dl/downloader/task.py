@@ -1395,27 +1395,14 @@ class Task:
 
             html_content = response.text
 
-            # Extract text content using generic DOM-based method
-            text_data = {}
+            # Extract text content using the shared sync helper — same
+            # logic the halt-videos partition step uses for view.php
+            # _notes.md generation.
+            from moodle_dl.downloader.kaltura_url import (
+                parse_kalvidres_html as _parse_kalvidres_html,
+            )
 
-            # 1. Extract page title
-            title_match = re.search(r'<title>([^<]+)</title>', html_content)
-            if title_match:
-                text_data['page_title'] = html_module.unescape(title_match.group(1).strip())
-
-            # 2. Extract module name (H1)
-            h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_content, re.DOTALL)
-            if h1_match:
-                h1_text = self._clean_html_simple(h1_match.group(1))
-                if h1_text:
-                    text_data['module_name'] = h1_text
-
-            # 3. Extract activity-description (core content - generic!)
-            activity_pattern = r'<div\s+class="activity-description"[^>]*>(.*?)</div>\s*</div>'
-            activity_match = re.search(activity_pattern, html_content, re.DOTALL)
-            if activity_match:
-                content_html = activity_match.group(1)
-                text_data['activity_description'] = self._clean_html_preserve_structure(content_html)
+            text_data = _parse_kalvidres_html(html_content)
 
             # Save as Markdown if we have content
             if text_data:
@@ -1710,21 +1697,11 @@ class Task:
 
     async def _save_kalvidres_text(self, text_data: dict, save_path: str):
         """Save extracted text as Markdown file"""
-        lines = []
+        from moodle_dl.downloader.kaltura_url import (
+            format_kalvidres_text as _format_kalvidres_text,
+        )
 
-        if text_data.get('page_title'):
-            lines.append(f"# {text_data['page_title']}")
-            lines.append("")
-
-        if text_data.get('module_name'):
-            lines.append(f"## {text_data['module_name']}")
-            lines.append("")
-
-        if text_data.get('activity_description'):
-            lines.append(text_data['activity_description'])
-            lines.append("")
-
-        content = '\n'.join(lines)
+        content = _format_kalvidres_text(text_data)
 
         # Create directory if needed
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -1986,54 +1963,14 @@ class Task:
         2. 提取真实的 Kaltura 视频 URL
         3. 使用提取的 URL 下载，如失败则回退到原始 URL
 
-        halt-videos 模式：
-        只写 _notes.md（annotation / description / transcript），跳过视频
-        下载。文件用 `[HALTED]` 前缀写 DB 让 --release-videos 能找回来。
-        LTI launch URL 文件已经被 partition halt 了不进 kept bucket，所以
-        走到这里的几乎全是 view.php 文件。
+        Note: 在 --halt-videos 模式下，partition 阶段已经把 view.php 和
+        LTI launch URL 都 halt 了（含 _notes.md 写盘），所以 Task 不会
+        走到这里跑 kalvidres 文件。这个方法现在只跑 normal mode 的
+        kalvidres 文件（即 halt 模式 partition 解析失败、文件 fall
+        through 到 kept bucket 的边界情况）。
         """
         video_path = str(self.file.saved_to)
         text_path = os.path.splitext(video_path)[0] + '_notes.md'
-
-        # halt-videos: write _notes.md, skip video, mark row for release.
-        if self.opts.global_opts.halt_videos:
-            try:
-                await self.extract_kalvidres_text(
-                    self.file.content_fileurl, text_path
-                )
-                logging.info(
-                    '[%d] Wrote %s (video deferred to --release-videos)',
-                    self.task_id,
-                    text_path,
-                )
-            except Exception as e:  # noqa: BLE001
-                logging.warning(
-                    '[%d] extract_kalvidres_text failed in halt mode: %s',
-                    self.task_id,
-                    e,
-                )
-            # Mark row in DB with [HALTED] prefix so --release-videos
-            # surfaces it. Do NOT raise — this isn't a failure.
-            try:
-                db = self._get_or_create_database()
-                reason = (
-                    '[HALTED] Kaltura video deferred to --release-videos '
-                    '(annotation written to _notes.md)'
-                )
-                db.save_failed_file(
-                    file=self.file,
-                    course_id=self.course.id,
-                    course_fullname=self.course.fullname,
-                    error_message=reason,
-                )
-            except Exception as e:  # noqa: BLE001
-                logging.debug(
-                    '[%d] could not write halted marker to DB: %s',
-                    self.task_id,
-                    e,
-                )
-            self.report_success()
-            return
 
         kaltura_url = self._build_kaltura_url_from_known_embed_url(self.file.content_fileurl)
         if kaltura_url:

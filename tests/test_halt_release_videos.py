@@ -58,6 +58,46 @@ KCL_KALTURA_VIEW_URL = (
 )
 DEFAULT_PATTERN = 'cdnapisec.kaltura.com/html5/html5lib/'
 
+# Resolve-view.php test fixtures — production URLs to drive the 3-step
+# network resolution in halt-videos partition (view.php → lti_launch →
+# browseandembed → embedIframeJs CDN URL).
+VIEW_PHP_URL = KCL_KALTURA_VIEW_URL
+LTI_LAUNCH_URL = (
+    'https://keats.kcl.ac.uk/filter/kaltura/lti_launch.php?'
+    'courseid=134485&height=402&width=608&source='
+    'https%3A%2F%2Fkaf.keats.kcl.ac.uk%2Fbrowseandembed%2Findex%2Fmedia'
+    '%2Fentryid%2F1_er5gtb0g%2FshowDescription%2Ffalse%2FplayerSkin%2F50869842'
+)
+BROWSEANDEMBED_URL = (
+    'https://kaf.keats.kcl.ac.uk/browseandembed/index/media/'
+    'entryid/1_er5gtb0g/showDescription/false/playerSkin/50869842/'
+)
+
+
+class _FakeResponse:
+    def __init__(self, text, status_code=200):
+        self.text = text
+        self.status_code = status_code
+
+
+class _FakeSession:
+    """Minimal requests.Session stub for halt-videos resolve tests."""
+
+    def __init__(self, scripts):
+        self.scripts = list(scripts)
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append(url)
+        for matcher, text in self.scripts:
+            if matcher(url):
+                return _FakeResponse(text)
+        return _FakeResponse('', status_code=404)
+
+
+def _contains(haystack):
+    return lambda url: haystack in url
+
 
 # ---------------------------------------------------------------------------
 # CLI parser
@@ -221,20 +261,80 @@ class PartitionTest(unittest.TestCase):
         self.assertNotIn('keats.kcl.ac.uk', halted_file.content_fileurl)
         self.assertNotIn('lti_launch.php', halted_file.content_fileurl)
 
-    def test_view_php_url_passes_through_for_annotation_extraction(self):
-        """view.php?id=... URL is NOT halted. It stays in the kept bucket
-        so the Task can extract the page annotation / description into
-        `_notes.md`. The Task, when running under --halt-videos, will
-        skip the actual video download and write a `[HALTED]` marker
-        to the DB row so --release-videos can pick it up later.
-        Without resolve_session (no network) and without --halt-videos
-        context, this test just verifies the partition step keeps the
-        file in the kept bucket with its original URL intact."""
+    def test_view_php_url_halted_with_resolved_cdn_url(self):
+        """view.php URLs are halted in partition when resolve_session
+        is provided and resolve_view_php_to_cdn returns a CDN URL.
+        The halted copy's content_fileurl is replaced with the auth-free
+        CDN URL — same path as the offline (A) case for LTI launch URLs."""
+        view_html = (
+            '<html><body>'
+            f'<iframe src="{LTI_LAUNCH_URL}"></iframe>'
+            '</body></html>'
+        )
+        lti_html = (
+            '<html><body>'
+            f'<form><input name="target_link_uri" value="{BROWSEANDEMBED_URL}">'
+            '</form></body></html>'
+        )
+        browse_html = (
+            '<html><body>'
+            '<script>partnerId = 2368101;</script>'
+            '<script>'
+            'https://cdnapisec.kaltura.com/p/2368101/embedIframeJs/...'
+            '</script>'
+            '</body></html>'
+        )
+        session = _FakeSession(
+            [
+                (_contains('view.php'), view_html),
+                (_contains('lti_launch'), lti_html),
+                (_contains('browseandembed'), browse_html),
+            ]
+        )
+        f = _make_file(VIEW_PHP_URL, module_modname='cookie_mod-kalvidres')
+        c1 = _make_course(1, 'CS100', [f])
+        kept, halted = _partition_courses_by_halt(
+            [c1],
+            DEFAULT_PATTERN,
+            resolve_session=session,
+            resolve_throttle=None,
+        )
+        self.assertEqual(len(kept[0].files), 0)
+        self.assertEqual(len(halted), 1)
+        halted_file = halted[0][2]
+        self.assertIn('cdnapisec.kaltura.com/', halted_file.content_fileurl)
+        self.assertIn('embedIframeJs', halted_file.content_fileurl)
+        self.assertIn('1_er5gtb0g', halted_file.content_fileurl)
+        self.assertNotIn('keats.kcl.ac.uk', halted_file.content_fileurl)
+        self.assertNotIn('lti_launch.php', halted_file.content_fileurl)
+
+    def test_view_php_url_falls_through_when_resolve_session_missing(self):
+        """Without resolve_session (no network in unit test) view.php
+        falls through to kept bucket — partition can't resolve it
+        offline, so it stays for the normal downloader / Task path."""
         f = _make_file(KCL_KALTURA_VIEW_URL, module_modname='cookie_mod-kalvidres')
         c1 = _make_course(1, 'CS100', [f])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
-        # view.php stays in kept bucket — partition does not halt it.
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(kept[0].files), 1)
+        self.assertEqual(kept[0].files[0].content_fileurl, KCL_KALTURA_VIEW_URL)
+        self.assertEqual(len(halted), 0)
+
+    def test_view_php_url_falls_through_when_resolve_returns_none(self):
+        """When resolve_session is provided but resolve_view_php_to_cdn
+        returns None (network blip, bad HTML), view.php falls through
+        to kept bucket unchanged."""
+        bad_session = _FakeSession([])  # everything 404 / empty
+        f = _make_file(KCL_KALTURA_VIEW_URL, module_modname='cookie_mod-kalvidres')
+        c1 = _make_course(1, 'CS100', [f])
+        kept, halted = _partition_courses_by_halt(
+            [c1],
+            DEFAULT_PATTERN,
+            resolve_session=bad_session,
+            resolve_throttle=None,
+        )
+
         self.assertEqual(len(kept), 1)
         self.assertEqual(len(kept[0].files), 1)
         self.assertEqual(kept[0].files[0].content_fileurl, KCL_KALTURA_VIEW_URL)
@@ -252,12 +352,12 @@ class PartitionTest(unittest.TestCase):
         self.assertEqual(halted[0][2].content_fileurl, KCL_KALTURA_EMBED_URL)
 
     def test_mixed_batch_lti_plus_pdf_plus_view_php(self):
-        """Production batch: LTI launch, view.php, PDF. LTI is halted
-        (auth-free CDN URL persisted). PDF and view.php both stay in
-        kept bucket — partition only halts when it can produce an
-        auth-free CDN URL, which is the (A) offline-derivation case.
-        view.php falls through to the kept bucket so the Task can
-        extract its annotation / description into `_notes.md`."""
+        """Production batch: LTI launch, view.php, PDF — no resolve_session.
+        LTI halts via offline (A). view.php falls through (no offline
+        CDN URL and no resolve_session available). PDF stays in kept.
+        When a resolve_session is provided (production --halt-videos
+        case) view.php would also halt — see test_mixed_batch_with_resolve.
+        """
         kalvidres_lti = _make_file(KCL_KALTURA_LTI_LAUNCH_URL, filename='lecture1.mp4')
         kalvidres_view = _make_file(
             KCL_KALTURA_VIEW_URL,
@@ -269,19 +369,77 @@ class PartitionTest(unittest.TestCase):
         c1 = _make_course(1, 'CS100', [pdf, kalvidres_lti, kalvidres_view])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
-        # PDF and view.php stay in kept; only LTI is halted.
+        # PDF and view.php stay in kept; only LTI halts.
         self.assertEqual(len(kept[0].files), 2)
         self.assertEqual(len(halted), 1)
 
-        # Kept: PDF and view.php keep their original URLs.
         url_map = {f.content_filename: f.content_fileurl for f in kept[0].files}
         self.assertEqual(url_map['slides.pdf'], 'https://keats.kcl.ac.uk/x/slides.pdf')
         self.assertEqual(url_map['lecture2.mp4'], KCL_KALTURA_VIEW_URL)
 
-        # Halted: LTI → CDN URL.
         halted_by_name = {h[2].content_filename: h[2].content_fileurl for h in halted}
         self.assertIn('cdnapisec.kaltura.com/', halted_by_name['lecture1.mp4'])
         self.assertNotIn('keats.kcl.ac.uk', halted_by_name['lecture1.mp4'])
+
+    def test_mixed_batch_with_resolve(self):
+        """Same batch but with a resolve_session that successfully
+        resolves view.php — all three Kaltura files are halted, only
+        the PDF stays in kept."""
+        view_html = (
+            '<html><body>'
+            f'<iframe src="{LTI_LAUNCH_URL}"></iframe>'
+            '</body></html>'
+        )
+        lti_html = (
+            '<html><body>'
+            f'<form><input name="target_link_uri" value="{BROWSEANDEMBED_URL}">'
+            '</form></body></html>'
+        )
+        browse_html = (
+            '<html><body>'
+            '<script>partnerId = 2368101;</script>'
+            '<script>'
+            'https://cdnapisec.kaltura.com/p/2368101/embedIframeJs/...'
+            '</script>'
+            '</body></html>'
+        )
+        session = _FakeSession(
+            [
+                (_contains('view.php'), view_html),
+                (_contains('lti_launch'), lti_html),
+                (_contains('browseandembed'), browse_html),
+            ]
+        )
+
+        kalvidres_lti = _make_file(KCL_KALTURA_LTI_LAUNCH_URL, filename='lecture1.mp4')
+        kalvidres_view = _make_file(
+            KCL_KALTURA_VIEW_URL,
+            filename='lecture2.mp4',
+            module_modname='cookie_mod-kalvidres',
+        )
+        pdf = _make_file('https://keats.kcl.ac.uk/x/slides.pdf', filename='slides.pdf')
+
+        c1 = _make_course(1, 'CS100', [pdf, kalvidres_lti, kalvidres_view])
+        kept, halted = _partition_courses_by_halt(
+            [c1],
+            DEFAULT_PATTERN,
+            resolve_session=session,
+            resolve_throttle=None,
+        )
+
+        # Only the PDF stays in kept; both Kaltura files are halted.
+        self.assertEqual(len(kept[0].files), 1)
+        self.assertEqual(len(halted), 2)
+
+        url_map = {f.content_filename: f.content_fileurl for f in kept[0].files}
+        self.assertEqual(url_map['slides.pdf'], 'https://keats.kcl.ac.uk/x/slides.pdf')
+
+        halted_by_name = {h[2].content_filename: h[2].content_fileurl for h in halted}
+        # Both halted files have CDN URLs (no keats/kcl references).
+        self.assertIn('cdnapisec.kaltura.com/', halted_by_name['lecture1.mp4'])
+        self.assertNotIn('keats.kcl.ac.uk', halted_by_name['lecture1.mp4'])
+        self.assertIn('cdnapisec.kaltura.com/', halted_by_name['lecture2.mp4'])
+        self.assertNotIn('keats.kcl.ac.uk', halted_by_name['lecture2.mp4'])
 
 
 # ---------------------------------------------------------------------------
