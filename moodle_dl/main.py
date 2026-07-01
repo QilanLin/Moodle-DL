@@ -394,26 +394,33 @@ def _is_kaltura_cdn_url(url: str, pattern: str) -> bool:
 
 
 def _partition_courses_by_halt(
-    courses, pattern: str
+    courses,
+    pattern: str,
 ):
     """
     Split each course's files into (kept, halted) buckets.
 
-    For each file we attempt to derive a permanent Kaltura CDN URL via
-    `KalturaUrlBuilder.build_from_known_embed_url` — a pure string
-    transform (no network). When a CDN URL is produced the file is
-    halted and its `content_fileurl` is REPLACED with the auth-free CDN
-    URL so a later --release-videos downloads straight from Kaltura CDN
-    without needing Moodle cookies or mobile tokens.
+    For LTI launch URLs (`keats.kcl.ac.uk/filter/kaltura/lti_launch.php?source=...`)
+    we derive the auth-free Kaltura CDN URL purely from the string contents
+    and halt the file, writing the CDN URL into the halted row so it works
+    at --release-videos time without Moodle cookies.
 
-    For older `view.php?id=...` URLs whose entry_id is only resolvable
-    via network, we fall back to halting by `module_modname`. The
-    original URL is preserved; --release-videos resolves it through the
-    normal kalvidres flow (one Moodle-authenticated redirect).
+    For URLs that are already a known auth-free Kaltura CDN URL (e.g.
+    `html5/html5lib/...` or `cdnapisec.kaltura.com/p/.../embedIframeJs/...`)
+    we halt the file but keep the original URL — it's already auth-free
+    and yt-dlp will redirect it on download.
 
-    `kept` files keep their original `content_fileurl` and proceed to
-    the normal download path. Halted files have their `content_fileurl`
-    blanked in the kept copy so the downloader no-ops them.
+    For view.php URLs (`keats.kcl.ac.uk/mod/kalvidres/view.php?id=...`)
+    the file is NOT halted. It stays in the kept bucket so the Task can
+    extract the page annotation / description into `_notes.md`; the Task,
+    when running under --halt-videos, will skip the actual video download
+    and write a `[HALTED]` marker to the DB row so `--release-videos`
+    can pick it up later. This preserves the annotation/transcript that
+    would otherwise be lost if the file were halted with the URL blanked.
+
+    Files kept in the kept bucket proceed to the normal download path.
+    Halted files are NOT added to the kept bucket so the downloader does
+    not create a Task for them.
 
     Returns (kept_courses, halted_entries) where halted_entries is a
     list of (course_id, course_fullname, file) tuples to persist via
@@ -429,39 +436,32 @@ def _partition_courses_by_halt(
     for course in courses:
         kept_files = []
         for f in course.files:
-            # Derive a permanent Kaltura CDN URL from the upstream
-            # Moodle URL. Pure string transform, no network.
-            cdn_url = builder.build_from_known_embed_url(f.content_fileurl)
-
-            # Halt if:
-            #   - we derived a CDN URL (LTI launch → embedIframeJs)
-            #   - the URL is already a known auth-free CDN URL
-            #     (html5lib mwEmbedFrame or embedIframeJs /p/ path)
-            #   - module_modname is cookie_mod-kalvidres (view.php fallback)
             url = f.content_fileurl or ''
+
+            # Signal (A): derive a permanent Kaltura CDN URL from the
+            # upstream Moodle LTI launch URL via pure string parsing.
+            cdn_url = builder.build_from_known_embed_url(url)
+
+            # Signal (B): URL is already a known auth-free CDN URL.
             is_already_cdn = (
                 _is_kaltura_cdn_url(url, pattern)
                 or 'cdnapisec.kaltura.com/p/' in url
             )
-            should_halt = (
-                cdn_url is not None
-                or is_already_cdn
-                or getattr(f, 'module_modname', '') == 'cookie_mod-kalvidres'
-            )
+
+            # We halt if either (A) or (B) succeeded. view.php falls
+            # through to the kept bucket — see docstring.
+            should_halt = bool(cdn_url) or is_already_cdn
 
             if should_halt:
                 halted_file = copy.copy(f)
                 if cdn_url:
-                    # Replace with the auth-free CDN URL so the database
-                    # stores a URL that works without Moodle auth.
                     halted_file.content_fileurl = cdn_url
                 halted_entries.append(
                     (course.id, getattr(course, 'fullname', '') or '', halted_file)
                 )
-                # Blank the URL on the kept copy so the downloader no-ops.
-                f.content_fileurl = ''
-                f.content_filesize = 0
-                kept_files.append(f)
+                # Do NOT add the file to kept_files — the downloader must
+                # not create a Task for a halted file.
+                continue
             else:
                 kept_files.append(f)
         # Mutate the course in-place; cheap and matches the rest of the codebase.
@@ -509,7 +509,12 @@ def run_halt_videos(config: ConfigHelper, opts: MoodleDlOpts):
             else:
                 logging.info('未找到单独的未完成下载记录，将继续下载扫描到的剩余文件。')
 
-        # Partition: move Kaltura CDN URLs into the halted bucket.
+        # Partition: halt LTI launch URLs and pre-CDN-URL files. view.php
+        # URLs are NOT halted — they fall through to the kept bucket so
+        # the Task can extract the page annotation / description into
+        # _notes.md. The Task, when running under --halt-videos, writes
+        # the [HALTED] marker for view.php files itself (see
+        # moodle_dl/downloader/task.py:_handle_kalvidres_download).
         kept_courses, halted_entries = _partition_courses_by_halt(
             changed_courses, opts.video_url_pattern
         )

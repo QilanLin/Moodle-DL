@@ -12,15 +12,15 @@ class NetworkThrottle:
 
     def __init__(
         self,
-        base_delay: float = 10.0,
-        jitter: float = 5.0,
+        base_delay: float = 2.0,
+        jitter: float = 1.0,
         *,
         delay_first: bool = True,
         sleep: Callable[[float], None] = time.sleep,
         async_sleep: Callable[[float], object] = asyncio.sleep,
             monotonic: Callable[[], float] = time.monotonic,
             random_func: Optional[Callable[[], float]] = None,
-        ):
+    ):
         self.base_delay = base_delay
         self.jitter = jitter
         self.delay_first = delay_first

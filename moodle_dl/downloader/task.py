@@ -1980,14 +1980,60 @@ class Task:
     async def _handle_kalvidres_download(self):
         """
         处理 Kalvidres（Kaltura 视频）的特殊下载流程。
-        
+
         步骤：
         1. 提取页面文本内容
         2. 提取真实的 Kaltura 视频 URL
         3. 使用提取的 URL 下载，如失败则回退到原始 URL
+
+        halt-videos 模式：
+        只写 _notes.md（annotation / description / transcript），跳过视频
+        下载。文件用 `[HALTED]` 前缀写 DB 让 --release-videos 能找回来。
+        LTI launch URL 文件已经被 partition halt 了不进 kept bucket，所以
+        走到这里的几乎全是 view.php 文件。
         """
         video_path = str(self.file.saved_to)
         text_path = os.path.splitext(video_path)[0] + '_notes.md'
+
+        # halt-videos: write _notes.md, skip video, mark row for release.
+        if self.opts.global_opts.halt_videos:
+            try:
+                await self.extract_kalvidres_text(
+                    self.file.content_fileurl, text_path
+                )
+                logging.info(
+                    '[%d] Wrote %s (video deferred to --release-videos)',
+                    self.task_id,
+                    text_path,
+                )
+            except Exception as e:  # noqa: BLE001
+                logging.warning(
+                    '[%d] extract_kalvidres_text failed in halt mode: %s',
+                    self.task_id,
+                    e,
+                )
+            # Mark row in DB with [HALTED] prefix so --release-videos
+            # surfaces it. Do NOT raise — this isn't a failure.
+            try:
+                db = self._get_or_create_database()
+                reason = (
+                    '[HALTED] Kaltura video deferred to --release-videos '
+                    '(annotation written to _notes.md)'
+                )
+                db.save_failed_file(
+                    file=self.file,
+                    course_id=self.course.id,
+                    course_fullname=self.course.fullname,
+                    error_message=reason,
+                )
+            except Exception as e:  # noqa: BLE001
+                logging.debug(
+                    '[%d] could not write halted marker to DB: %s',
+                    self.task_id,
+                    e,
+                )
+            self.report_success()
+            return
 
         kaltura_url = self._build_kaltura_url_from_known_embed_url(self.file.content_fileurl)
         if kaltura_url:

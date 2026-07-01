@@ -146,13 +146,16 @@ def _make_course(course_id, fullname, files):
 
 class PartitionTest(unittest.TestCase):
     def test_kaltura_url_url_blanked(self):
-        # The partition blanks the URL on the kept file (so the downloader
-        # no-ops on it) and emits the original into the halted bucket.
+        # Production behaviour: halted files are NOT added to the kept
+        # bucket at all — the downloader must not create a Task for
+        # them. They are persisted via save_halted_file below and
+        # surfaced through --release-videos later.
         c1 = _make_course(1, 'Course A', [_make_file(KCL_KALTURA_URL)])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
         self.assertEqual(len(kept), 1)
-        self.assertEqual(len(kept[0].files), 1)
-        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        # Halted file is gone from the kept bucket — only the course
+        # object remains, with an empty file list.
+        self.assertEqual(len(kept[0].files), 0)
         self.assertEqual(len(halted), 1)
         self.assertEqual(halted[0][0], 1)  # course_id
         self.assertEqual(halted[0][1], 'Course A')  # course_fullname
@@ -173,15 +176,16 @@ class PartitionTest(unittest.TestCase):
         img = _make_file('https://keats.kcl.ac.uk/x/figure.png', filename='figure.png')
         c1 = _make_course(1, 'C', [pdf, vid, img])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
-        # All three files stay in kept; only the kaltura one has its URL
-        # blanked.
-        self.assertEqual(len(kept[0].files), 3)
+        # Only the non-Kaltura files stay in kept; the Kaltura file is
+        # removed from the kept bucket entirely.
+        self.assertEqual(len(kept[0].files), 2)
         self.assertEqual(len(halted), 1)
-        # Verify only the kaltura file got its URL blanked.
+        # The kept files retain their original URLs.
         url_map = {f.content_filename: f.content_fileurl for f in kept[0].files}
         self.assertEqual(url_map['slides.pdf'], 'https://keats.kcl.ac.uk/x/slides.pdf')
         self.assertEqual(url_map['figure.png'], 'https://keats.kcl.ac.uk/x/figure.png')
-        self.assertEqual(url_map['f.bin'], '')
+        # The Kaltura filename must NOT be in the kept bucket.
+        self.assertNotIn('f.bin', url_map)
 
     def test_multiple_courses(self):
         c1 = _make_course(1, 'A', [_make_file(KCL_KALTURA_URL)])
@@ -195,15 +199,16 @@ class PartitionTest(unittest.TestCase):
 
     def test_lti_launch_url_is_halted_and_replaced_with_cdn_url(self):
         """content_fileurl is a Moodle LTI launch URL. Partition MUST halt
-        it and replace the halted copy's content_fileurl with the auth-free
-        cdnapisec.kaltura.com CDN URL."""
+        it, replace the halted copy's content_fileurl with the auth-free
+        cdnapisec.kaltura.com CDN URL, AND remove it from the kept
+        bucket entirely so the downloader doesn't create a Task for it."""
         f = _make_file(KCL_KALTURA_LTI_LAUNCH_URL)
         c1 = _make_course(1, 'CS100', [f])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
+        # Halted file is removed from kept.
         self.assertEqual(len(kept), 1)
-        self.assertEqual(len(kept[0].files), 1)
-        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        self.assertEqual(len(kept[0].files), 0)
         self.assertEqual(len(halted), 1)
 
         course_id, course_fullname, halted_file = halted[0]
@@ -216,34 +221,43 @@ class PartitionTest(unittest.TestCase):
         self.assertNotIn('keats.kcl.ac.uk', halted_file.content_fileurl)
         self.assertNotIn('lti_launch.php', halted_file.content_fileurl)
 
-    def test_view_php_url_is_halted_keeps_original_url(self):
-        """view.php?id=... URL: entry_id unknown offline, halt by modname,
-        keep original URL (Task resolves on release)."""
+    def test_view_php_url_passes_through_for_annotation_extraction(self):
+        """view.php?id=... URL is NOT halted. It stays in the kept bucket
+        so the Task can extract the page annotation / description into
+        `_notes.md`. The Task, when running under --halt-videos, will
+        skip the actual video download and write a `[HALTED]` marker
+        to the DB row so --release-videos can pick it up later.
+        Without resolve_session (no network) and without --halt-videos
+        context, this test just verifies the partition step keeps the
+        file in the kept bucket with its original URL intact."""
         f = _make_file(KCL_KALTURA_VIEW_URL, module_modname='cookie_mod-kalvidres')
         c1 = _make_course(1, 'CS100', [f])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
+        # view.php stays in kept bucket — partition does not halt it.
         self.assertEqual(len(kept), 1)
-        self.assertEqual(kept[0].files[0].content_fileurl, '')
-        self.assertEqual(len(halted), 1)
-        halted_file = halted[0][2]
-        # URL preserved — no CDN URL derivable offline from view.php.
-        self.assertEqual(halted_file.content_fileurl, KCL_KALTURA_VIEW_URL)
+        self.assertEqual(len(kept[0].files), 1)
+        self.assertEqual(kept[0].files[0].content_fileurl, KCL_KALTURA_VIEW_URL)
+        self.assertEqual(len(halted), 0)
 
-    def test_embed_iframe_url_is_halted_as_is(self):
+    def test_embed_iframe_url_is_halted_removed_from_kept(self):
         """content_fileurl is already a Kaltura CDN URL (idempotent re-run)."""
         f = _make_file(KCL_KALTURA_EMBED_URL)
         c1 = _make_course(1, 'CS100', [f])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
         self.assertEqual(len(kept), 1)
-        self.assertEqual(kept[0].files[0].content_fileurl, '')
+        self.assertEqual(len(kept[0].files), 0)
         self.assertEqual(len(halted), 1)
         self.assertEqual(halted[0][2].content_fileurl, KCL_KALTURA_EMBED_URL)
 
     def test_mixed_batch_lti_plus_pdf_plus_view_php(self):
-        """Production batch: LTI launch, view.php, PDF. All 3 in kept
-        (Kaltura URLs blanked), 2 halted (LTI → CDN URL, view.php → original)."""
+        """Production batch: LTI launch, view.php, PDF. LTI is halted
+        (auth-free CDN URL persisted). PDF and view.php both stay in
+        kept bucket — partition only halts when it can produce an
+        auth-free CDN URL, which is the (A) offline-derivation case.
+        view.php falls through to the kept bucket so the Task can
+        extract its annotation / description into `_notes.md`."""
         kalvidres_lti = _make_file(KCL_KALTURA_LTI_LAUNCH_URL, filename='lecture1.mp4')
         kalvidres_view = _make_file(
             KCL_KALTURA_VIEW_URL,
@@ -255,19 +269,19 @@ class PartitionTest(unittest.TestCase):
         c1 = _make_course(1, 'CS100', [pdf, kalvidres_lti, kalvidres_view])
         kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
 
-        self.assertEqual(len(kept[0].files), 3)
-        self.assertEqual(len(halted), 2)
+        # PDF and view.php stay in kept; only LTI is halted.
+        self.assertEqual(len(kept[0].files), 2)
+        self.assertEqual(len(halted), 1)
 
+        # Kept: PDF and view.php keep their original URLs.
         url_map = {f.content_filename: f.content_fileurl for f in kept[0].files}
         self.assertEqual(url_map['slides.pdf'], 'https://keats.kcl.ac.uk/x/slides.pdf')
-        self.assertEqual(url_map['lecture1.mp4'], '')
-        self.assertEqual(url_map['lecture2.mp4'], '')
+        self.assertEqual(url_map['lecture2.mp4'], KCL_KALTURA_VIEW_URL)
 
-        # Halted: LTI → CDN URL, view.php → original
+        # Halted: LTI → CDN URL.
         halted_by_name = {h[2].content_filename: h[2].content_fileurl for h in halted}
         self.assertIn('cdnapisec.kaltura.com/', halted_by_name['lecture1.mp4'])
         self.assertNotIn('keats.kcl.ac.uk', halted_by_name['lecture1.mp4'])
-        self.assertEqual(halted_by_name['lecture2.mp4'], KCL_KALTURA_VIEW_URL)
 
 
 # ---------------------------------------------------------------------------
@@ -408,7 +422,8 @@ class HaltedDatabaseTest(unittest.TestCase):
             c1 = _make_course(1, 'CS100', [f])
             kept, halted = _partition_courses_by_halt([c1], DEFAULT_PATTERN)
             self.assertEqual(len(halted), 1)
-            self.assertEqual(kept[0].files[0].content_fileurl, '')
+            # Halted file is removed from the kept bucket.
+            self.assertEqual(len(kept[0].files), 0)
 
             # Persist.
             course_id, course_fullname, halted_file = halted[0]
